@@ -1,4 +1,4 @@
-![alt text](https://github-fn.jpl.nasa.gov/Hu-Research-Group/ExoReL/blob/main/ExoReL_logo.png?raw=true)
+![alt text](https://github.com/MDamiano/ExoReL/blob/main/ExoReL_logo.png?raw=true)
 
 # ExoReL<sup>R</sup>
 
