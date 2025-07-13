@@ -1,0 +1,84 @@
+## [2.4.2] - 04/14/25
+- Added O2-O2 CIA.
+- Added new plot for surface albedo. The plot is automatically generated if the parameter 'surface_albedo_parameters' is greater than 1. This plot is generated in the retrieval post-processing by the function 'plot_surface_albedo'.
+- Fixed the bug that would stall the retrieval. The code was stuck in a while loop without possibility to exit it. Added a time limit of 10mins in that while. The bug is due to C code not completing the calculation.
+
+## [2.4.1] - 04/09/25
+- Plotting bugfix (the error still persists on the server. Check that the matplotlib version is up to date. It works on matplotlib version '3.8.4').
+
+## [2.4.0] - 04/01/25
+- The surface albedo is now treated as an array in the code.
+- Added the possibility to fit for a non gray surface albedo. The user can use the key 'surface_albedo_parameters' and set it to 1, 3, or 5. Default is 1.
+- Added a new module ('__surface_structure') to the FORWARD_ROCKY_MODEL class to handle the new changes on the surface albedo.
+- reintroduction of the 'custom_spectral_binning' function for binning the spectrum.
+- 'custom_spectral_binning' will be used instead of the package spectres when the wavelength bins limits are explicitly used in the input spectrum file.
+
+## [2.3.8] - 09/23/24
+- Model errorbars can now be plotted in the 'NEST_spectrum' plot. Errorbars will automatically plot only if the key 'calc_likelihood_data' was set to True in the parameter file.
+- The best fit model is now saved in a file ("Best_fit.dat") together with 1, 2, and 3 sigmas confidence regions.
+- Introduced the 'spectres' python package that substitutes the 'custom_spectral_binning' util function throughout the ExoReL.
+- Change the prior function for the surface albedo from log-uniform to linear uniform.
+- The post processing will not produce .png figures anymore.
+
+## [2.3.7] - 07/30/24
+- Introduced the 'CREATE_DATASET' class. It leverages MPI to generate datasets of spectra.
+- Including H2 as free parameters in the rocky model.
+- Bugfixes (plotting posteriors, clear c files)
+
+## [2.3.6] - 05/23/24
+- The wavelength range of the C code is now dinamically calculated based on the input spectrum/file.
+- Added possibility to generate a flat albedo spectrum. Use the parameters 'flat_albedo' and 'flat_albedo_value'.
+- Added the possibility to calculate the likelihood per single datapoint in post processing. Enabled by the flag 'calc_likelihood_data' (default is False), and moderated by the flag 'n_likelihood_data' (default 10000) which specify how many single datapoint likelihood to calculate. This function is MPI compatible.
+- Minor Bugfixes (p_size)
+
+## [2.3.5] - 03/25/24
+- Modified refractive index for N2 and O2.
+- Possibility to choose to filter multiple MultiNest solutions or not. Use the 'filter_multi_solutions' in the retrieval parameter file. Default: True.
+- Possibility to re-adjust the VMR of the entire atmosphere or only the filled gas due to H2O absorption. Use 'adjust_VMR_gases' in the parameter file Default: True (change all gases).
+- Plotting bugfixes.
+
+## [2.3.4] - 02/15/24
+- Bugfixes:
+    - Noise calculatiion when creating spectra. Only two modes are now available, 0 and 1. Mode 1 calculates the SNR per wavelength.
+    - Plotting of retrieval process when "cld_frac" is fitted.
+
+## [2.3.3] - 01/31/24
+- Fixed the molecular contribution plot. Rayleigh is shown together with each single molecule weighted for the molecule's VMR.
+- Added the ability to fit for the cloud fraction, 'fit_cld_frac' (default: False). When fit for cloud fraction the model will calculate two columns (double the calculation time) and average between the two columns. This effectively makes the code 1.5D.
+- Added a new parameter, i.e. 'cld_frac' (default: 1.0), to be used in the parameter file to generate spectra with variable cloud fraction.
+- Remaining C files from previous run are now automatically cleaned before starting any new calculations.
+
+## [2.3.2] - 01/24/24
+- Low significance multiple solutions will be filtered out (based on the local log-evidence).
+- Bugfixes.
+
+## [2.3.1] - 12/20/23
+- Rayleigh scattering is now consistently calculated with the actual simulated chemical composition.
+- Loglikelihood traces as well as all the evaluations are exported and saved.
+- Minor bugfixes.
+
+## [2.3.0] - 12/07/23
+- New standard parameter, i.e. 'gas_par_space' (default: None), to chose in which space to fit the chemical composition of rocky planets.
+- Introduced 'partial_pressure' as parameter space for fitting the atmospheric chemical composition of rocky planets.
+- Introduced 'volume_mixing_ratio' and 'vmr' as parameter space for fitting the atmospheric chemical composition of rocky planets.
+- The volume mixing ratio of all the gasses is now adjusted when the VMR of H2O decrease due to clouds. NOTE - Does not work in case of NH3 clouds.
+- 'plot_chemistry' function moved from __utils.py to MULTINEST class.
+
+## [2.2.5] - 11/27/23
+- The '__utils.add_noise' function now returns the simulated data with the minimum chi-square (compared to the plain model) after 100 simulations of gaussian noise.
+- For the rocky planet model:
+    - Added CO and N2O as free parameters of the model. Added possibility to fit the VMR of these gasses.
+    - Re-introduced the adaptive altitude grid.
+    - Condensation Ratio (CR) retrieval range cropped between [-5.0, 0.0].
+    - Surface pressure (P0) retrieval range cropped between [4.0, 7.0].
+    - Water cloud top pressure (Pw_top) retrieval range cropped between [0.0, 7.0].
+    - Water cloud depth (cldw_depth) retrieval range cropped between [0, 6.5].
+    - Surface albedo (ag) retrieval range cropped between [0, 0.1].
+    - Clouds are not allowed to touch the surface anymore. If this happens, no clouds will be included in the atmosphere.
+    - '__utils.cloud_rocky_pos' fixed in case no_cloud are included in the model.
+- "VIS140_NIR70" and "VIS500_NIR500" have been included as wavelength bin files. Can be used to generate spectra.
+- Binning algorithm updated. Now the input file can contain 'bin_low' and 'bin_high' as first and second column for a more precise binning.
+- Introduced scikit-bio (v0.5.9) package to calculate between gas volume-mixing-ratio and gas centered-log-ratio.
+- Updated References list.
+- Introducing debug mode.
+- Dropped Python 2.x support.

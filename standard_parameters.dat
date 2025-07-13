@@ -1,0 +1,150 @@
+%   [STAR]    %
+
+Rs				                    None
+Ts			                        None
+% star distance from Sun [pc]
+distance                            None
+% star metallicity [M/H]
+meta                                None
+
+%   [PLANET]  %
+
+name_p                              None
+major-a                             None
+eccentricity                        None
+inclination                         90.0
+Rp                                  None
+Rp_err                              None
+Mp                                  None
+Mp_err                              None
+gp                                  None
+% Irradiation Temperature at 1 AU related to the Sun case -- Tirr in K
+Tirr                                394.109
+% Intrinsic (internal) Temperature -- Tint in K
+Tint                                110.0
+phi                                 None
+P0                                  None
+Ag                                  None
+
+%   [ATMOSPHERIC_PAR]   %
+% haze concentration
+fhaze                               1E-36
+% cloud coverage fraction
+cld_frac                            1.0
+fit_cld_frac                        False
+adjust_VMR_gases                    True
+% Number of layers in which the atmosphere is divided
+use_adaptive_grid                   True
+n_layer                             100
+% Eddy diffusion coefficient in m2/s
+KE                                  1.0
+% the opar is to correct the Rossland mean opacity at low pressure
+opar                                3.0
+% Number of observations to be taken into account
+obs_numb                            None
+
+%   [MODEL_PAR]     %
+fit_p0                              False
+fit_ag                              False
+surface_albedo_parameters           1
+% fit molecules
+gas_par_space                       None
+mod_prior                           True
+fit_H2O                             False
+fit_NH3                             False
+fit_CH4                             False
+fit_H2S                             False
+fit_SO2                             False
+fit_N2                              False
+fit_CO2                             False
+fit_CO                              False
+fit_O2                              False
+fit_O3                              False
+fit_N2O                             False
+fit_H2                              False
+O3_earth                            False
+% gas filling
+gas_fill                            None
+% fit phase angle
+fit_phi                             False
+% fit planetary gravity, mass, or radius
+fit_g                               False
+fit_Mp                              False
+fit_Rp                              False
+# Type of prior function for the planetary radius and mass. Possibilities: independent, M_R_prior, R_M_prior, random_error
+Rp_prior_type                       None
+Mp_prior_type                       None
+% fit water clouds
+fit_wtr_cld                         False
+% fit ammonia clouds
+fit_amm_cld                         False
+% fit particle size
+fit_p_size                          False
+% type of particle size fitting. Possibilities: constant or factor
+p_size_type                         constant
+% fit planetary temperature
+fit_T                               False
+
+albedo_calc                         False
+flat_albedo                         False
+flat_albedo_value                   None
+fp_over_fs                          False
+% include hazes ?
+hazes                               False
+
+optimizer                           None
+
+%   [MultiNest]     %
+multimodal                          True
+max_modes                           100
+ev_tolerance                        0.5
+nlive_p                             2000
+multinest_resume                    True
+multinest_verbose                   False
+
+%   [Plotting_Options]     %
+wl_native                           False
+mol_custom_wl                       False
+filter_multi_solutions              False
+plot_models                         False
+plot_contribution                   False
+plot_posterior                      False
+truths                              None
+
+%   [Create_Spectrum_Noise]   %
+add_noise                           False
+gaussian_noise                      False
+noise_model                         0
+snr                                 20
+return_bins                         False
+
+%   [elpdLoo_calculation]   %
+calc_likelihood_data                False
+n_likelihood_data                   10240
+
+%   [Generate_Random_Dataset]   %
+gen_dataset_mode                    False
+rand_Rs                             False
+rand_Ts                             False
+rand_maj-a                          False
+rand_Rp                             False
+rand_Mp                             False
+rand_Tp                             False
+rand_phi                            False
+rand_Ag                             False
+rand_H2O                            False
+rand_NH3                            False
+rand_CH4                            False
+rand_H2S                            False
+rand_SO2                            False
+rand_CO                             False
+rand_CO2                            False
+rand_O2                             False
+rand_O3                             False
+rand_N2O                            False
+rand_N2                             False
+rand_H2                             False
+rand_cld_frac                       False
+rand_cld_Ptop                       False
+rand_cld_Dbot                       False
+rand_cld_CR                         False
