@@ -24,7 +24,7 @@ Install python packages dependency:
 Download the .zip file from Github, unzip it and place it in a folder at your preference. 
 Therefore, make the folder searchable for python in your `.bash_profile` or `.bashrc` depending on your system
 
-`export PYTHONPATH="$PYTHONPATH:/full/path/of/folder/containing/ExoTR:"`
+`export PYTHONPATH="$PYTHONPATH:/full/path/of/folder/containing/ExoReL:"`
 
 Download the folders "PHO_STELLAR_MODEL" and "forward_rocky_mod" from the following link : [Google Drive](https://drive.google.com/drive/folders/1CQutXQ8Ki59TB9Dndo61sktwS3uOM7qZ?usp=sharing) .
 Place the downloaded folders inside the ExoReL folder.
