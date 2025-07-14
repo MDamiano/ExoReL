@@ -4,8 +4,9 @@
 
 Version 2.4.2
 
-Download the folders "PHO_STELLAR_MODEL", "forward_rocky_mod", and "forward_gas_mod" from the following link : [Google Drive](https://drive.google.com/drive/folders/10ICFK7dGWEQhNChmbmAUU7TmcEU4uCdV?usp=sharing) .
-Place the downloaded folders inside the ExoReL folder.
+Includes:
+* A generation of reflected light spectra routine;
+* A retrieval routine based on nested sampling (i.e. MultiNest).
 
 ## Authors
 * [Mario Damiano](https://mdamiano.github.io/) (Jet Propulsion Laboratory, California Institute of Technology)
@@ -14,6 +15,56 @@ Place the downloaded folders inside the ExoReL folder.
 ## Collaborators
 * Armen Tokadjian (Jet Propulsion Laboratory, California Institute of Technology)
 * Zachary Burr (ETH Zurich, Jet Propulsion Laboratory, California Institute of Technology)
+
+## Installation:
+Install python packages dependency:
+
+`pip install numpy scipy astropy scikit-bio matplotlib spectres`
+
+Download the .zip file from Github, unzip it and place it in a folder at your preference. 
+Therefore, make the folder searchable for python in your `.bash_profile` or `.bashrc` depending on your system
+
+`export PYTHONPATH="$PYTHONPATH:/full/path/of/folder/containing/ExoTR:"`
+
+Download the folders "PHO_STELLAR_MODEL" and "forward_rocky_mod" from the following link : [Google Drive](https://drive.google.com/drive/folders/1CQutXQ8Ki59TB9Dndo61sktwS3uOM7qZ?usp=sharing) .
+Place the downloaded folders inside the ExoReL folder.
+
+## Usage
+You have to prepare the "retrieval_example.dat" and "forward_example.dat" parameters files before running ExoTR. Refer to the examples provided for guidance.
+The full list of possible parameters are listed in the "standard_parameters.dat" file, placed inside the ExoTR package. Do not modify the "standard_parameters.dat" file.
+
+You can generate a transmission spectrum by typing in a python instance or script.py file the following lines:
+
+`import ExoReL`
+
+`spec = ExoReL.CREATE_SPECTRUM()`
+
+`spec.run_forward('forward_example.dat')`
+
+You can run a retrieval by typing in a python instance or script.py file the following lines:
+
+`import ExoReL`
+
+`ret = ExoReL.RETRIEVAL()`
+
+`ret.run_retrieval('retrieval_example.dat')`
+
+To run the retrieval mode you need to have the MultiNest libraries installed in your system as well as `pymultinest (v2.11)`.
+
+`pymultinest` is MPI compatible, therefore, you can run ExoTR to perform the sampling of the retrieval in parallel (you will need to install `mpi4py`):
+
+`mpirun -np 10 python exotr_retrieval.py`
+
+## Plotting the results
+The plotting of the retrieval results is automatic and will produce the following graphs:
+* Chemistry of the atmosphere versus the atmospheric pressure;
+* Mean molecular mass versus the atmospheric pressure;
+* The input spectral data and the best fit model calculated by the Bayesian sampling;
+* The spectral contribution plot;
+* The traces of the fitted free parameters;
+* The posterior distribution corner plot.
+
+In case `pymultinest` finds multiple solutions, ExoTR will automatically plot the aforementioned graphs for each of the solutions.
 
 ## Code usage in literature
 
