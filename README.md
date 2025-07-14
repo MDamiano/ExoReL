@@ -30,7 +30,7 @@ Download the folders "PHO_STELLAR_MODEL" and "forward_rocky_mod" from the follow
 Place the downloaded folders inside the ExoReL folder.
 
 ## Usage
-You have to prepare the "retrieval_example.dat" and "forward_example.dat" parameters files before running ExoReL. Refer to the examples provided for guidance.
+You have to prepare the "retrieval_example.dat" and "forward_example.dat" parameters files before running ExoReL.
 The full list of possible parameters are listed in the "standard_parameters.dat" file, placed inside the ExoReL package. Do not modify the "standard_parameters.dat" file.
 
 You can generate a transmission spectrum by typing in a python instance or script.py file the following lines:
