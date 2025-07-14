@@ -30,8 +30,8 @@ Download the folders "PHO_STELLAR_MODEL" and "forward_rocky_mod" from the follow
 Place the downloaded folders inside the ExoReL folder.
 
 ## Usage
-You have to prepare the "retrieval_example.dat" and "forward_example.dat" parameters files before running ExoTR. Refer to the examples provided for guidance.
-The full list of possible parameters are listed in the "standard_parameters.dat" file, placed inside the ExoTR package. Do not modify the "standard_parameters.dat" file.
+You have to prepare the "retrieval_example.dat" and "forward_example.dat" parameters files before running ExoReL. Refer to the examples provided for guidance.
+The full list of possible parameters are listed in the "standard_parameters.dat" file, placed inside the ExoReL package. Do not modify the "standard_parameters.dat" file.
 
 You can generate a transmission spectrum by typing in a python instance or script.py file the following lines:
 
@@ -51,9 +51,9 @@ You can run a retrieval by typing in a python instance or script.py file the fol
 
 To run the retrieval mode you need to have the MultiNest libraries installed in your system as well as `pymultinest (v2.11)`.
 
-`pymultinest` is MPI compatible, therefore, you can run ExoTR to perform the sampling of the retrieval in parallel (you will need to install `mpi4py`):
+`pymultinest` is MPI compatible, therefore, you can run ExoReL to perform the sampling of the retrieval in parallel (you will need to install `mpi4py`):
 
-`mpirun -np 10 python exotr_retrieval.py`
+`mpirun -np 10 python exorel_retrieval.py`
 
 ## Plotting the results
 The plotting of the retrieval results is automatic and will produce the following graphs:
@@ -64,7 +64,7 @@ The plotting of the retrieval results is automatic and will produce the followin
 * The traces of the fitted free parameters;
 * The posterior distribution corner plot.
 
-In case `pymultinest` finds multiple solutions, ExoTR will automatically plot the aforementioned graphs for each of the solutions.
+In case `pymultinest` finds multiple solutions, ExoReL will automatically plot the aforementioned graphs for each of the solutions.
 
 ## Code usage in literature
 
