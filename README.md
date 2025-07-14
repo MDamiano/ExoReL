@@ -5,7 +5,7 @@
 Version 2.4.2
 
 Includes:
-* A generation of reflected light spectra routine;
+* A routine to generate of reflected light spectra;
 * A retrieval routine based on nested sampling (i.e. MultiNest).
 
 ## Authors
