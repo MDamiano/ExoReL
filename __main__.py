@@ -9,13 +9,12 @@ pkg_dir = os.path.dirname(path) + '/'
 
 class RETRIEVAL:
     def __init__(self):
-        param = take_standard_parameters(pkg_dir)
+        param = default_parameters()
         param['pkg_dir'] = pkg_dir
         self.param = copy.deepcopy(param)
         self.param['ret_mode'] = True
 
     def run_retrieval(self, parfile):
-        print(f"Running ExoReL – version {__version__}")
         self.param = read_parfile(self.param, parfile)
         if self.param['optimizer'] == 'multinest':
             from ExoReL.__multinest import MULTINEST
@@ -27,7 +26,7 @@ class RETRIEVAL:
 
 class CREATE_SPECTRUM:
     def __init__(self, canc_metadata=False, verbose=True):
-        param = take_standard_parameters(pkg_dir)
+        param = default_parameters()
         param['pkg_dir'] = pkg_dir
         self.param = copy.deepcopy(param)
         self.param['ret_mode'] = False
@@ -49,16 +48,11 @@ class CREATE_SPECTRUM:
 
             print('Parameters:')
 
-        if self.param['rocky']:
-            try:
-                self.param['P0'] = self.param['P0']
-            except KeyError:
-                print('The surface pressure level (P0) should be expressed')
-                sys.exit()
-        else:
-            self.param['vmr_H2O'] = 10. ** self.param['cH2O']
-            self.param['vmr_NH3'] = 10. ** self.param['cNH3']
-            self.param['vmr_CH4'] = 10. ** self.param['cCH4']
+        try:
+            self.param['P0'] = self.param['P0']
+        except KeyError:
+            print('The surface pressure level (P0) should be expressed')
+            sys.exit()
 
         if self.param['fit_wtr_cld']:
             self.param['Pw_top'] = 10. ** self.param['pH2O']
@@ -94,61 +88,55 @@ class CREATE_SPECTRUM:
             self.param['vmr_' + self.param['gas_fill']] = 1.0 - sumb
         else:
             pass
-        
-        if self.verbose and not self.param['rocky']:
-            print('Log(H2O) \t = \t' + str(self.param['cH2O']))
-            if self.param['fit_wtr_cld']:
-                print('Log(H2O_Ptop) \t = \t' + str(self.param['pH2O']))
-                print('Log(H2O_D) \t = \t' + str(self.param['dH2O']))
-                print('Log(H2O_CR) \t = \t' + str(self.param['crH2O']))
-            print('Log(NH3) \t = \t' + str(self.param['cNH3']))
-            if self.param['fit_amm_cld']:
-                print('Log(NH3_Ptop) \t = \t' + str(self.param['pNH3']))
-                print('Log(NH3_D) \t = \t' + str(self.param['dNH3']))
-                print('Log(NH3_CR) \t = \t' + str(self.param['crNH3']))
-            print('Cloud fraction = \t' + str(self.param['cld_frac']))
-            print('Log(CH4) \t = \t' + str(self.param['cCH4']))
-            print('g \t\t = \t' + str(self.param['gp']))
-            print('phi \t\t = \t' + str(self.param['phi'] * 180.0 / math.pi))
-        elif self.verbose and self.param['rocky']:
-            if self.param['fit_wtr_cld']:
-                print('Log(H2O_Ptop) \t = \t' + str(self.param['pH2O']))
-                print('Log(H2O_D) \t = \t' + str(self.param['dH2O']))
-                print('Log(H2O_CR) \t = \t' + str(self.param['crH2O']))
-                print('Cloud fraction \t = \t' + str(self.param['cld_frac']))
-            print('g \t\t = \t' + str(self.param['gp']))
-            print('Mp \t\t = \t' + str(self.param['Mp']))
-            print('Rp \t\t = \t' + str(self.param['Rp']))
-            print('Tp \t\t = \t' + str(self.param['Tp']))
-            print('Ag \t\t = \t' + str(self.param['Ag']))
-            print('Log(P0) \t = \t' + str(np.log10(self.param['P0'])))
-            print('phi \t\t = \t' + str(self.param['phi'] * 180.0 / math.pi))
 
-            for mol in self.param['fit_molecules']:
-                if mol == 'N2' and self.param['gas_fill'] == 'H2' and self.param['vmr_N2'] != 0:
-                    print('VMR N2 \t\t = \t' + str(self.param['vmr_N2']))
-                elif mol == 'N2' and self.param['gas_fill'] is None and self.param['vmr_N2'] != 0:
-                    print('VMR N2 \t\t = \t' + str(self.param['vmr_N2']))
-                elif mol == 'N2' and self.param['gas_fill'] == 'N2':
-                    pass
-                elif mol == 'O2' or mol == 'O3' or mol == 'CO':
-                    print('VMR ' + mol + ' \t\t = \t' + str(self.param['vmr_' + mol]))
-                else:
-                    print('VMR ' + mol + ' \t = \t' + str(self.param['vmr_' + mol]))
+        if self.param['fit_wtr_cld']:
+            print('Log(H2O_Ptop) \t = \t' + str(self.param['pH2O']))
+            print('Log(H2O_D) \t = \t' + str(self.param['dH2O']))
+            print('Log(H2O_CR) \t = \t' + str(self.param['crH2O']))
+        if self.param['fit_amm_cld']:
+            print('Log(NH3_Ptop) \t = \t' + str(self.param['pNH3']))
+            print('Log(NH3_D) \t = \t' + str(self.param['dNH3']))
+            print('Log(NH3_CR) \t = \t' + str(self.param['crNH3']))
+        if self.param['fit_wtr_cld'] or self.param['fit_amm_cld']:
+            print('Cloud fraction \t = \t' + str(self.param['cld_frac']))
+        print('g \t\t = \t' + str(self.param['gp']))
+        print('Mp \t\t = \t' + str(self.param['Mp']))
+        print('Rp \t\t = \t' + str(self.param['Rp']))
+        print('Tp \t\t = \t' + str(self.param['Tp']))
+        print('Ag \t\t = \t' + str(self.param['Ag']))
+        print('Log(P0) \t = \t' + str(np.log10(self.param['P0'])))
+        print('phi \t\t = \t' + str(self.param['phi'] * 180.0 / math.pi))
 
-            if self.param['gas_fill'] is not None and self.param['gas_fill'] == 'N2':
+        for mol in self.param['fit_molecules']:
+            if mol == 'N2' and self.param['gas_fill'] == 'H2' and self.param['vmr_N2'] != 0:
                 print('VMR N2 \t\t = \t' + str(self.param['vmr_N2']))
-            elif self.param['gas_fill'] is not None and self.param['gas_fill'] == 'H2':
+            elif mol == 'N2' and self.param['gas_fill'] is None and self.param['vmr_N2'] != 0:
+                print('VMR N2 \t\t = \t' + str(self.param['vmr_N2']))
+            elif mol == 'N2' and self.param['gas_fill'] == 'N2':
+                pass
+            elif mol == 'O2' or mol == 'O3' or mol == 'CO':
+                print('VMR ' + mol + ' \t\t = \t' + str(self.param['vmr_' + mol]))
+            else:
+                print('VMR ' + mol + ' \t = \t' + str(self.param['vmr_' + mol]))
+
+        if self.param['gas_fill'] is not None and self.param['gas_fill'] == 'N2':
+            print('VMR N2 \t\t = \t' + str(self.param['vmr_N2']))
+        elif self.param['gas_fill'] is not None and self.param['gas_fill'] == 'H2':
+            # print('VMR H2 \t\t = \t' + str(self.param['vmr_H2']))
+            if self.param['rocky']:
                 print('VMR H2 \t\t = \t' + str(self.param['vmr_H2']))
             else:
-                pass
+                if self.param['H2_He_ratio'] != 0:
+                    print('VMR He \t\t = \t' + str(self.param['vmr_H2'] * (1.0 - self.param['H2_He_ratio'])))
+                    print('VMR H2 \t\t = \t' + str(self.param['vmr_H2'] * self.param['H2_He_ratio']))
         else:
             pass
+
         time1 = time.time()
 
         wl, model = forward(self.param, retrieval_mode=self.param['ret_mode'], albedo_calc=self.param['albedo_calc'], fp_over_fs=self.param['fp_over_fs'], canc_metadata=self.canc_metadata)
 
-        if self.param['cld_frac'] != 1.0 and self.param['fit_wtr_cld'] and self.param['rocky']:
+        if self.param['cld_frac'] != 1.0 and self.param['fit_wtr_cld']:
             self.param['fit_wtr_cld'] = False
             self.param['ret_mode'] = True
             model_no_cld = forward(self.param, retrieval_mode=self.param['ret_mode'], albedo_calc=self.param['albedo_calc'], fp_over_fs=self.param['fp_over_fs'], canc_metadata=self.canc_metadata)
@@ -182,7 +170,7 @@ class CREATE_SPECTRUM:
 
 class CREATE_DATASET:
     def __init__(self, canc_metadata=True):
-        param = take_standard_parameters(pkg_dir)
+        param = default_parameters()
         param['pkg_dir'] = pkg_dir
         self.param = copy.deepcopy(param)
         self.param['ret_mode'] = False

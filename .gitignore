@@ -205,3 +205,13 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# User defined
+PHO_STELLAR_MODEL/
+plotting_routine/
+forward_mod/
+debug/
+*.pyc
+.DS_Store
+.idea
+.vscode

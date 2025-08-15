@@ -1,57 +1,104 @@
 from .__basics import *
 
 
-def take_standard_parameters(pkg_dir):
-    parfile = 'standard_parameters.dat'
-    with open(pkg_dir + parfile, 'r') as file:
-        paramfile = file.readlines()
+def default_parameters():
     param = {}
-    for i in paramfile:
-        if i[0] == '%' or i[0] == '\n':
-            pass
-        else:
-            paramline = list(i.split('\t'))
-            paramline[-1] = paramline[-1][:-1]
-            if len(paramline) >= 2:
-                try:
-                    param[paramline[0]] = float(paramline[-1])
-                except ValueError:
-                    if str(paramline[1]) == str(True):
-                        param[paramline[0]] = bool(paramline[1])
-                    elif str(paramline[1]) == str(False):
-                        param[paramline[0]] = bool("")
-                    elif str(paramline[1]) == str(None):
-                        param[paramline[0]] = None
-                    else:
-                        param[paramline[0]] = str(paramline[1])
-            else:
-                paramline = str(paramline[0]).split()
-                if paramline[0] == 'mol':
-                    param[paramline[0]] = paramline[1].split(',')
-                elif paramline[0] == 'mol_vmr' or paramline[0] == 'range_mol':
-                    param[paramline[0]] = paramline[1].split(',')
-                    for ob in range(0, len(param[paramline[0]])):
-                        param[paramline[0]][ob] = float(param[paramline[0]][ob])
-                    if paramline[0] == 'mol_vmr':
-                        for num, mol in enumerate(param['mol']):
-                            param['vmr_' + mol] = param['mol_vmr'][num]
-                    else:
-                        pass
-                else:
-                    try:
-                        param[paramline[0]] = float(paramline[-1])
-                    except ValueError:
-                        if str(paramline[1]) == str(True):
-                            param[paramline[0]] = bool(paramline[1])
-                        elif str(paramline[1]) == str(False):
-                            param[paramline[0]] = bool("")
-                        elif str(paramline[1]) == str(None):
-                            param[paramline[0]] = None
-                        else:
-                            param[paramline[0]] = str(paramline[1])
 
     param['wkg_dir'] = os.getcwd()
-    param['supported_molecules'] = ['H2O', 'NH3', 'CH4', 'H2S', 'SO2', 'CO2', 'CO', 'O2', 'O3', 'N2O', 'N2', 'H2']
+
+    #### [STAR] ####
+    param['Rs'] = None  # Star radius
+    param['Ts'] = None  # Star temperature
+    param['meta'] = None  # star metallicity [M / H]
+    param['Loggs'] = None  # Star log surface gravity
+    param['distance'] = None  # star distance from the Sun [pc]
+
+    #### [PLANET] ####
+    param['name_p'] = None  # Planet name
+    param['major-a'] = None  # Planet semi-major axis
+    param['eccentricity'] = None  # Planet eccentricity
+    param['inclination'] = 90.0  # Planet inclination. 90.0 deg -> edge on. 0.0 deg -> face on [deg]
+    param['Rp'] = None  # Planet radius [Jupiter radii]
+    param['Rp_err'] = None  # Planet radius error
+    param['Mp'] = None  # Planet mass [Jupiter mass]
+    param['Mp_err'] = None  # Planet mass error
+    param['gp'] = None  # Planet surface gravity [m/s^2]
+    param['Tirr'] = 394.109  # Irradiation Temperature at 1 AU related to the Sun case [K]
+    param['Tint'] = 110.0  # Intrinsic (internal) Temperature [K]
+    param['phi'] = None  # Phase angle [deg]
+    param['P0'] = None  # Surface pressure [Pa]
+    param['Ag'] = None  # Surface albedo
+
+    #### [ATMOSPHERIC_PAR] ####
+    param['fhaze'] = 1e-36  # flux haze -- NOT IN USE
+    param['cld_frac'] = 1.0  # cloud fraction
+    param['adjust_VMR_gases'] = True  # All the gases are adjusted to compensate water condensation depletion
+    param['use_adaptive_grid'] = True  # Split the atmosphere altitude in the same number of layers below, within, and above the clouds
+    param['n_layer'] = 100  # Number of layers of the atmosphere
+    param['KE'] = 1.0  # Eddy diffusion coefficient in m2/s
+    param['opar'] = 3.0  # correct the Rossland mean opacity at low pressure
+
+    #### [MODEL_PAR] ####
+    param['fit_p0'] = False  # whether to fit the surface parameter during retrieval
+    param['fit_ag'] = False  # whether to fit the surface albedo during retrieval
+    param['surface_albedo_parameters'] = 1  # how many different surface albedo to fit if 'param['fit_ag']' is True (choose between 1, 3, 5)
+    param['gas_par_space'] = None  # which space definition to use to fit the gases (choose between 'partial_pressure', 'centered_log_ratio', 'clr', 'volume_mixing_ratio', or 'vmr')
+    param['mod_prior'] = True  # If 'clr' or 'centered_log_ratio' is chosen as space, then use the modified prior introduced in Damiano & Hu 2021
+    param['supported_molecules'] = ['H2O', 'NH3', 'CH4', 'H2S', 'SO2', 'CO2', 'CO', 'O2', 'O3', 'N2O', 'N2', 'He', 'H2']
+    for i in param['supported_molecules']:
+        param['fit_' + i] = False
+    param['H2_He_ratio'] = 0.85  # Hydrogen - Helium ratio of the filling portion of the atmosphere
+    param['O3_earth'] = False  # whether the O3 VMR is limited between two atmospheric pressure; 0 outside the band.
+    param['gas_fill'] = None  # which gas to consider as filler
+    param['fit_phi'] = False  # whether to fit the orbital phase angle during retrieval
+    param['fit_g'] = False  # whether to fit the planetary surface gravity during retrieval
+    param['fit_Mp'] = False  # whether to fit the planetary mass during retrieval
+    param['fit_Rp'] = False  # whether to fit the planetary radius during retrieval
+    param['fit_T'] = False  # whether to fit the planetary temperature during retrieval
+    # Type of prior function for the planetary radius and mass. Possibilities: independent, M_R_prior, R_M_prior, random_error
+    param['Rp_prior_type'] = 'independent'
+    param['Mp_prior_type'] = 'independent'
+    param['fit_wtr_cld'] = False  # whether to include and fit water cloud position during retrieval
+    param['fit_cld_frac'] = False  # whether to fit the cloud fraction during retrieval
+    param['fit_amm_cld'] = False  # whether to include and fit ammonia cloud position during retrieval
+    param['fit_p_size'] = False  # whether to fit particle size during retrieval
+    param['p_size_type'] = 'constant'  # type of particle size fitting. (choose between constant or factor)
+    param['albedo_calc'] = False  # whether the model return the albedo spectrum as output
+    param['fp_over_fs'] = False  # whether the model return the contrast ratio spectrum as output
+    param['flat_albedo'] = False  # whether to use a flat albedo model for the planet
+    param['flat_albedo_value'] = None  # which value to use for the flat albedo calculation [0.0, 1.0]
+    param['hazes'] = False  # whether to include and fit hazes during the retrieval
+
+    #### [MISC_PAR] ####
+    param['obs_numb'] = None  # Number of observations to be taken into account during retrieval
+    param['optimizer'] = None  # Which optimizer to use during retrieval. 'multinest' is the only possibility currently
+    param['gen_dataset_mode'] = False
+
+    #### [MULTINEST_PAR] ####
+    param['multimodal'] = True
+    param['max_modes'] = 100
+    param['ev_tolerance'] = 0.5
+    param['nlive_p'] = 2000
+    param['multinest_resume'] = True
+    param['multinest_verbose'] = False
+
+    #### [Plotting_Options_PAR] ####
+    param['wl_native'] = False  # use the opacity wl grid for the output
+    param['mol_custom_wl'] = False  # use a custom wl grid for the output
+    param['filter_multi_solutions'] = False  # whether to filter low Bayesian evidence solutions
+    param['plot_models'] = False  # whether to plot spectrum, surface, and atmospheric chemistry graphs
+    param['plot_contribution'] = False  # whether to plot the spectral contribution of the individual gases
+    param['plot_posterior'] = False  # whether to plot the marginalized posterior distribution functions
+    param['truths'] = None  # whether to also plot the truths value in the posterior plot
+    param['calc_likelihood_data'] = False
+    param['n_likelihood_data'] = 10240
+
+    #### [Create_spectrum_PAR] ####
+    param['add_noise'] = False
+    param['gaussian_noise'] = False
+    param['noise_model'] = 0
+    param['snr'] = 20
+    param['return_bins'] = False
 
     mm = {'H': 1.00784, 'He': 4.002602, 'C': 12.0107, 'N': 14.0067, 'O': 15.9994, 'S': 32.065}
     mm['H2'] = mm['H'] * 2.
@@ -95,34 +142,6 @@ def take_standard_parameters(pkg_dir):
             param['formatted_labels'][mol] = "Log(N$_2$)"
         if mol == 'H2':
             param['formatted_labels'][mol] = "Log(H$_2$)"
-
-    return param
-
-
-def default_parameters():
-    param = {}
-
-    #### [STAR] ####
-    param['Rs'] = None  # Star radius
-    param['Ts'] = None  # Star temperature
-    param['distance'] = None  # star distance from the Sun [pc]
-    param['meta'] = None  # star metallicity [M / H]
-
-    #### [PLANET] ####
-    param['name_p'] = None  # Planet name
-    param['major-a'] = None  # Planet semi-major axis
-    param['eccentricity'] = None  # Planet eccentricity
-    param['inclination'] = 90.0  # Planet inclination. 90.0 deg -> edge on. 0.0 deg -> face on [deg]
-    param['Rp'] = None  # Planet radius [Jupiter radii]
-    param['Rp_err'] = None  # Planet radius error
-    param['Mp'] = None  # Planet mass [Jupiter mass]
-    param['Mp_err'] = None  # Planet mass error
-    param['gp'] = None  # Planet surface gravity [m/s^2]
-    param['Tirr'] = 394.109  # Irradiation Temperature at 1 AU related to the Sun case [K]
-    param['Tint'] = 110.0  # Intrinsic (internal) Temperature [K]
-    param['phi'] = None  # Phase angle [deg]
-    param['P0'] = None  # Surface pressure [Pa]
-    param['Ag'] = None  # Surface albedo
 
     return param
 
@@ -214,6 +233,12 @@ def read_parfile(param, parfile=None):
         param['rocky'] = True
     else:
         param['rocky'] = False
+        param['fit_p0'] = False
+        param['P0'] = 10 ** 11.5
+        param['fit_ag'] = False
+        param['Ag'] = 0.0
+        param['gas_par_space'] = 'vmr'
+        param['gas_fill'] = 'H2'
 
     if param['Mp'] is not None:
         param['Mp_orig'] = param['Mp'] + 0.0
@@ -300,11 +325,7 @@ def par_and_calc(param):
     param['F_ave'] = F_ave
     param['Tirr'] /= (param['equivalent_a'] ** 0.5)
 
-    if param['rocky']:
-        param['P_standard'] = 10. ** np.arange(0.0, 12.01, step=0.01)
-    else:
-        param['P'] = np.loadtxt(param['pkg_dir'] + 'forward_gas_mod/Data/Pressure_grid.dat')  # in Pa
-        param['wavelength_planet'] = np.loadtxt(param['pkg_dir'] + 'forward_gas_mod/Data/wave.dat')  # in nanometer
+    param['P_standard'] = 10. ** np.arange(0.0, 12.01, step=0.01)
 
     if param['obs_numb'] is None:
         if not param['fit_phi']:
@@ -318,54 +339,18 @@ def par_and_calc(param):
 
 
 def calc_mean_mol_mass(param):
-    if not param['rocky']:
-        vmr_M = 0.0
+    param['mean_mol_weight'] = np.zeros(len(param['P']))
+    for i in range(0, len(param['P'])):
         for mol in param['fit_molecules']:
-            if mol != 'H2O' and mol != 'NH3':
-                vmr_M += param['vmr_' + mol]
-
-        if param['fit_wtr_cld']:
-            vmr_M += np.mean(param['watermix'])
-        else:
-            vmr_M += param['vmr_H2O']
-
-        if param['fit_amm_cld']:
-            vmr_M += np.mean(param['ammoniamix'])
-        else:
-            vmr_M += param['vmr_NH3']
-
-        param['vmr_H2'] = 0.75 * ((10. ** 0.0) - vmr_M)
-        param['vmr_He'] = 0.25 * ((10. ** 0.0) - vmr_M)
-
-        param['mean_mol_weight'] = (param['vmr_H2'] * param['mm']['H2']) + \
-                                   (param['vmr_He'] * param['mm']['He']) + \
-                                   (param['vmr_CH4'] * param['mm']['CH4']) + \
-                                   (param['vmr_H2S'] * param['mm']['H2S'])
-
-        if param['fit_wtr_cld']:
-            param['mean_mol_weight'] += np.mean(param['watermix']) * param['mm']['H2O']
-        else:
-            param['mean_mol_weight'] += param['vmr_H2O'] * param['mm']['H2O']
-
-        if param['fit_amm_cld']:
-            param['mean_mol_weight'] += np.mean(param['ammoniamix']) * param['mm']['NH3']
-        else:
-            param['mean_mol_weight'] += param['vmr_NH3'] * param['mm']['NH3']
-
-        if not param['ret_mode']:
-            print('VMR H2 \t\t = \t' + str(param['vmr_H2']))
-            print('mu \t\t = \t' + str(param['mean_mol_weight']))
-
-    else:
-        param['mean_mol_weight'] = np.zeros(len(param['P']))
-        for i in range(0, len(param['P'])):
-            for mol in param['fit_molecules']:
-                param['mean_mol_weight'][i] += param['vmr_' + mol][i] * param['mm'][mol]
-            if param['gas_fill'] is not None:
+            param['mean_mol_weight'][i] += param['vmr_' + mol][i] * param['mm'][mol]
+        if param['gas_fill'] is not None:
+            if param['rocky']:
                 param['mean_mol_weight'][i] += param['vmr_' + param['gas_fill']][i] * param['mm'][param['gas_fill']]
+            else:
+                param['mean_mol_weight'][i] += (param['vmr_' + param['gas_fill']][i] * param['mm'][param['gas_fill']]) + (param['vmr_He'][i] * param['mm']['He'])
 
-        if not param['ret_mode']:
-            print('mu \t\t = \t' + str(param['mean_mol_weight'][-1]))
+    if not param['ret_mode']:
+        print('mu \t\t = \t' + str(param['mean_mol_weight'][-1]))
 
     return param
 
@@ -421,18 +406,18 @@ def load_input_spectrum(param):
             sys.exit()
     else:
         try:
-            spectrum = np.loadtxt(param['pkg_dir'] + 'forward_gas_mod/Data/wl_bins/' + param['wave_file'] + '.dat')
+            spectrum = np.loadtxt(param['pkg_dir'] + 'forward_mod/Data/wl_bins/' + param['wave_file'] + '.dat')
         except KeyError:
             if param['rocky']:
                 # standard wavelength bin at R = 500 in 0.15 - 2.0 micron
-                spectrum = np.loadtxt(param['pkg_dir'] + 'forward_gas_mod/Data/wl_bins/bins_02_20_R500.dat')
+                spectrum = np.loadtxt(param['pkg_dir'] + 'forward_mod/Data/wl_bins/bins_02_20_R500.dat')
             else:
                 # standard wavelength bin at R = 500 in the optical wavelength 0.4 - 1.0 micron
-                spectrum = np.loadtxt(param['pkg_dir'] + 'forward_gas_mod/Data/wl_bins/bins_04_10_R500.dat')
+                spectrum = np.loadtxt(param['pkg_dir'] + 'forward_mod/Data/wl_bins/bins_04_10_R500.dat')
         except FileNotFoundError:
-            print('File "' + param['pkg_dir'] + 'forward_gas_mod/Data/wl_bins/' + param['wave_file'] + '.dat" not found. Using the native wavelength bins of opacities.')
+            print('File "' + param['pkg_dir'] + 'forward_mod/Data/wl_bins/' + param['wave_file'] + '.dat" not found. Using the native wavelength bins of opacities.')
             param['wl_native'] = True
-            spectrum = np.loadtxt(param['pkg_dir'] + 'forward_gas_mod/Data/wl_bins/bins_02_20_R500.dat')
+            spectrum = np.loadtxt(param['pkg_dir'] + 'forward_mod/Data/wl_bins/bins_02_20_R500.dat')
 
         param['spectrum'] = {}
         try:
@@ -532,153 +517,55 @@ def particlesizef(g, T, P, M, MM, KE, deltaP):
     return r0, r1, r2, VP
 
 
-def cloud_pos(param):
-    if param['fit_wtr_cld'] and param['fit_amm_cld']:
-        pos_clda = int(find_nearest(param['P'], param['Pa_top']))
+def cloud_pos(param, condensed_gas='H2O'):
+    if condensed_gas == 'H2O':
+        short_name = 'wtr'
+        initial_letter = 'w'
+    elif condensed_gas == 'NH3':
+        short_name = 'amm'
+        initial_letter = 'a'
 
-        if (param['clda_depth'] + param['P'][pos_clda]) > param['P'][-1]:
-            param['clda_depth'] = param['P'][-1] - param['P'][pos_clda]
-
-        pabot = int(find_nearest(param['P'], (param['clda_depth'] + param['P'][pos_clda])))
-
-        depth_a = pabot - pos_clda
-        if depth_a == 0:
-            depth_a = 1
-
-        pos_cldw = int(find_nearest(param['P'], (param['Pw_top'] + param['P'][pabot])))
-        if (pos_cldw - pabot) == 0:
-            pos_cldw += 1
-
-        if pos_cldw >= len(param['P']):
-            pos_cldw = len(param['P']) - 1
-
-        if (param['cldw_depth'] + param['P'][pos_cldw]) > param['P'][-1]:
-            param['cldw_depth'] = param['P'][-1] - param['P'][pos_cldw]
-
-        pwbot = int(find_nearest(param['P'], (param['cldw_depth'] + param['P'][pos_cldw])))
-
-        depth_w = pwbot - pos_cldw
-        if depth_w == 0:
-            depth_w = 1
-
-    elif param['fit_wtr_cld'] and not param['fit_amm_cld']:
-        pos_cldw = int(find_nearest(param['P'], param['Pw_top']))
-
-        if (param['cldw_depth'] + param['P'][pos_cldw]) > param['P'][-1]:
-            param['cldw_depth'] = param['P'][-1] - param['P'][pos_cldw]
-
-        pwbot = int(find_nearest(param['P'], (param['cldw_depth'] + param['P'][pos_cldw])))
-
-        depth_w = pwbot - pos_cldw
-        if depth_w == 0:
-            depth_w = 1
-
-    elif param['fit_amm_cld'] and not param['fit_wtr_cld']:
-        pos_clda = int(find_nearest(param['P'], param['Pa_top']))
-
-        if (param['clda_depth'] + param['P'][pos_clda]) > param['P'][-1]:
-            param['clda_depth'] = param['P'][-1] - param['P'][pos_clda]
-
-        pabot = int(find_nearest(param['P'], (param['clda_depth'] + param['P'][pos_clda])))
-
-        depth_a = pabot - pos_clda
-        if depth_a == 0:
-            depth_a = 1
-
-    table = np.zeros((len(param['P']), 2))
-
-    if param['fit_wtr_cld']:
-        watermix = np.ones((len(param['P']))) * (param['CR_H2O'] * param['vmr_H2O'])
-        dw = (np.log10(param['vmr_H2O']) - np.log10(param['CR_H2O'] * param['vmr_H2O'])) / depth_w
-        for i in range(0, len(watermix)):
-            if i <= pos_cldw:
-                pass
-            elif pos_cldw < i <= pos_cldw + depth_w:
-                watermix[i] = 10. ** (np.log10(watermix[i - 1]) + dw)
-            elif i > pos_cldw + depth_w:
-                watermix[i] = watermix[i - 1]
-
-        # watermix = np.loadtxt('/Users/mdamiano/packages/ExoReL/forward_mod/Result/Retrieval/watermix.dat')
-        # watermix = np.loadtxt('/Users/mdamiano/Documents/Projects/Retrival/Code_gasplanet_ORIGINAL/Result/47Umab_real_meta1.5_opar3_Tint110_fhaze1.00e-36/watermix.dat')
-
-        for i in range(0, len(watermix) - 1):
-            if watermix[i] != watermix[i + 1]:
-                table[i, 0] = float(1)
-            else:
-                pass
-    else:
-        watermix = np.ones((len(param['P']))) * param['vmr_H2O']
-
-    if param['fit_amm_cld']:
-        ammoniamix = np.ones((len(param['P']))) * (param['CR_NH3'] * param['vmr_NH3'])
-        da = (np.log10(param['vmr_NH3']) - np.log10(param['CR_NH3'] * param['vmr_NH3'])) / depth_a
-        for i in range(0, len(ammoniamix)):
-            if i <= pos_clda:
-                pass
-            elif pos_clda < i <= pos_clda + depth_a:
-                ammoniamix[i] = 10. ** (np.log10(ammoniamix[i - 1]) + da)
-            elif i > pos_clda + depth_a:
-                ammoniamix[i] = ammoniamix[i - 1]
-
-        # ammoniamix = np.loadtxt('/Users/mdamiano/packages/ExoReL/forward_mod/Result/Retrieval/ammoniamix.dat')
-        # ammoniamix = np.loadtxt('/Users/mdamiano/Documents/Projects/Retrival/Code_gasplanet_ORIGINAL/Result/47Umab_real_meta1.5_opar3_Tint110_fhaze1.00e-36/ammoniamix.dat')
-
-        for i in range(0, len(ammoniamix) - 1):
-            if ammoniamix[i] != ammoniamix[i + 1]:
-                table[i, 1] = float(1)
-            else:
-                pass
-    else:
-        ammoniamix = np.ones((len(param['P']))) * param['vmr_NH3']
-
-    param['watermix'] = watermix
-    param['ammoniamix'] = ammoniamix
-    param['cld_pos'] = table
-    return param
-
-
-def cloud_rocky_pos(param):
-    if param['fit_wtr_cld']:
+    if param['fit_' + short_name + '_cld']:
         # if param['Pw_top'] > param['P'][-1]:
-        if param['Pw_top'] > param['P'][-1] or (param['Pw_top'] + param['cldw_depth']) > param['P'][-1]:
+        if param['P' + initial_letter + '_top'] > param['P'][-1] or (param['P' + initial_letter + '_top'] + param['cld' + initial_letter + '_depth']) > param['P'][-1]:
             no_cloud = True
         else:
             no_cloud = False
 
         if not no_cloud:
-            pos_cldw = int(find_nearest(param['P_standard'], param['Pw_top']))
+            pos_cld = int(find_nearest(param['P_standard'], param['P' + initial_letter + '_top']))
 
-            if (param['cldw_depth'] + param['P_standard'][pos_cldw]) > param['P_standard'][-1]:
-                param['cldw_depth'] = param['P_standard'][-1] - param['P_standard'][pos_cldw]
+            if (param['cld' + initial_letter + '_depth'] + param['P_standard'][pos_cld]) > param['P_standard'][-1]:
+                param['cld' + initial_letter + '_depth'] = param['P_standard'][-1] - param['P_standard'][pos_cld]
 
-            pwbot = int(find_nearest(param['P_standard'], (param['cldw_depth'] + param['P_standard'][pos_cldw])))
+            pbot = int(find_nearest(param['P_standard'], (param['cld' + initial_letter + '_depth'] + param['P_standard'][pos_cld])))
 
-            depth_w = pwbot - pos_cldw
-            if depth_w == 0:
-                return np.ones((len(param['P']))) * param['vmr_H2O']
+            depth_layers = pbot - pos_cld
+            if depth_layers == 0:
+                return np.ones((len(param['P']))) * param['vmr_' + condensed_gas]
             else:
                 pass
 
-            watermix = np.ones((len(param['P_standard']))) * (param['CR_H2O'] * param['vmr_H2O'])
-            dw = (np.log10(param['vmr_H2O']) - np.log10(param['CR_H2O'] * param['vmr_H2O'])) / depth_w
-            for i in range(0, len(watermix)):
-                if i <= pos_cldw:
+            mix = np.ones((len(param['P_standard']))) * (param['CR_' + condensed_gas] * param['vmr_' + condensed_gas])
+            d = (np.log10(param['vmr_' + condensed_gas]) - np.log10(param['CR_' + condensed_gas] * param['vmr_' + condensed_gas])) / depth_layers
+            for i in range(0, len(mix)):
+                if i <= pos_cld:
                     pass
-                elif pos_cldw < i <= pos_cldw + depth_w:
-                    watermix[i] = 10. ** (np.log10(watermix[i - 1]) + dw)
-                elif i > pos_cldw + depth_w:
-                    watermix[i] = watermix[i - 1]
-            watermix = watermix[:len(param['P'])]
+                elif pos_cld < i <= pos_cld + depth_layers:
+                    mix[i] = 10. ** (np.log10(mix[i - 1]) + d)
+                elif i > pos_cld + depth_layers:
+                    mix[i] = mix[i - 1]
+            mix = mix[:len(param['P'])]
         else:
-            watermix = np.ones((len(param['P']))) * param['vmr_H2O']
+            mix = np.ones((len(param['P']))) * param['vmr_' + condensed_gas]
     else:
-        watermix = np.ones((len(param['P']))) * param['vmr_H2O']
+        mix = np.ones((len(param['P']))) * param['vmr_' + condensed_gas]
 
-    return watermix
+    return mix
     # return gaussian_filter1d(watermix, 1, mode='nearest')
 
 
-def adjust_VMR(param, all_gases=True):
+def adjust_VMR(param, all_gases=True, condensed_gas='H2O'):
     if all_gases:
         if param['gas_fill'] is None:
             n_gases = len(param['fit_molecules']) - 1
@@ -702,10 +589,10 @@ def adjust_VMR(param, all_gases=True):
 
         res = np.zeros(n_gases)
         for mol in mol_to_determine:
-            param['vmr_' + mol] = np.zeros(len(param['vmr_H2O']))
+            param['vmr_' + mol] = np.zeros(len(param['vmr_' + condensed_gas]))
 
-        for i in range(0, len(param['vmr_H2O'])):
-            res[-1] = 1.0 - param['vmr_H2O'][i]
+        for i in range(0, len(param['vmr_' + condensed_gas])):
+            res[-1] = 1.0 - param['vmr_' + condensed_gas][i]
             v_m_r = np.linalg.solve(matrx, res)
             for m, mol in enumerate(mol_to_determine):
                 param['vmr_' + mol][i] = v_m_r[m]
@@ -719,15 +606,19 @@ def adjust_VMR(param, all_gases=True):
         else:
             considered_fill = param['gas_fill']
 
-        v_m_r = np.zeros(len(param['vmr_H2O']))
+        v_m_r = np.zeros(len(param['vmr_' + condensed_gas]))
         for mol in param['fit_molecules']:
-            if mol == 'H2O' or mol == considered_fill:
+            if mol == condensed_gas or mol == considered_fill:
                 pass
             else:
-                param['vmr_' + mol] = np.ones(len(param['vmr_H2O'])) * param['vmr_' + mol]
+                param['vmr_' + mol] = np.ones(len(param['vmr_' + condensed_gas])) * param['vmr_' + mol]
                 v_m_r += param['vmr_' + mol]
 
-        param['vmr_' + considered_fill] = np.ones(len(param['vmr_H2O'])) - v_m_r - param['vmr_H2O']
+        param['vmr_' + considered_fill] = np.ones(len(param['vmr_' + condensed_gas])) - v_m_r - param['vmr_' + condensed_gas]
+
+    if not param['rocky'] and (param['H2_He_ratio'] > 0):
+        param['vmr_He'] = param['vmr_' + param['gas_fill']] * (1.0 - param['H2_He_ratio'])
+        param['vmr_' + param['gas_fill']] *= param['H2_He_ratio']
 
     return param
 
@@ -743,42 +634,39 @@ def ozone_earth_mask(param):
 
 
 def ranges(param):
+    if param['fit_p0'] and param['gas_par_space'] != 'partial_pressure':
+        param['p0_range'] = [4.5, 8.0]             # Surface pressure
+
+    for mol in param['fit_molecules']:
+        if (param['gas_par_space'] == 'centered_log_ratio' or param['gas_par_space'] == 'clr') and not param['mod_prior']:
+            param['clr' + mol + '_range'] = [-25.0, 25.0]  # centered-log-ratio ranges
+        elif param['gas_par_space'] == 'volume_mixing_ratio' or param['gas_par_space'] == 'vmr':
+            param['vmr' + mol + '_range'] = [-12.0, 0.0]  # volume mixing ratio ranges
+        elif param['gas_par_space'] == 'partial_pressure':
+            param['pp' + mol + '_range'] = [-7.0, 7.0]  # partial pressure ranges
+
+    if param['fit_ag']:
+        if param['surface_albedo_parameters'] == int(1):
+            param['ag_range'] = [0.0, 1.0]  # Surface albedo
+        elif param['surface_albedo_parameters'] == int(3):
+            for surf_alb in [1, 2]:
+                param['ag' + str(surf_alb) + '_range'] = [0.0, 1.0]  # Surface albedo
+            param['ag_x1_range'] = [0.4, 1.0]  # wavelength cut-off albedo
+        elif param['surface_albedo_parameters'] == int(5):
+            for surf_alb in [1, 2, 3]:
+                param['ag' + str(surf_alb) + '_range'] = [0.0, 1.0]  # Surface albedo
+            param['ag_x1_range'] = [0.4, 0.8]  # wavelength cut-off albedo
+            param['ag_x2_range'] = [0.01, 0.5]
+
+    if param['fit_T']:
+        param['tp_range'] = [0.0, 700.0]            # Atmospheric equilibrium temperature
+
     if not param['rocky']:
-        param['ch2o_range'] = [-12.0, 0.0]              # concentration of H2O
-        param['cnh3_range'] = [-12.0, 0.0]              # concentration of NH3
-        param['cch4_range'] = [-12.0, 0.0]              # concentration of CH4
-        if param['fit_amm_cld']:
-            param['ptopa_range'] = [0.0, 8.0]           # Top pressure NH3
-            param['dclda_range'] = [0.0, 8.5]           # Depth NH3 cloud
-            param['crnh3_range'] = [-12.0, 0.0]         # Condensation Ratio NH3
+        if param['fit_Rp']: 
+            param['Rp_range'] = [0.1, 20.0]              # Planet radius - 0.1 to 20 Jupiter radii
+        if param['fit_Mp']:
+            param['Mp_range'] = [0.1, 20.0]              # Planet radius - 0.1 to 20 Jupiter masses
     else:
-        if param['fit_p0'] and param['gas_par_space'] != 'partial_pressure':
-            param['p0_range'] = [4.5, 7.0]             # Surface pressure
-
-        for mol in param['fit_molecules']:
-            if (param['gas_par_space'] == 'centered_log_ratio' or param['gas_par_space'] == 'clr') and not param['mod_prior']:
-                param['clr' + mol + '_range'] = [-25.0, 25.0]  # centered-log-ratio ranges
-            elif param['gas_par_space'] == 'volume_mixing_ratio' or param['gas_par_space'] == 'vmr':
-                param['vmr' + mol + '_range'] = [-10.0, 0.0]  # volume mixing ratio ranges
-            elif param['gas_par_space'] == 'partial_pressure':
-                param['pp' + mol + '_range'] = [-7.0, 7.0]  # partial pressure ranges
-
-        if param['fit_ag']:
-            if param['surface_albedo_parameters'] == int(1):
-                param['ag_range'] = [0.0, 1.0]  # Surface albedo
-            elif param['surface_albedo_parameters'] == int(3):
-                for surf_alb in [1, 2]:
-                    param['ag' + str(surf_alb) + '_range'] = [0.0, 1.0]  # Surface albedo
-                param['ag_x1_range'] = [0.4, 1.0]  # wavelength cut-off albedo
-            elif param['surface_albedo_parameters'] == int(5):
-                for surf_alb in [1, 2, 3]:
-                    param['ag' + str(surf_alb) + '_range'] = [0.0, 1.0]  # Surface albedo
-                param['ag_x1_range'] = [0.4, 0.8]  # wavelength cut-off albedo
-                param['ag_x2_range'] = [0.01, 0.5]
-
-        if param['fit_T']:
-            param['tp_range'] = [0.0, 700.0]            # Atmospheric equilibrium temperature
-
         if param['fit_Mp'] and param['fit_Rp']:
             if (param['Rp_prior_type'] is None or param['Rp_prior_type'] == 'independent') and (param['Mp_prior_type'] is None or param['Mp_prior_type'] == 'independent'):
                 param['Mp_range'] = [0.000032, 0.06]                                     # Planet mass 0.01 to 19 Earth masses
@@ -801,24 +689,31 @@ def ranges(param):
         else:
             pass
 
-        if param['fit_p_size'] and param['p_size_type'] == 'constant':
-            param['p_size_range'] = [-1.0, 2.0]
-        elif param['fit_p_size'] and param['p_size_type'] == 'factor':
-            param['p_size_range'] = [-1.0, 1.0]
-        else:
-            pass
+    if param['fit_g']:
+        param['gp_range'] = [1.0, 6.0]  # Gravity
 
-        if param['fit_cld_frac']:
-            param['cld_frac_range'] = [-3.0, 0.0]
+    if param['fit_p_size'] and param['p_size_type'] == 'constant':
+        param['p_size_range'] = [-1.0, 2.0]
+    elif param['fit_p_size'] and param['p_size_type'] == 'factor':
+        param['p_size_range'] = [-1.0, 1.0]
+    else:
+        pass
+
+    if param['fit_cld_frac']:
+        param['cld_frac_range'] = [-3.0, 0.0]
 
     if param['fit_wtr_cld']:
-        param['ptopw_range'] = [2.0, 7.0]               # Top pressure H2O
-        param['dcldw_range'] = [2.0, 7.0]               # Depth H2O cloud
-        param['crh2o_range'] = [-7.0, 0.0]             # Condensation Ratio H2O
-    if param['fit_g']:
-        param['gp_range'] = [1.0, 6.0]                  # Gravity
+        param['ptopw_range'] = [2.0, 7.0]       # Top pressure H2O
+        param['dcldw_range'] = [2.0, 7.0]       # Depth H2O cloud
+        param['crh2o_range'] = [-7.0, 0.0]      # Condensation Ratio H2O
+
+    if param['fit_amm_cld']:
+        param['ptopa_range'] = [2.0, 8.0]       # Top pressure NH3
+        param['dclda_range'] = [2.0, 8.5]       # Depth NH3 cloud
+        param['crnh3_range'] = [-7.0, 0.0]      # Condensation Ratio NH3
+
     if param['fit_phi']:
-        param['phi_range'] = [0.0, 180.0]               # Phase Angle
+        param['phi_range'] = [0.0, 180.0]       # Phase Angle
 
     return param
 
@@ -982,7 +877,7 @@ def take_star_spectrum(param, plot=False):
 
     for i in range(0, len(wl) - 1):
         new_wl.append(float((wl[i] + wl[i + 1]) / 2.0) * 1.0e-4)
-        new_sp.append(float(trapz(np.array([sp[i], sp[i + 1]]), x=np.array([wl[i], wl[i + 1]]))))
+        new_sp.append(float(trapezoid(np.array([sp[i], sp[i + 1]]), x=np.array([wl[i], wl[i + 1]]))))
 
     wl = np.array(new_wl)                                                               # micron
     sp = np.array(new_sp)                                                               # W/m^2
@@ -1009,171 +904,99 @@ def take_star_spectrum(param, plot=False):
 
 def pre_load_variables(param):
     if not param['rocky']:
-        # Solar Spectrum
-        data = np.loadtxt(param['pkg_dir'] + 'forward_gas_mod/PlanetModel/RayleightOpa/solar.txt')
-        tck = interp1d(data[:, 0], data[:, 1])
-        param['solar'] = tck(param['wavelength_planet'])
-
-        # Methane Opacity
-        data = np.loadtxt(param['pkg_dir'] + 'forward_gas_mod/PlanetModel/MethaneOpa/CH4cross.txt')
-        tck = interp1d(data[:, 0], data[:, 1])
-        param['crossCH4'] = tck(param['wavelength_planet'])
-
-        # Ammonia Opacity
-        data = np.loadtxt(param['pkg_dir'] + 'forward_gas_mod/PlanetModel/MethaneOpa/NH3cross.txt')
-        tck = interp1d(data[:, 0], data[:, 1])
-        param['crossNH3'] = tck(param['wavelength_planet'])
-
-        # Water Opacity
-        data = np.loadtxt(param['pkg_dir'] + 'forward_gas_mod/PlanetModel/MethaneOpa/H2Ocross.txt')
-        tck = interp1d(data[:, 0], data[:, 1])
-        param['crossH2O'] = tck(param['wavelength_planet'])
-
-        # E2
-        param['E2'] = np.loadtxt(param['pkg_dir'] + 'forward_gas_mod/PlanetModel/E2.dat')
-
-        #    cloud output
-        data = np.loadtxt(param['pkg_dir'] + 'forward_gas_mod/PlanetModel/CrossP/cross_H2OLiquid_M.dat')
-        param['H2OL_r'] = data[:, 0]  # zero-order radius, in micron
-        param['H2OL_c'] = data[:, 1:]  # cross-section per droplet, in cm2
-        data = np.loadtxt(param['pkg_dir'] + 'forward_gas_mod/PlanetModel/CrossP/albedo_H2OLiquid_M.dat')
-        param['H2OL_a'] = data[:, 1:]
-        data = np.loadtxt(param['pkg_dir'] + 'forward_gas_mod/PlanetModel/CrossP/geo_H2OLiquid_M.dat')
-        param['H2OL_g'] = data[:, 1:]
-
-        data = np.loadtxt(param['pkg_dir'] + 'forward_gas_mod/PlanetModel/CrossP/cross_H2OIce_M.dat')
-        param['H2OI_r'] = data[:, 0]
-        param['H2OI_c'] = data[:, 1:]
-        data = np.loadtxt(param['pkg_dir'] + 'forward_gas_mod/PlanetModel/CrossP/albedo_H2OIce_M.dat')
-        param['H2OI_a'] = data[:, 1:]
-        data = np.loadtxt(param['pkg_dir'] + 'forward_gas_mod/PlanetModel/CrossP/geo_H2OIce_M.dat')
-        param['H2OI_g'] = data[:, 1:]
-
-        data = np.loadtxt(param['pkg_dir'] + 'forward_gas_mod/PlanetModel/CrossP/cross_NH3Ice_M.dat')
-        param['NH3I_r'] = data[:, 0]
-        param['NH3I_c'] = data[:, 1:]
-        data = np.loadtxt(param['pkg_dir'] + 'forward_gas_mod/PlanetModel/CrossP/albedo_NH3Ice_M.dat')
-        param['NH3I_a'] = data[:, 1:]
-        data = np.loadtxt(param['pkg_dir'] + 'forward_gas_mod/PlanetModel/CrossP/geo_NH3Ice_M.dat')
-        param['NH3I_g'] = data[:, 1:]
-
-        # MH0-RM
-        data = np.genfromtxt(param['pkg_dir'] + 'forward_gas_mod/PlanetModel/MeanOpacity/MH0-RM.txt', delimiter='\t', dtype=float)
-        param['t_g'] = data[0, 1:]
-        param['p_g'] = data[1:, 0]
-        param['r_s'] = data[1:, 1:]
-
-    elif param['rocky']:
-        # Mass-Radius diagram
+    # Mass-Radius diagram
         if param['fit_Mp'] and param['fit_Rp']:
             if param['Rp_prior_type'] == 'R_M_prior':
-                M_R_Fe = np.loadtxt(param['pkg_dir'] + 'forward_rocky_mod/Data/Fe_mass_radius_jup.dat')
-                M_R_H2O = np.loadtxt(param['pkg_dir'] + 'forward_rocky_mod/Data/H2O_mass_radius_jup.dat')
+                M_R_Fe = np.loadtxt(param['pkg_dir'] + 'forward_mod/Data/Fe_mass_radius_jup.dat')
+                M_R_H2O = np.loadtxt(param['pkg_dir'] + 'forward_mod/Data/H2O_mass_radius_jup.dat')
                 param['R-M_Fe'] = interp1d(M_R_Fe[:, 1], M_R_Fe[:, 0])
                 param['R-M_H2O'] = interp1d(M_R_H2O[:, 1], M_R_H2O[:, 0])
             elif param['Mp_prior_type'] == 'M_R_prior':
-                M_R_Fe = np.loadtxt(param['pkg_dir'] + 'forward_rocky_mod/Data/Fe_mass_radius_jup.dat')
-                M_R_H2O = np.loadtxt(param['pkg_dir'] + 'forward_rocky_mod/Data/H2O_mass_radius_jup.dat')
+                M_R_Fe = np.loadtxt(param['pkg_dir'] + 'forward_mod/Data/Fe_mass_radius_jup.dat')
+                M_R_H2O = np.loadtxt(param['pkg_dir'] + 'forward_mod/Data/H2O_mass_radius_jup.dat')
                 param['M-R_Fe'] = interp1d(M_R_Fe[:, 0], M_R_Fe[:, 1])
                 param['M-R_H2O'] = interp1d(M_R_H2O[:, 0], M_R_H2O[:, 1])
             else:
                 pass
-        #    Load Mie Calculation Results
-        data = np.loadtxt(param['pkg_dir'] + 'forward_rocky_mod/PlanetModel/CrossP/Cross_water_wavelength.dat')
-        param['H2OL_r'] = data[:, 0]  # zero-order radius, in micron
-        param['H2OL_c'] = data[:, 1:]  # cross section per droplet, in cm2
-        data = np.loadtxt(param['pkg_dir'] + 'forward_rocky_mod/PlanetModel/CrossP/Albedo_water_wavelength.dat')
-        param['H2OL_a'] = data[:, 1:]
-        data = np.loadtxt(param['pkg_dir'] + 'forward_rocky_mod/PlanetModel/CrossP/Geo_water_wavelength.dat')
-        param['H2OL_g'] = data[:, 1:]
+    #  Load Mie Calculation Results
+    data = np.loadtxt(param['pkg_dir'] + 'forward_mod/PlanetModel/CrossP/Cross_water_wavelength.dat')
+    param['H2OL_r'] = data[:, 0]  # zero-order radius, in micron
+    param['H2OL_c'] = data[:, 1:]  # cross-section per droplet, in cm2
+    data = np.loadtxt(param['pkg_dir'] + 'forward_mod/PlanetModel/CrossP/Albedo_water_wavelength.dat')
+    param['H2OL_a'] = data[:, 1:]
+    data = np.loadtxt(param['pkg_dir'] + 'forward_mod/PlanetModel/CrossP/Geo_water_wavelength.dat')
+    param['H2OL_g'] = data[:, 1:]
 
     return param
 
 
 def retrieval_par_and_npar(param):
-    if not param['rocky']:
-        parameters = ["Log(H$_2$O)", "Log(NH$_3$)", "Log(CH$_4$)"]
-        if param['fit_wtr_cld']:
-            parameters.append("Log(P$_{top, H_2O}$)")
-            parameters.append("Log(D$_{H_2O}$)")
-            parameters.append("Log(CR$_{H_2O}$)")
-        if param['fit_amm_cld']:
-            parameters.append("Log(P$_{top, NH_3}$)")
-            parameters.append("Log(D$_{NH_3}$)")
-            parameters.append("Log(CR$_{NH_3}$)")
-        if param['fit_g']:
-            parameters.append("Log(g)")
+    parameters = []
+    if param['fit_p0']:
+        parameters.append("P$_0$")
+    if param['fit_wtr_cld']:
+        parameters.append("Log(P$_{top, H_2O}$)")
+        parameters.append("Log(D$_{H_2O}$)")
+        parameters.append("Log(CR$_{H_2O}$)")
+    if param['fit_amm_cld']:
+        parameters.append("Log(P$_{top, NH_3}$)")
+        parameters.append("Log(D$_{NH_3}$)")
+        parameters.append("Log(CR$_{NH_3}$)")
+    if param['fit_H2O']:
+        parameters.append("H$_2$O")
+    if param['fit_NH3']:
+        parameters.append("NH$_3$")
+    if param['fit_CH4']:
+        parameters.append("CH$_4$")
+    if param['fit_H2S']:
+        parameters.append("H$_2$S")
+    if param['fit_SO2']:
+        parameters.append("SO$_2$")
+    if param['fit_CO2']:
+        parameters.append("CO$_2$")
+    if param['fit_CO']:
+        parameters.append("CO")
+    if param['fit_O2']:
+        parameters.append("O$_2$")
+    if param['fit_O3']:
+        parameters.append("O$_3$")
+    if param['fit_N2O']:
+        parameters.append("N$_2$O")
+    if param['fit_N2']:
+        parameters.append("N$_2$")
+    if param['fit_H2']:
+        parameters.append("H$_2$")
+    if param['fit_ag']:
+        if param['surface_albedo_parameters'] == int(1):
+            parameters.append("$a_{surf}$")
+        elif param['surface_albedo_parameters'] == int(3):
+            parameters.append("$a_{surf, 1}$")
+            parameters.append("$a_{surf, 2}$")
+            parameters.append("$\lambda_{surf, 1}$")
+        elif param['surface_albedo_parameters'] == int(5):
+            parameters.append("$a_{surf, 1}$")
+            parameters.append("$a_{surf, 2}$")
+            parameters.append("$a_{surf, 3}$")
+            parameters.append("$\lambda_{surf, 1}$")
+            parameters.append("$\lambda_{surf, 2}$")
+    if param['fit_T']:
+        parameters.append("T$_p$")
+    if param['fit_cld_frac']:
+        parameters.append("cld frac")
+    if param['fit_g']:
+        parameters.append("Log(g)")
+    if param['fit_Mp']:
+        parameters.append("M$_p$")
+    if param['fit_Rp']:
+        parameters.append("R$_p$")
+    if param['fit_p_size']:
+        parameters.append("P$_{size}$")
+    if param['fit_phi']:
         if param['obs_numb'] is None:
-            if param['fit_phi']:
-                parameters.append("$\phi$")
+            parameters.append("$\phi$")
         else:
             for obs in range(0, param['obs_numb']):
-                if param['fit_phi']:
-                    parameters.append("$\phi_" + str(obs) + "$")
-
-    else:
-        parameters = []
-        if param['fit_p0']:
-            parameters.append("P$_0$")
-        if param['fit_wtr_cld']:
-            parameters.append("Log(P$_{top, H_2O}$)")
-            parameters.append("Log(D$_{H_2O}$)")
-            parameters.append("Log(CR$_{H_2O}$)")
-        if param['fit_H2O']:
-            parameters.append("H$_2$O")
-        if param['fit_NH3']:
-            parameters.append("NH$_3$")
-        if param['fit_CH4']:
-            parameters.append("CH$_4$")
-        if param['fit_H2S']:
-            parameters.append("H$_2$S")
-        if param['fit_SO2']:
-            parameters.append("SO$_2$")
-        if param['fit_CO2']:
-            parameters.append("CO$_2$")
-        if param['fit_CO']:
-            parameters.append("CO")
-        if param['fit_O2']:
-            parameters.append("O$_2$")
-        if param['fit_O3']:
-            parameters.append("O$_3$")
-        if param['fit_N2O']:
-            parameters.append("N$_2$O")
-        if param['fit_N2']:
-            parameters.append("N$_2$")
-        if param['fit_H2']:
-            parameters.append("H$_2$")
-        if param['fit_ag']:
-            if param['surface_albedo_parameters'] == int(1):
-                parameters.append("$a_{surf}$")
-            elif param['surface_albedo_parameters'] == int(3):
-                parameters.append("$a_{surf, 1}$")
-                parameters.append("$a_{surf, 2}$")
-                parameters.append("$\lambda_{surf, 1}$")
-            elif param['surface_albedo_parameters'] == int(5):
-                parameters.append("$a_{surf, 1}$")
-                parameters.append("$a_{surf, 2}$")
-                parameters.append("$a_{surf, 3}$")
-                parameters.append("$\lambda_{surf, 1}$")
-                parameters.append("$\lambda_{surf, 2}$")
-        if param['fit_T']:
-            parameters.append("T$_p$")
-        if param['fit_cld_frac']:
-            parameters.append("cld frac")
-        if param['fit_g']:
-            parameters.append("Log(g)")
-        if param['fit_Mp']:
-            parameters.append("M$_p$")
-        if param['fit_Rp']:
-            parameters.append("R$_p$")
-        if param['fit_p_size']:
-            parameters.append("P$_{size}$")
-        if param['fit_phi']:
-            if param['obs_numb'] is None:
-                parameters.append("$\phi$")
-            else:
-                for obs in range(0, param['obs_numb']):
-                    parameters.append("$\phi_" + str(obs) + "$")
+                parameters.append("$\phi_" + str(obs) + "$")
 
     return parameters, len(parameters)
 
@@ -1439,28 +1262,28 @@ def Rp_prior(param, cube, mp_value=None):
 
 
 def clean_c_files(directory):
-    file_list = glob.glob(directory + 'forward_rocky_mod/core_*.c')
+    file_list = glob.glob(directory + 'forward_mod/core_*.c')
     if len(file_list) > 0:
         for i in file_list:
             os.system('rm ' + i)
 
-    file_list = glob.glob(directory + 'forward_rocky_mod/par_*.h')
+    file_list = glob.glob(directory + 'forward_mod/par_*.h')
     if len(file_list) > 0:
         for i in file_list:
             os.system('rm ' + i)
 
-    file_list = glob.glob(directory + 'forward_rocky_mod/None*')
+    file_list = glob.glob(directory + 'forward_mod/None*')
     if len(file_list) > 0:
         for i in file_list:
             os.system('rm ' + i)
 
     for j in range(0, 10):
-        file_list = glob.glob(directory + 'forward_rocky_mod/' + str(j) + '*')
+        file_list = glob.glob(directory + 'forward_mod/' + str(j) + '*')
         if len(file_list) > 0:
             for i in file_list:
                 os.system('rm ' + i)
 
-    file_list = glob.glob(directory + 'forward_rocky_mod/Result/Retrieval_*')
+    file_list = glob.glob(directory + 'forward_mod/Result/Retrieval_*')
     if len(file_list) > 0:
         for i in file_list:
             os.system('rm -rf ' + i)

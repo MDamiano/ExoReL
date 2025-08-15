@@ -1,6 +1,7 @@
 from .__basics import *
 from .__utils import *
 from .__forward import *
+from . import __version__
 
 # trying to initiate MPI parallelization
 try:
@@ -48,6 +49,7 @@ class MULTINEST:
 
     def run_retrieval(self):
         if MPIimport and MPIrank == 0:
+            print(f"Running ExoReL – version {__version__}")
             # check if the run is done, in case clean c meta files
             if not os.path.isfile(self.param['out_dir'] + self.param['name_p'] + '_params.json'):
                 clean_c_files(self.param['pkg_dir'])
@@ -63,7 +65,7 @@ class MULTINEST:
 
         parameters, n_params = retrieval_par_and_npar(self.param)
         if (self.param['gas_par_space'] == 'clr' or self.param['gas_par_space'] == 'centered_log_ratio') and self.param['mod_prior']:
-            ppf = np.loadtxt(self.param['pkg_dir'] + 'forward_rocky_mod/Data/prior/prior_cube_' + str(len(self.param['fit_molecules'])) + 'gas.dat')
+            ppf = np.loadtxt(self.param['pkg_dir'] + 'forward_mod/Data/prior/prior_cube_' + str(len(self.param['fit_molecules'])) + 'gas.dat')
 
         self.param = MPI.COMM_WORLD.bcast(self.param, root=0)
 
@@ -73,72 +75,68 @@ class MULTINEST:
         def internal_model(cube, phi=None, n_obs=0, free_cld_calc=False, retrieval_mode=True):
             evaluation = {}
             par = 0
-            if not self.param['rocky']:
-                evaluation['vmr_H2O'], evaluation['vmr_NH3'], evaluation['vmr_CH4'] = (10.0 ** cube[par]), (10.0 ** cube[par + 1]), (10.0 ** cube[par + 2])  # H2O, NH3, CH4
+            if self.param['fit_p0'] and self.param['gas_par_space'] != 'partial_pressure':
+                evaluation['P0'] = (10.0 ** cube[par])  # P0, surface pressure
+                par += 1
+
+            if self.param['fit_wtr_cld'] and not free_cld_calc:
+                evaluation['pH2O'], evaluation['dH2O'], evaluation['crH2O'] = (10.0 ** cube[par]), (10.0 ** cube[par + 1]), (10.0 ** cube[par + 2])  # pH2O, dH2O, crH2O
                 par += 3
-                if self.param['fit_wtr_cld']:
-                    evaluation['pH2O'], evaluation['dH2O'], evaluation['crH2O'] = (10.0 ** cube[par]), (10.0 ** cube[par + 1]), (10.0 ** cube[par + 2])  # pH2O, dH2O, crH2O
-                    par += 3
-                if self.param['fit_amm_cld']:
-                    evaluation['pNH3'], evaluation['dNH3'], evaluation['crNH3'] = (10.0 ** cube[par]), (10.0 ** cube[par + 1]), (10.0 ** cube[par + 2])  # pNH3, dNH3, crNH3
-                    par += 3
-            else:
-                if self.param['fit_p0'] and self.param['gas_par_space'] != 'partial_pressure':
-                    evaluation['P0'] = (10.0 ** cube[par])  # P0, surface pressure
+            elif not self.param['fit_wtr_cld'] and free_cld_calc:
+                par += 3
+
+            if self.param['fit_amm_cld'] and not free_cld_calc:
+                evaluation['pNH3'], evaluation['dNH3'], evaluation['crNH3'] = (10.0 ** cube[par]), (10.0 ** cube[par + 1]), (10.0 ** cube[par + 2])  # pNH3, dNH3, crNH3
+                par += 3
+            elif not self.param['fit_amm_cld'] and free_cld_calc:
+                par += 3
+
+            if self.param['gas_par_space'] == 'centered_log_ratio' or self.param['gas_par_space'] == 'clr':
+                c_l_r = cube[par: par + len(self.param['fit_molecules'])]  # CLR Molecules
+                c_l_r.append(-np.sum(np.array(cube[par: par + len(self.param['fit_molecules'])])))
+                v_m_r = clr_inv(c_l_r)
+                for m, mol in enumerate(self.param['fit_molecules']):
+                    evaluation[mol] = v_m_r[m]
+                    par += 1
+                evaluation[self.param['gas_fill']] = 1.0
+                for mol in self.param['fit_molecules']:
+                    evaluation[self.param['gas_fill']] -= evaluation[mol]
+            elif self.param['gas_par_space'] == 'volume_mixing_ratio' or self.param['gas_par_space'] == 'vmr':
+                for mol in self.param['fit_molecules']:
+                    evaluation[mol] = 10.0 ** cube[par]
+                    par += 1
+                evaluation[self.param['gas_fill']] = 1.0
+                for mol in self.param['fit_molecules']:
+                    evaluation[self.param['gas_fill']] -= evaluation[mol]
+            elif self.param['gas_par_space'] == 'partial_pressure':
+                evaluation['P0'] = np.sum(10.0 ** np.array(cube[par: par + len(self.param['fit_molecules'])]))
+                for mol in self.param['fit_molecules']:
+                    evaluation[mol] = (10.0 ** cube[par]) / evaluation['P0']
                     par += 1
 
-                if self.param['fit_wtr_cld'] and not free_cld_calc:
-                    evaluation['pH2O'], evaluation['dH2O'], evaluation['crH2O'] = (10.0 ** cube[par]), (10.0 ** cube[par + 1]), (10.0 ** cube[par + 2])  # pH2O, dH2O, crH2O
-                    par += 3
-                elif not self.param['fit_wtr_cld'] and free_cld_calc:
-                    par += 3
-
-                if self.param['gas_par_space'] == 'centered_log_ratio' or self.param['gas_par_space'] == 'clr':
-                    c_l_r = cube[par: par + len(self.param['fit_molecules'])]  # CLR Molecules
-                    c_l_r.append(-np.sum(np.array(cube[par: par + len(self.param['fit_molecules'])])))
-                    v_m_r = clr_inv(c_l_r)
-                    for m, mol in enumerate(self.param['fit_molecules']):
-                        evaluation[mol] = v_m_r[m]
-                        par += 1
-                    evaluation[self.param['gas_fill']] = 1.0
-                    for mol in self.param['fit_molecules']:
-                        evaluation[self.param['gas_fill']] -= evaluation[mol]
-                elif self.param['gas_par_space'] == 'volume_mixing_ratio' or self.param['gas_par_space'] == 'vmr':
-                    for mol in self.param['fit_molecules']:
-                        evaluation[mol] = 10.0 ** cube[par]
-                        par += 1
-                    evaluation[self.param['gas_fill']] = 1.0
-                    for mol in self.param['fit_molecules']:
-                        evaluation[self.param['gas_fill']] -= evaluation[mol]
-                elif self.param['gas_par_space'] == 'partial_pressure':
-                    evaluation['P0'] = np.sum(10.0 ** np.array(cube[par: par + len(self.param['fit_molecules'])]))
-                    for mol in self.param['fit_molecules']:
-                        evaluation[mol] = (10.0 ** cube[par]) / evaluation['P0']
-                        par += 1
-
-                if self.param['fit_ag']:
-                    if self.param['surface_albedo_parameters'] == int(1):
-                        evaluation['ag'] = cube[par] + 0.0  # Ag, surface albedo
-                        par += 1
-                    elif self.param['surface_albedo_parameters'] == int(3):
-                        for surf_alb in [1, 2]:
-                            evaluation['ag' + str(surf_alb)] = cube[par + (surf_alb - 1)] + 0.0  # Ag, surface albedo
-                        evaluation['ag_x1'] = cube[par + surf_alb] + 0.0
-                        par += 3
-                    elif self.param['surface_albedo_parameters'] == int(5):
-                        for surf_alb in [1, 2, 3]:
-                            evaluation['ag' + str(surf_alb)] = cube[par + (surf_alb - 1)] + 0.0  # Ag, surface albedo
-                        evaluation['ag_x1'] = cube[par + surf_alb] + 0.0
-                        evaluation['ag_x2'] = cube[par + surf_alb + 1] + 0.0
-                        par += 5
-
-                if self.param['fit_T']:
-                    evaluation['Tp'] = cube[par] + 0.0  # Planetary temperature
+            if self.param['fit_ag']:
+                if self.param['surface_albedo_parameters'] == int(1):
+                    evaluation['ag'] = cube[par] + 0.0  # Ag, surface albedo
                     par += 1
+                elif self.param['surface_albedo_parameters'] == int(3):
+                    for surf_alb in [1, 2]:
+                        evaluation['ag' + str(surf_alb)] = cube[par + (surf_alb - 1)] + 0.0  # Ag, surface albedo
+                    evaluation['ag_x1'] = cube[par + surf_alb] + 0.0
+                    par += 3
+                elif self.param['surface_albedo_parameters'] == int(5):
+                    for surf_alb in [1, 2, 3]:
+                        evaluation['ag' + str(surf_alb)] = cube[par + (surf_alb - 1)] + 0.0  # Ag, surface albedo
+                    evaluation['ag_x1'] = cube[par + surf_alb] + 0.0
+                    evaluation['ag_x2'] = cube[par + surf_alb + 1] + 0.0
+                    par += 5
 
-                if self.param['fit_cld_frac']:
-                    self.param['cld_frac'] = (10.0 ** cube[par])  # cloud fraction
-                    par += 1
+            if self.param['fit_T']:
+                evaluation['Tp'] = cube[par] + 0.0  # Planetary temperature
+                par += 1
+
+            if self.param['fit_cld_frac']:
+                self.param['cld_frac'] = (10.0 ** cube[par])  # cloud fraction
+                par += 1
 
             if self.param['fit_g']:
                 evaluation['gp'] = cube[par] + 0.0  # g
@@ -173,60 +171,48 @@ class MULTINEST:
 
         def prior(cube, ndim, nparams):
             par = 0
-            if not self.param['rocky']:
-                cube[par] = cube[par] * (self.param['ch2o_range'][1] - self.param['ch2o_range'][0]) + self.param['ch2o_range'][0]  # uniform prior between -12  :  0     -> H2O
-                cube[par + 1] = cube[par + 1] * (self.param['cnh3_range'][1] - self.param['cnh3_range'][0]) + self.param['cnh3_range'][0]  # uniform prior between -12  :  0     -> NH3
-                cube[par + 2] = cube[par + 2] * (self.param['cch4_range'][1] - self.param['cch4_range'][0]) + self.param['cch4_range'][0]  # uniform prior between -12  :  0     -> CH4
+            if self.param['fit_p0'] and self.param['gas_par_space'] != 'partial_pressure':
+                cube[par] = (cube[par] * (self.param['p0_range'][1] - self.param['p0_range'][0])) + self.param['p0_range'][0]  # uniform prior between   3  :  11    -> P0, surface pressure
+                par += 1
+            if self.param['fit_wtr_cld']:
+                cube[par] = (cube[par] * (self.param['ptopw_range'][1] - self.param['ptopw_range'][0])) + self.param['ptopw_range'][0]  # uniform prior between   0  :  8     -> P H2O cloud top [Pa]
+                cube[par + 1] = (cube[par + 1] * (self.param['dcldw_range'][1] - self.param['dcldw_range'][0])) + self.param['dcldw_range'][0]  # uniform prior between   0  :  8.5   -> D H2O cloud [Pa]
+                cube[par + 2] = (cube[par + 2] * (self.param['crh2o_range'][1] - self.param['crh2o_range'][0])) + self.param['crh2o_range'][0]  # uniform prior between -12  :  0     -> CR H2O
                 par += 3
 
-                if self.param['fit_wtr_cld']:
-                    cube[par] = cube[par] * (self.param['ptopw_range'][1] - self.param['ptopw_range'][0]) + self.param['ptopw_range'][0]  # uniform prior between   0  :  8     -> P H2O cloud top [Pa]
-                    cube[par + 1] = cube[par + 1] * (self.param['dcldw_range'][1] - self.param['dcldw_range'][0]) + self.param['dcldw_range'][0]  # uniform prior between   0  :  8.5   -> D H2O cloud [Pa]
-                    cube[par + 2] = cube[par + 2] * (self.param['crh2o_range'][1] - self.param['crh2o_range'][0]) + self.param['crh2o_range'][0]  # uniform prior between -12  :  0     -> CR H2O
-                    par += 3
+            if self.param['fit_amm_cld']:
+                cube[par] = cube[par] * (self.param['ptopa_range'][1] - self.param['ptopa_range'][0]) + self.param['ptopa_range'][0]  # uniform prior between   0  :  8     -> P NH3 cloud top [Pa]
+                cube[par + 1] = cube[par + 1] * (self.param['dclda_range'][1] - self.param['dclda_range'][0]) + self.param['dclda_range'][0]  # uniform prior between   0  :  8.5   -> D H2O cloud [Pa]
+                cube[par + 2] = cube[par + 2] * (self.param['crnh3_range'][1] - self.param['crnh3_range'][0]) + self.param['crnh3_range'][0]  # uniform prior between -12  :  0     -> CR NH3
+                par += 3
 
-                if self.param['fit_amm_cld']:
-                    cube[par] = cube[par] * (self.param['ptopa_range'][1] - self.param['ptopa_range'][0]) + self.param['ptopa_range'][0]  # uniform prior between   0  :  8     -> P NH3 cloud top [Pa]
-                    cube[par + 1] = cube[par + 1] * (self.param['dclda_range'][1] - self.param['dclda_range'][0]) + self.param['dclda_range'][0]  # uniform prior between   0  :  8.5   -> D H2O cloud [Pa]
-                    cube[par + 2] = cube[par + 2] * (self.param['crnh3_range'][1] - self.param['crnh3_range'][0]) + self.param['crnh3_range'][0]  # uniform prior between -12  :  0     -> CR NH3
-                    par += 3
-            else:
-                if self.param['fit_p0'] and self.param['gas_par_space'] != 'partial_pressure':
-                    cube[par] = (cube[par] * (self.param['p0_range'][1] - self.param['p0_range'][0])) + self.param['p0_range'][0]  # uniform prior between   3  :  11    -> P0, surface pressure
+            for mol in self.param['fit_molecules']:
+                if self.param['gas_par_space'] == 'centered_log_ratio' or self.param['gas_par_space'] == 'clr':
+                    if self.param['mod_prior']:
+                        cube[par] = ppf[find_nearest(ppf[:, 0], cube[par]), 1]  # modified prior for clr
+                    else:
+                        cube[par] = (cube[par] * (self.param['clr' + mol + '_range'][1] - self.param['clr' + mol + '_range'][0])) + self.param['clr' + mol + '_range'][0]  # uniform clr prior between -25 : 25
+                elif self.param['gas_par_space'] == 'volume_mixing_ratio' or self.param['gas_par_space'] == 'vmr':
+                    cube[par] = (cube[par] * (self.param['vmr' + mol + '_range'][1] - self.param['vmr' + mol + '_range'][0])) + self.param['vmr' + mol + '_range'][0]  # uniform vmr prior between -12 : 0
+                elif self.param['gas_par_space'] == 'partial_pressure':
+                    cube[par] = (cube[par] * (self.param['pp' + mol + '_range'][1] - self.param['pp' + mol + '_range'][0])) + self.param['pp' + mol + '_range'][0]  # uniform partial pressure prior between -10 : 10
+                par += 1
+
+            if self.param['fit_ag']:
+                if self.param['surface_albedo_parameters'] == int(1):
+                    cube[par] = (cube[par] * (self.param['ag_range'][1] - self.param['ag_range'][0])) + self.param['ag_range'][0]  # uniform prior between   0.0  :  0.5     -> Ag, surface albedo
                     par += 1
-                if self.param['fit_wtr_cld']:
-                    cube[par] = (cube[par] * (self.param['ptopw_range'][1] - self.param['ptopw_range'][0])) + self.param['ptopw_range'][0]  # uniform prior between   0  :  8     -> P H2O cloud top [Pa]
-                    cube[par + 1] = (cube[par + 1] * (self.param['dcldw_range'][1] - self.param['dcldw_range'][0])) + self.param['dcldw_range'][0]  # uniform prior between   0  :  8.5   -> D H2O cloud [Pa]
-                    cube[par + 2] = (cube[par + 2] * (self.param['crh2o_range'][1] - self.param['crh2o_range'][0])) + self.param['crh2o_range'][0]  # uniform prior between -12  :  0     -> CR H2O
+                elif self.param['surface_albedo_parameters'] == int(3):
+                    for surf_alb in [1, 2]:
+                        cube[par + (surf_alb - 1)] = (cube[par + (surf_alb - 1)] * (self.param['ag' + str(surf_alb) + '_range'][1] - self.param['ag' + str(surf_alb) + '_range'][0])) + self.param['ag' + str(surf_alb) + '_range'][0]
+                    cube[par + surf_alb] = (cube[par + surf_alb] * (self.param['ag_x1_range'][1] - self.param['ag_x1_range'][0])) + self.param['ag_x1_range'][0]
                     par += 3
-
-                for mol in self.param['fit_molecules']:
-                    if self.param['gas_par_space'] == 'centered_log_ratio' or self.param['gas_par_space'] == 'clr':
-                        if self.param['mod_prior']:
-                            cube[par] = ppf[find_nearest(ppf[:, 0], cube[par]), 1]  # modified prior for clr
-                        else:
-                            cube[par] = (cube[par] * (self.param['clr' + mol + '_range'][1] - self.param['clr' + mol + '_range'][0])) + self.param['clr' + mol + '_range'][0]  # uniform clr prior between -25 : 25
-                    elif self.param['gas_par_space'] == 'volume_mixing_ratio' or self.param['gas_par_space'] == 'vmr':
-                        cube[par] = (cube[par] * (self.param['vmr' + mol + '_range'][1] - self.param['vmr' + mol + '_range'][0])) + self.param['vmr' + mol + '_range'][0]  # uniform vmr prior between -12 : 0
-                    elif self.param['gas_par_space'] == 'partial_pressure':
-                        cube[par] = (cube[par] * (self.param['pp' + mol + '_range'][1] - self.param['pp' + mol + '_range'][0])) + self.param['pp' + mol + '_range'][0]  # uniform partial pressure prior between -10 : 10
-                    par += 1
-
-                if self.param['fit_ag']:
-                    if self.param['surface_albedo_parameters'] == int(1):
-                        cube[par] = (cube[par] * (self.param['ag_range'][1] - self.param['ag_range'][0])) + self.param['ag_range'][0]  # uniform prior between   0.0  :  0.5     -> Ag, surface albedo
-                        par += 1
-                    elif self.param['surface_albedo_parameters'] == int(3):
-                        for surf_alb in [1, 2]:
-                            cube[par + (surf_alb - 1)] = (cube[par + (surf_alb - 1)] * (self.param['ag' + str(surf_alb) + '_range'][1] - self.param['ag' + str(surf_alb) + '_range'][0])) + self.param['ag' + str(surf_alb) + '_range'][0]
-                        cube[par + surf_alb] = (cube[par + surf_alb] * (self.param['ag_x1_range'][1] - self.param['ag_x1_range'][0])) + self.param['ag_x1_range'][0]
-                        par += 3
-                    elif self.param['surface_albedo_parameters'] == int(5):
-                        for surf_alb in [1, 2, 3]:
-                            cube[par + (surf_alb - 1)] = (cube[par + (surf_alb - 1)] * (self.param['ag' + str(surf_alb) + '_range'][1] - self.param['ag' + str(surf_alb) + '_range'][0])) + self.param['ag' + str(surf_alb) + '_range'][0]
-                        cube[par + surf_alb] = (cube[par + surf_alb] * (self.param['ag_x1_range'][1] - self.param['ag_x1_range'][0])) + self.param['ag_x1_range'][0]
-                        cube[par + surf_alb + 1] = cube[par + surf_alb] + (cube[par + surf_alb + 1] * (self.param['ag_x2_range'][1] - self.param['ag_x2_range'][0])) + self.param['ag_x2_range'][0]
-                        par += 5
+                elif self.param['surface_albedo_parameters'] == int(5):
+                    for surf_alb in [1, 2, 3]:
+                        cube[par + (surf_alb - 1)] = (cube[par + (surf_alb - 1)] * (self.param['ag' + str(surf_alb) + '_range'][1] - self.param['ag' + str(surf_alb) + '_range'][0])) + self.param['ag' + str(surf_alb) + '_range'][0]
+                    cube[par + surf_alb] = (cube[par + surf_alb] * (self.param['ag_x1_range'][1] - self.param['ag_x1_range'][0])) + self.param['ag_x1_range'][0]
+                    cube[par + surf_alb + 1] = cube[par + surf_alb] + (cube[par + surf_alb + 1] * (self.param['ag_x2_range'][1] - self.param['ag_x2_range'][0])) + self.param['ag_x2_range'][0]
+                    par += 5
                 if self.param['fit_T']:
                     cube[par] = (cube[par] * (self.param['tp_range'][1] - self.param['tp_range'][0])) + self.param['tp_range'][0]  # uniform prior between   0  :  700   -> Tp, planetary temperature
                     par += 1
@@ -239,30 +225,29 @@ class MULTINEST:
                 cube[par] = (cube[par] * (self.param['gp_range'][1] - self.param['gp_range'][0])) + self.param['gp_range'][0]  # uniform prior between   0.5  :  6   -> g [m/s2]
                 par += 1
 
-            if self.param['rocky']:
-                if self.param['fit_Mp'] and self.param['fit_Rp']:
-                    if self.param['Rp_prior_type'] != 'R_M_prior' and self.param['Mp_prior_type'] != 'M_R_prior':
-                        cube[par] = Mp_prior(self.param, cube[par])  # Mass prior - independent
-                        cube[par + 1] = Rp_prior(self.param, cube[par + 1])  # Radius prior - independent
-                        par += 2
-                    elif self.param['Rp_prior_type'] != 'R_M_prior' and self.param['Mp_prior_type'] == 'M_R_prior':
-                        cube[par] = Mp_prior(self.param, cube[par])  # Mass prior - independent
-                        cube[par + 1] = Rp_prior(self.param, cube[par + 1], mp_value=cube[par])  # Radius prior - 2D prior
-                        par += 2
-                    elif self.param['Rp_prior_type'] == 'R_M_prior' and self.param['Mp_prior_type'] != 'M_R_prior':
-                        cube[par + 1] = Rp_prior(self.param, cube[par + 1])  # Radius prior - independent
-                        cube[par] = Mp_prior(self.param, cube[par], rp_value=cube[par + 1])  # Mass prior - 2D prior
-                        par += 2
-                elif self.param['fit_Mp'] and not self.param['fit_Rp']:
-                    cube[par] = Mp_prior(self.param, cube[par])  # Mass prior
-                    par += 1
-                elif self.param['fit_Rp'] and not self.param['fit_Mp']:
-                    cube[par] = Rp_prior(self.param, cube[par])  # Radius prior
-                    par += 1
+            if self.param['fit_Mp'] and self.param['fit_Rp']:
+                if self.param['Rp_prior_type'] != 'R_M_prior' and self.param['Mp_prior_type'] != 'M_R_prior':
+                    cube[par] = Mp_prior(self.param, cube[par])  # Mass prior - independent
+                    cube[par + 1] = Rp_prior(self.param, cube[par + 1])  # Radius prior - independent
+                    par += 2
+                elif self.param['Rp_prior_type'] != 'R_M_prior' and self.param['Mp_prior_type'] == 'M_R_prior':
+                    cube[par] = Mp_prior(self.param, cube[par])  # Mass prior - independent
+                    cube[par + 1] = Rp_prior(self.param, cube[par + 1], mp_value=cube[par])  # Radius prior - 2D prior
+                    par += 2
+                elif self.param['Rp_prior_type'] == 'R_M_prior' and self.param['Mp_prior_type'] != 'M_R_prior':
+                    cube[par + 1] = Rp_prior(self.param, cube[par + 1])  # Radius prior - independent
+                    cube[par] = Mp_prior(self.param, cube[par], rp_value=cube[par + 1])  # Mass prior - 2D prior
+                    par += 2
+            elif self.param['fit_Mp'] and not self.param['fit_Rp']:
+                cube[par] = Mp_prior(self.param, cube[par])  # Mass prior
+                par += 1
+            elif self.param['fit_Rp'] and not self.param['fit_Mp']:
+                cube[par] = Rp_prior(self.param, cube[par])  # Radius prior
+                par += 1
 
-                if self.param['fit_p_size']:
-                    cube[par] = (cube[par] * (self.param['p_size_range'][1] - self.param['p_size_range'][0])) + self.param['p_size_range'][0]  # Particle size uniform prior
-                    par += 1
+            if self.param['fit_p_size']:
+                cube[par] = (cube[par] * (self.param['p_size_range'][1] - self.param['p_size_range'][0])) + self.param['p_size_range'][0]  # Particle size uniform prior
+                par += 1
 
             if self.param['fit_phi']:
                 if self.param['obs_numb'] is None:
@@ -277,7 +262,7 @@ class MULTINEST:
             if self.param['obs_numb'] is None:
                 model = internal_model(cube)
 
-                if self.param['fit_wtr_cld'] and self.param['rocky'] and self.param['cld_frac'] != 1.0:
+                if self.param['fit_wtr_cld'] and self.param['cld_frac'] != 1.0:
                     self.param['fit_wtr_cld'] = False
                     model_no_cld = internal_model(cube, free_cld_calc=True)
                     self.param['fit_wtr_cld'] = True
@@ -293,6 +278,7 @@ class MULTINEST:
                     else:
                         chi = (self.param['spectrum'][str(obs)]['Fplanet'] - internal_model(cube, phi=self.param['phi' + str(obs)], n_obs=obs)) / self.param['spectrum'][str(obs)]['error_p']
                     loglikelihood += (-1.) * np.sum(np.log(self.param['spectrum'][str(obs)]['error_p'] * np.sqrt(2.0 * math.pi))) - 0.5 * np.sum(chi * chi)
+
             return loglikelihood
 
         if MPIimport and MPIrank == 0:
@@ -373,7 +359,7 @@ class MULTINEST:
                     self.plot_chemistry()
                     if self.param['surface_albedo_parameters'] > 1:
                         self.plot_surface_albedo()
-                    if self.param['rocky'] and self.param['plot_contribution'] and self.param['obs_numb'] is None:
+                    if self.param['plot_contribution'] and self.param['obs_numb'] is None:
                         self.plot_contribution(cube[:, 0])
                 else:
                     cube = np.ones((len(s['modes'][0]['maximum a posterior']), mds))
@@ -384,7 +370,7 @@ class MULTINEST:
                         self.plot_chemistry(solutions=i + 1)
                         if self.param['surface_albedo_parameters'] > 1:
                             self.plot_surface_albedo(solutions=i + 1)
-                        if self.param['rocky'] and self.param['plot_contribution'] and self.param['obs_numb'] is None:
+                        if self.param['plot_contribution'] and self.param['obs_numb'] is None:
                             self.plot_contribution(cube[:, i], solutions=i + 1)
 
                 if self.param['spectrum']['bins']:
@@ -444,6 +430,14 @@ class MULTINEST:
         elif not self.param['fit_wtr_cld'] and free_cld_calc:
             par += 3
 
+        if self.param['fit_amm_cld'] and not free_cld_calc:
+            self.param['Pa_top'] = 10. ** cube[par]
+            self.param['clda_depth'] = 10. ** cube[par + 1]
+            self.param['CR_NH3'] = 10. ** cube[par + 2]
+            par += 3
+        elif not self.param['fit_amm_cld'] and free_cld_calc:
+            par += 3
+
         if self.param['gas_par_space'] == 'centered_log_ratio' or self.param['gas_par_space'] == 'clr':
             clr = {}
             for mol in self.param['fit_molecules']:
@@ -464,8 +458,11 @@ class MULTINEST:
                 par += 1
 
         self.param['P'] = 10. ** np.arange(0.0, np.log10(self.param['P0']) + 0.01, step=0.01)
-        self.param['vmr_H2O'] = cloud_rocky_pos(self.param)
-        self.param = adjust_VMR(self.param, all_gases=self.param['adjust_VMR_gases'])
+        if self.param['fit_amm_cld']:
+            self.param['vmr_NH3'] = cloud_pos(self.param, condensed_gas='NH3')
+            self.param = adjust_VMR(self.param, all_gases=self.param['adjust_VMR_gases'], condensed_gas='NH3')
+        self.param['vmr_H2O'] = cloud_pos(self.param, condensed_gas='H2O')
+        self.param = adjust_VMR(self.param, all_gases=self.param['adjust_VMR_gases'], condensed_gas='H2O')
         if self.param['O3_earth']:
             self.param['vmr_O3'] = ozone_earth_mask(self.param)
         self.param = calc_mean_mol_mass(self.param)
@@ -535,6 +532,10 @@ class MULTINEST:
         self.param['core_number'] = None
 
     def plot_chemistry(self, solutions=None):
+        ## ------------------------
+        ## Chemistry plot
+        ## ------------------------
+
         fig, ax = plt.subplots()
 
         for mol in self.param['fit_molecules']:
@@ -545,6 +546,9 @@ class MULTINEST:
                 print(str(mol) + ' -> Top: ' + str(self.param['vmr_' + mol][0]) + ', Bottom: ' + str(self.param['vmr_' + mol][-1]))
 
         if self.param['gas_fill'] is not None:
+            if not self.param['rocky']:
+                print('He' + ' -> Top: ' + str(self.param['vmr_He'][0]) + ', Bottom: ' + str(self.param['vmr_He'][-1]))
+                ax.loglog(self.param['vmr_He'], self.param['P'], label='He')
             print(str(self.param['gas_fill']) + ' -> Top: ' + str(self.param['vmr_' + self.param['gas_fill']][0]) + ', Bottom: ' + str(self.param['vmr_' + self.param['gas_fill']][-1]))
             ax.loglog(self.param['vmr_' + self.param['gas_fill']], self.param['P'], label=self.param['gas_fill'])
 
@@ -563,22 +567,31 @@ class MULTINEST:
 
             plt.hlines(self.param['P'][int(find_nearest(self.param['P'], (self.param['cldw_depth'] + self.param['P'][pos_cldw])))], ax.get_xlim()[0], ax.get_xlim()[1], linestyle='--', alpha=0.5, color='black', label='H$_2$O cloud')
             plt.hlines(self.param['P'][int(find_nearest(self.param['P'], self.param['Pw_top']))], ax.get_xlim()[0], ax.get_xlim()[1], linestyle='--', alpha=0.5, color='black')
-        plt.hlines(self.param['P'][int(find_nearest(self.param['P'], self.param['P0']))], ax.get_xlim()[0], ax.get_xlim()[1], linestyle='-', color='black', alpha=0.75, label='Surface')
+        if self.param['rocky']:
+            plt.hlines(self.param['P'][int(find_nearest(self.param['P'], self.param['P0']))], ax.get_xlim()[0], ax.get_xlim()[1], linestyle='-', color='black', alpha=0.75, label='Surface')
 
         ax.yaxis.set_ticks(10. ** np.arange(1.0, 12.1, 1))
         if sys.version[0] == '3':
             secax_y = ax.secondary_yaxis('right', functions=(pa_to_bar, bar_to_pa))
             secax_y.set_ylabel('Pressure [bar]')
 
-        ax.set_ylim((1.0, self.param['P0'] + (0.1 * self.param['P0'])))
+        if self.param['rocky']:
+            ax.set_ylim((1.0, self.param['P0'] + (0.1 * self.param['P0'])))
+        else:
+            bottom = 5 * self.param['P'][int(find_nearest(self.param['P'], (self.param['cldw_depth'] + self.param['P'][pos_cldw])))]
+            ax.set_ylim([1.0, bottom])
         plt.gca().invert_yaxis()
 
-        ax.legend(loc='lower left', framealpha=0)
+        ax.legend(loc='upper left', framealpha=0)
         if solutions is None:
             plt.savefig(self.param['out_dir'] + 'Nest_chemistry.pdf')
         else:
             plt.savefig(self.param['out_dir'] + 'Nest_chemistry (solution ' + str(solutions) + ').pdf')
         plt.close()
+
+        ## ------------------------
+        ## Mean Molecular Mass plot
+        ## ------------------------
 
         fig, ax = plt.subplots()
         ax.semilogy(self.param['mean_mol_weight'], self.param['P'], label='Mean Molecular Mass')
@@ -590,14 +603,19 @@ class MULTINEST:
         if self.param['fit_wtr_cld']:
             plt.hlines(self.param['P'][int(find_nearest(self.param['P'], (self.param['cldw_depth'] + self.param['P'][pos_cldw])))], ax.get_xlim()[0], ax.get_xlim()[1], linestyle='--', alpha=0.5, color='black', label='H$_2$O cloud')
             plt.hlines(self.param['P'][int(find_nearest(self.param['P'], self.param['Pw_top']))], ax.get_xlim()[0], ax.get_xlim()[1], linestyle='--', alpha=0.5, color='black')
-        plt.hlines(self.param['P'][int(find_nearest(self.param['P'], self.param['P0']))], ax.get_xlim()[0], ax.get_xlim()[1], linestyle='-', color='black', alpha=0.75, label='Surface')
+        if self.param['rocky']:
+            plt.hlines(self.param['P'][int(find_nearest(self.param['P'], self.param['P0']))], ax.get_xlim()[0], ax.get_xlim()[1], linestyle='-', color='black', alpha=0.75, label='Surface')
 
         ax.yaxis.set_ticks(10. ** np.arange(1.0, 12.1, 1))
         if sys.version[0] == '3':
             secax_y = ax.secondary_yaxis('right', functions=(pa_to_bar, bar_to_pa))
             secax_y.set_ylabel('Pressure [bar]')
 
-        ax.set_ylim((1.0, self.param['P0'] + (0.1 * self.param['P0'])))
+        if self.param['rocky']:
+            ax.set_ylim((1.0, self.param['P0'] + (0.1 * self.param['P0'])))
+        else:
+            bottom = 5 * self.param['P'][int(find_nearest(self.param['P'], (self.param['cldw_depth'] + self.param['P'][pos_cldw])))]
+            ax.set_ylim([1.0, bottom])
         plt.gca().invert_yaxis()
 
         ax.legend(framealpha=0)
@@ -615,11 +633,11 @@ class MULTINEST:
             plt.errorbar(self.param['spectrum']['wl'], self.param['spectrum']['Fplanet'], yerr=self.param['spectrum']['error_p'],
                          linestyle='', linewidth=0.5, color='black', marker='o', markerfacecolor='red', markersize=4, capsize=1.75, label='Data')
 
-            mod = FORWARD_ROCKY_MODEL(self.param, retrieval=False, canc_metadata=True)
+            mod = FORWARD_MODEL(self.param, retrieval=False, canc_metadata=True)
             alb_wl, alb = mod.run_forward()
             alb_wl *= 10. ** (-3.)
 
-            if self.param['fit_wtr_cld'] and self.param['rocky'] and self.param['cld_frac'] != 1.0:
+            if self.param['fit_wtr_cld'] and self.param['cld_frac'] != 1.0:
                 alb = self.adjust_for_cld_frac(alb, cube)
                 self.cube_to_param(cube)
 
@@ -627,12 +645,12 @@ class MULTINEST:
             plt.plot(self.param['spectrum']['wl'], model, linestyle='', color='black', marker='d', markerfacecolor='blue', markersize=4)
 
             if self.param['mol_custom_wl']:
-                new_wl = np.loadtxt(self.param['pkg_dir'] + 'forward_gas_mod/Data/wl_bins/bins_02_50_R500.dat')
+                new_wl = np.loadtxt(self.param['pkg_dir'] + 'forward_mod/Data/wl_bins/bins_02_50_R500.dat')
                 new_wl_central = np.mean(new_wl, axis=1)
                 start = 0
                 stop = len(new_wl_central) - 1
             else:
-                new_wl = np.loadtxt(self.param['pkg_dir'] + 'forward_gas_mod/Data/wl_bins/bins_02_20_R500.dat')
+                new_wl = np.loadtxt(self.param['pkg_dir'] + 'forward_mod/Data/wl_bins/bins_02_20_R500.dat')
                 new_wl_central = np.mean(new_wl, axis=1)
                 start = find_nearest(new_wl_central, min(self.param['spectrum']['wl']) - 0.05)
                 stop = find_nearest(new_wl_central, max(self.param['spectrum']['wl']) + 0.05)
@@ -651,11 +669,11 @@ class MULTINEST:
             self.param['start_c_wl_grid'] = find_nearest(self.param['wl_C_grid'], self.param['min_wl']) - 35
             self.param['stop_c_wl_grid'] = find_nearest(self.param['wl_C_grid'], self.param['max_wl']) + 35
 
-            mod = FORWARD_ROCKY_MODEL(self.param, retrieval=False, canc_metadata=True)
+            mod = FORWARD_MODEL(self.param, retrieval=False, canc_metadata=True)
             alb_wl, alb = mod.run_forward()
             alb_wl *= 10. ** (-3.)
 
-            if self.param['fit_wtr_cld'] and self.param['rocky'] and self.param['cld_frac'] != 1.0:
+            if self.param['fit_wtr_cld'] and self.param['cld_frac'] != 1.0:
                 alb = self.adjust_for_cld_frac(alb, cube)
                 self.cube_to_param(cube)
 
@@ -715,18 +733,18 @@ class MULTINEST:
         else:
 
             fig, axs = plt.subplots(2, sharex=True, gridspec_kw={'hspace': 0})
-            new_wl = np.loadtxt(self.param['pkg_dir'] + 'forward_gas_mod/Data/wl_bins/bins_02_20_R500.dat')
+            new_wl = np.loadtxt(self.param['pkg_dir'] + 'forward_mod/Data/wl_bins/bins_02_20_R500.dat')
             new_wl_central = np.mean(new_wl, axis=1)
             self.param['spectrum']['bins'] = False
 
-            mod = FORWARD_ROCKY_MODEL(self.param, retrieval=False, canc_metadata=True)
+            mod = FORWARD_MODEL(self.param, retrieval=False, canc_metadata=True)
 
             for obs in range(0, self.param['obs_numb']):
                 self.cube_to_param(cube, n_obs=obs)
                 alb_wl, alb = mod.run_forward()
                 alb_wl *= 10. ** (-3.)
 
-                if self.param['fit_cld_frac'] and self.param['fit_wtr_cld'] and self.param['rocky'] and self.param['cld_frac'] != 1.0:
+                if self.param['fit_cld_frac'] and self.param['fit_wtr_cld'] and self.param['cld_frac'] != 1.0:
                     alb = self.adjust_for_cld_frac(alb, cube)
                     self.cube_to_param(cube, n_obs=obs)
 
@@ -752,7 +770,7 @@ class MULTINEST:
                 alb_wl, alb = mod.run_forward()
                 alb_wl *= 10. ** (-3.)
 
-                if self.param['fit_cld_frac'] and self.param['fit_wtr_cld'] and self.param['rocky'] and self.param['cld_frac'] != 1.0:
+                if self.param['fit_cld_frac'] and self.param['fit_wtr_cld'] and self.param['cld_frac'] != 1.0:
                     alb = self.adjust_for_cld_frac(alb, cube)
                     self.cube_to_param(cube, n_obs=obs)
 
@@ -874,7 +892,7 @@ class MULTINEST:
             contr_out = 'contr_comp_' + str(solutions) + '/'
         fig = plt.figure(figsize=(12, 5))
 
-        new_wl = np.loadtxt(self.param['pkg_dir'] + 'forward_gas_mod/Data/wl_bins/bins_02_20_R500.dat')
+        new_wl = np.loadtxt(self.param['pkg_dir'] + 'forward_mod/Data/wl_bins/bins_02_20_R500.dat')
         new_wl_central = np.mean(new_wl, axis=1)
         is_bins = self.param['spectrum']['bins']
         self.param['spectrum']['bins'] = False
@@ -895,11 +913,11 @@ class MULTINEST:
         for mol in self.param['fit_molecules']:
             print('Plotting the contribution of ' + str(mol) + ' : VMR -> ' + str(self.param['vmr_' + mol][-1]))
             self.param['mol_contr'] = mol
-            mod = FORWARD_ROCKY_MODEL(self.param, retrieval=False, canc_metadata=True)
+            mod = FORWARD_MODEL(self.param, retrieval=False, canc_metadata=True)
             alb_wl, alb = mod.run_forward()
             alb_wl *= 10. ** (-3.)
 
-            if self.param['fit_wtr_cld'] and self.param['rocky'] and self.param['cld_frac'] != 1.0:
+            if self.param['fit_wtr_cld'] and self.param['cld_frac'] != 1.0:
                 alb = self.adjust_for_cld_frac(alb, cube)
                 self.cube_to_param(cube)
 
@@ -909,11 +927,11 @@ class MULTINEST:
             np.savetxt(self.param['out_dir'] + contr_out + mol + '.dat', single_contr)
         self.param['mol_contr'] = None
 
-        mod = FORWARD_ROCKY_MODEL(self.param, retrieval=False, canc_metadata=True)
+        mod = FORWARD_MODEL(self.param, retrieval=False, canc_metadata=True)
         alb_wl, alb = mod.run_forward()
         alb_wl *= 10. ** (-3.)
 
-        if self.param['fit_wtr_cld'] and self.param['rocky'] and self.param['cld_frac'] != 1.0:
+        if self.param['fit_wtr_cld'] and self.param['cld_frac'] != 1.0:
             alb = self.adjust_for_cld_frac(alb, cube)
             self.cube_to_param(cube)
 
@@ -996,9 +1014,12 @@ class MULTINEST:
                 z = 5
             else:
                 b[:, 0:5] = a[:, 0:5] + 0.0
-                z = 5
+                z = 8
 
             if not self.param['fit_wtr_cld']:
+                z -= 3
+
+            if not self.param['fit_amm_cld']:
                 z -= 3
 
             volume_mixing_ratio = {}
@@ -1013,7 +1034,7 @@ class MULTINEST:
                 volume_mixing_ratio[self.param['gas_fill']] = np.ones(len(a[:, 0]))
                 for i, mol in enumerate(self.param['fit_molecules']):
                     volume_mixing_ratio[mol] = 10.0 ** np.array(a[:, z + i])
-                    volume_mixing_ratio[self.param['gas_fill']] -= np.array(a[:, z + i])
+                    volume_mixing_ratio[self.param['gas_fill']] -= 10.0 ** np.array(a[:, z + i])
             elif self.param['gas_par_space'] == 'partial_pressure':
                 b[:, 2] = np.sum(10.0 ** np.array(a[:, z:z + len(self.param['fit_molecules'])]), axis=1)
                 for i, mol in enumerate(self.param['fit_molecules']):
@@ -1067,10 +1088,17 @@ class MULTINEST:
                 par.append("Log(P$_{top, H_2O}$ [Pa])")
                 par.append("Log(D$_{H_2O}$ [Pa])")
                 par.append("Log(CR$_{H_2O}$)")
+            if self.param['fit_amm_cld']:
+                par.append("Log(P$_{top, NH_3}$ [Pa])")
+                par.append("Log(D$_{NH_3}$ [Pa])")
+                par.append("Log(CR$_{NH_3}$)")
             for mol in self.param['fit_molecules']:
                 par.append(self.param['formatted_labels'][mol])
                 if self.param['gas_fill'] is not None:
-                    par.append(self.param['formatted_labels'][self.param['gas_fill']] + " (derived)")
+                    if self.param['rocky']:
+                        par.append(self.param['formatted_labels'][self.param['gas_fill']] + " (derived)")
+                    else:
+                        par.append("Log(H$_2$ + He) (derived)")
             if self.param['fit_ag']:
                 if self.param['surface_albedo_parameters'] == int(1):
                     par.append("$a_{surf}$")
@@ -1097,7 +1125,7 @@ class MULTINEST:
                 if self.param['rocky']:
                     par.append("R$_p$ [R$_\oplus$]")
                 else:
-                    par.append("R$_p$ [R$_J$]")
+                    par.append("R$_p$ [R$_{Jup}$]")
             if self.param['fit_p_size'] and self.param['p_size_type'] == 'constant':
                 par.append("Log(P$_{size}$ [$\mu$m])")
             elif self.param['fit_p_size'] and self.param['p_size_type'] == 'factor':
@@ -2319,11 +2347,9 @@ class MULTINEST:
             return (fig, axes)
 
         print('Generating the Posterior Distribution Functions (PDFs) plot')
-        if self.param['rocky']:
-            _corner_parameters()
+        _corner_parameters()
         if mds_orig < 2:
-            if self.param['rocky']:
-                _posteriors_gas_to_vmr(prefix)
+            _posteriors_gas_to_vmr(prefix)
             parameters = json.load(open(prefix + 'params.json'))
             a = pymultinest.Analyzer(n_params=len(parameters), outputfiles_basename=prefix, verbose=False)
             data = a.get_data()
@@ -2463,12 +2489,12 @@ class MULTINEST:
 
     def calc_spectra(self, mc_samples):
         if self.param['mol_custom_wl']:
-            new_wl = np.loadtxt(self.param['pkg_dir'] + 'forward_gas_mod/Data/wl_bins/bins_02_50_R500.dat')
+            new_wl = np.loadtxt(self.param['pkg_dir'] + 'forward_mod/Data/wl_bins/bins_02_50_R500.dat')
             new_wl_central = np.mean(new_wl, axis=1)
             start = 0
             stop = len(new_wl_central) - 1
         else:
-            new_wl = np.loadtxt(self.param['pkg_dir'] + 'forward_gas_mod/Data/wl_bins/bins_02_20_R500.dat')
+            new_wl = np.loadtxt(self.param['pkg_dir'] + 'forward_mod/Data/wl_bins/bins_02_20_R500.dat')
             new_wl_central = np.mean(new_wl, axis=1)
             start = find_nearest(new_wl_central, min(self.param['spectrum']['wl']) - 0.05)
             stop = find_nearest(new_wl_central, max(self.param['spectrum']['wl']) + 0.05)
@@ -2509,7 +2535,7 @@ class MULTINEST:
         for i in range(int(self.param['n_likelihood_data'] / MPIsize)):
             cube = mc_samples[idx[i], :]
             self.cube_to_param(cube)
-            mod = FORWARD_ROCKY_MODEL(self.param, retrieval=False, canc_metadata=True)
+            mod = FORWARD_MODEL(self.param, retrieval=False, canc_metadata=True)
             alb_wl, alb = mod.run_forward()
             alb_wl *= 10. ** (-3.)
 
@@ -2541,7 +2567,7 @@ class MULTINEST:
     def adjust_for_cld_frac(self, albedo, mlnst_cube):
         self.param['fit_wtr_cld'] = False
         self.cube_to_param(mlnst_cube, free_cld_calc=True)
-        mod = FORWARD_ROCKY_MODEL(self.param, retrieval=False, canc_metadata=True)
+        mod = FORWARD_MODEL(self.param, retrieval=False, canc_metadata=True)
         _, alb_no_cld = mod.run_forward()
         self.param['fit_wtr_cld'] = True
         return (self.param['cld_frac'] * albedo) + ((1.0 - self.param['cld_frac']) * alb_no_cld)

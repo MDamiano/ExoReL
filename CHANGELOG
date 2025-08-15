@@ -1,3 +1,9 @@
+## [2.5.0] - 08/15/25
+- standard_parameters.dat has been retired. Now the module __utils.default_parameters() sets the standard parameters when ExoReL is imported.
+- The Gas model and Rocky model have been unified.
+- The folder "forward_gas_mod" has been deprecated. The folder "forward_rocky_mod" has been renamed to "forward_mod".
+- The "wl_bins" has been moved inside "./foward_mod/Data/"
+
 ## [2.4.2] - 04/14/25
 - Added O2-O2 CIA.
 - Added new plot for surface albedo. The plot is automatically generated if the parameter 'surface_albedo_parameters' is greater than 1. This plot is generated in the retrieval post-processing by the function 'plot_surface_albedo'.
