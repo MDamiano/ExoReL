@@ -2,7 +2,7 @@
 
 # ExoReL<sup>R</sup>
 
-Version 2.4.2
+Version 2.5.0
 
 Includes:
 * A routine to generate of reflected light spectra;
@@ -26,7 +26,7 @@ Therefore, make the folder searchable for python in your `.bash_profile` or `.ba
 
 `export PYTHONPATH="$PYTHONPATH:/full/path/of/folder/containing/ExoReL:"`
 
-Download the folders "PHO_STELLAR_MODEL" and "forward_rocky_mod" from the following link : [Google Drive](https://drive.google.com/drive/folders/1CQutXQ8Ki59TB9Dndo61sktwS3uOM7qZ?usp=sharing) .
+Download the folders "PHO_STELLAR_MODEL" and "forward_mod" from the following link : [Google Drive](https://drive.google.com/drive/folders/1CQutXQ8Ki59TB9Dndo61sktwS3uOM7qZ?usp=sharing) .
 Place the downloaded folders inside the ExoReL folder.
 
 ## Usage
