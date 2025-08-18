@@ -14,7 +14,7 @@ Includes:
 
 ## Collaborators
 * Armen Tokadjian (Jet Propulsion Laboratory, California Institute of Technology)
-* Zachary Burr (ETH Zurich, Jet Propulsion Laboratory, California Institute of Technology)
+* Zachary Burr (ETH Zurich - Jet Propulsion Laboratory, California Institute of Technology)
 
 ## Installation:
 Install python packages dependency:
