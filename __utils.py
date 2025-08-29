@@ -349,7 +349,7 @@ def calc_mean_mol_mass(param):
             else:
                 param['mean_mol_weight'][i] += (param['vmr_' + param['gas_fill']][i] * param['mm'][param['gas_fill']]) + (param['vmr_He'][i] * param['mm']['He'])
 
-    if not param['ret_mode']:
+    if not param['ret_mode'] and param['verbose']:
         print('mu \t\t = \t' + str(param['mean_mol_weight'][-1]))
 
     return param
@@ -815,7 +815,7 @@ def take_star_spectrum(param, plot=False):
             t_star[1] += 1
     try:
         param['Loggs'] += 0.0
-    except KeyError:
+    except (KeyError, TypeError):
         param['Loggs'] = round(np.log(274.20011166 * param['Ms'] / (param['Rs'] ** 2.)), 1)
 
     logg = [int(i) for i in str(param['Loggs']) if i.isdigit()]
