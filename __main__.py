@@ -31,10 +31,11 @@ class CREATE_SPECTRUM:
         self.param = copy.deepcopy(param)
         self.param['ret_mode'] = False
         self.canc_metadata = canc_metadata
-        self.verbose = verbose
+        self.param['verbose'] = verbose
 
     def run_forward(self, parfile):
-        print(f"Running ExoReL – version {__version__}")
+        if self.param['verbose']:
+            print(f"Running ExoReL – version {__version__}")
         self.param = read_parfile(self.param, parfile)
         self.param = par_and_calc(self.param)
         self.param = load_input_spectrum(self.param)
@@ -43,7 +44,7 @@ class CREATE_SPECTRUM:
             self.param = take_star_spectrum(self.param)
         self.param = pre_load_variables(self.param)
 
-        if self.verbose:
+        if self.param['verbose']:
             print('Calculating the Planetary Albedo')
 
             print('Parameters:')
@@ -89,48 +90,49 @@ class CREATE_SPECTRUM:
         else:
             pass
 
-        if self.param['fit_wtr_cld']:
-            print('Log(H2O_Ptop) \t = \t' + str(self.param['pH2O']))
-            print('Log(H2O_D) \t = \t' + str(self.param['dH2O']))
-            print('Log(H2O_CR) \t = \t' + str(self.param['crH2O']))
-        if self.param['fit_amm_cld']:
-            print('Log(NH3_Ptop) \t = \t' + str(self.param['pNH3']))
-            print('Log(NH3_D) \t = \t' + str(self.param['dNH3']))
-            print('Log(NH3_CR) \t = \t' + str(self.param['crNH3']))
-        if self.param['fit_wtr_cld'] or self.param['fit_amm_cld']:
-            print('Cloud fraction \t = \t' + str(self.param['cld_frac']))
-        print('g \t\t = \t' + str(self.param['gp']))
-        print('Mp \t\t = \t' + str(self.param['Mp']))
-        print('Rp \t\t = \t' + str(self.param['Rp']))
-        print('Tp \t\t = \t' + str(self.param['Tp']))
-        print('Ag \t\t = \t' + str(self.param['Ag']))
-        print('Log(P0) \t = \t' + str(np.log10(self.param['P0'])))
-        print('phi \t\t = \t' + str(self.param['phi'] * 180.0 / math.pi))
+        if self.param['verbose']:
+            if self.param['fit_wtr_cld']:
+                print('Log(H2O_Ptop) \t = \t' + str(self.param['pH2O']))
+                print('Log(H2O_D) \t = \t' + str(self.param['dH2O']))
+                print('Log(H2O_CR) \t = \t' + str(self.param['crH2O']))
+            if self.param['fit_amm_cld']:
+                print('Log(NH3_Ptop) \t = \t' + str(self.param['pNH3']))
+                print('Log(NH3_D) \t = \t' + str(self.param['dNH3']))
+                print('Log(NH3_CR) \t = \t' + str(self.param['crNH3']))
+            if self.param['fit_wtr_cld'] or self.param['fit_amm_cld']:
+                print('Cloud fraction \t = \t' + str(self.param['cld_frac']))
+            print('g \t\t = \t' + str(self.param['gp']))
+            print('Mp \t\t = \t' + str(self.param['Mp']))
+            print('Rp \t\t = \t' + str(self.param['Rp']))
+            print('Tp \t\t = \t' + str(self.param['Tp']))
+            print('Ag \t\t = \t' + str(self.param['Ag']))
+            print('Log(P0) \t = \t' + str(np.log10(self.param['P0'])))
+            print('phi \t\t = \t' + str(self.param['phi'] * 180.0 / math.pi))
 
-        for mol in self.param['fit_molecules']:
-            if mol == 'N2' and self.param['gas_fill'] == 'H2' and self.param['vmr_N2'] != 0:
+            for mol in self.param['fit_molecules']:
+                if mol == 'N2' and self.param['gas_fill'] == 'H2' and self.param['vmr_N2'] != 0:
+                    print('VMR N2 \t\t = \t' + str(self.param['vmr_N2']))
+                elif mol == 'N2' and self.param['gas_fill'] is None and self.param['vmr_N2'] != 0:
+                    print('VMR N2 \t\t = \t' + str(self.param['vmr_N2']))
+                elif mol == 'N2' and self.param['gas_fill'] == 'N2':
+                    pass
+                elif mol == 'O2' or mol == 'O3' or mol == 'CO':
+                    print('VMR ' + mol + ' \t\t = \t' + str(self.param['vmr_' + mol]))
+                else:
+                    print('VMR ' + mol + ' \t = \t' + str(self.param['vmr_' + mol]))
+
+            if self.param['gas_fill'] is not None and self.param['gas_fill'] == 'N2':
                 print('VMR N2 \t\t = \t' + str(self.param['vmr_N2']))
-            elif mol == 'N2' and self.param['gas_fill'] is None and self.param['vmr_N2'] != 0:
-                print('VMR N2 \t\t = \t' + str(self.param['vmr_N2']))
-            elif mol == 'N2' and self.param['gas_fill'] == 'N2':
+            elif self.param['gas_fill'] is not None and self.param['gas_fill'] == 'H2':
+                # print('VMR H2 \t\t = \t' + str(self.param['vmr_H2']))
+                if self.param['rocky']:
+                    print('VMR H2 \t\t = \t' + str(self.param['vmr_H2']))
+                else:
+                    if self.param['H2_He_ratio'] != 0:
+                        print('VMR He \t\t = \t' + str(self.param['vmr_H2'] * (1.0 - self.param['H2_He_ratio'])))
+                        print('VMR H2 \t\t = \t' + str(self.param['vmr_H2'] * self.param['H2_He_ratio']))
+            else:
                 pass
-            elif mol == 'O2' or mol == 'O3' or mol == 'CO':
-                print('VMR ' + mol + ' \t\t = \t' + str(self.param['vmr_' + mol]))
-            else:
-                print('VMR ' + mol + ' \t = \t' + str(self.param['vmr_' + mol]))
-
-        if self.param['gas_fill'] is not None and self.param['gas_fill'] == 'N2':
-            print('VMR N2 \t\t = \t' + str(self.param['vmr_N2']))
-        elif self.param['gas_fill'] is not None and self.param['gas_fill'] == 'H2':
-            # print('VMR H2 \t\t = \t' + str(self.param['vmr_H2']))
-            if self.param['rocky']:
-                print('VMR H2 \t\t = \t' + str(self.param['vmr_H2']))
-            else:
-                if self.param['H2_He_ratio'] != 0:
-                    print('VMR He \t\t = \t' + str(self.param['vmr_H2'] * (1.0 - self.param['H2_He_ratio'])))
-                    print('VMR H2 \t\t = \t' + str(self.param['vmr_H2'] * self.param['H2_He_ratio']))
-        else:
-            pass
 
         time1 = time.time()
 
@@ -145,7 +147,7 @@ class CREATE_SPECTRUM:
             model = (self.param['cld_frac'] * model) + ((1.0 - self.param['cld_frac']) * model_no_cld)
 
         time2 = time.time()
-        if self.verbose:
+        if self.param['verbose']:
             elapsed((time2 - time1) * (10 ** 9))
 
         data = np.array([wl, model]).T

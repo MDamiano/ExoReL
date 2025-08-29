@@ -2,7 +2,7 @@
 
 # ExoReL<sup>R</sup>
 
-Version 2.5.0
+Version 2.5.1
 
 Includes:
 * A routine to generate of reflected light spectra;

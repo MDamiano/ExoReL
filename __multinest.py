@@ -975,7 +975,7 @@ class MULTINEST:
 
     def plot_posteriors(self, prefix, multinest_results, parameters, mds_orig):
         from numpy import log
-        from six.moves import range
+        from six.moves import range # type: ignore
         import logging
         import types
         from matplotlib.ticker import MaxNLocator, NullLocator

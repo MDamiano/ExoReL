@@ -1594,7 +1594,7 @@ def forward(parameters_dictionary, evaluation=None, phi=None, n_obs=None, retrie
     alb_wl, alb = mod.run_forward()
     alb_wl *= 10. ** (-3.)
 
-    if not retrieval_mode:
+    if not retrieval_mode and param['verbose']:
         if n_obs == 0 or n_obs is None:
             if albedo_calc and not fp_over_fs:
                 print('Calculating the planetary albedo as function of wavelength')

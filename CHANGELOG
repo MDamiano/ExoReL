@@ -1,3 +1,7 @@
+## [2.5.1] - 08/29/25
+- Fixed verbosity of the model. When calling "CREATE_SPECTRUM" you can set verobose as bool variable.
+- Minor bugfixes
+
 ## [2.5.0] - 08/15/25
 - standard_parameters.dat has been retired. Now the module __utils.default_parameters() sets the standard parameters when ExoReL is imported.
 - The Gas model and Rocky model have been unified.
