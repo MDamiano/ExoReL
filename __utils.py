@@ -146,53 +146,29 @@ def default_parameters():
     return param
 
 
-def read_parfile(param, parfile=None):
+def read_parfile(param, parfile=None, json_format=False):
     cwd = os.getcwd()
     if parfile is None:
-        print('No parameter file provided. A standard parameter file will be used.')
-        pass
+            print('No parameter file provided. A standard parameter file will be used.')
+            pass
     else:
-        #print('Reading parfile: "' + parfile + '"')
-        with open(cwd + '/' + parfile, 'r') as file:
-            paramfile = file.readlines()
-        for i in paramfile:
-            if i[0] == '%' or i[0] == '\n':
-                pass
-            else:
-                paramline = list(i.split('\t'))
-                paramline[-1] = paramline[-1][:-1]
-                if len(paramline) >= 2:
-                    try:
-                        param[paramline[0]] = float(paramline[-1])
-                    except ValueError:
-                        if str(paramline[1]) == str(True):
-                            param[paramline[0]] = bool(paramline[1])
-                        elif str(paramline[1]) == str(False):
-                            param[paramline[0]] = bool("")
-                        elif str(paramline[1]) == str(None):
-                            param[paramline[0]] = None
-                        else:
-                            param[paramline[0]] = str(paramline[1])
-
-                    if paramline[0] == 'file_output_name':
-                        try:
-                            param[paramline[0]] = str(int(paramline[1]))
-                        except ValueError:
-                            param[paramline[0]] = str(paramline[1])
+        if json_format:
+            with open(parfile, 'r') as f:
+                paramdata = json.load(f)
+            for key, value in paramdata.items():
+                param[key] = value
+            del paramdata
+        else:
+            #print('Reading parfile: "' + parfile + '"')
+            with open(cwd + '/' + parfile, 'r') as file:
+                paramfile = file.readlines()
+            for i in paramfile:
+                if i[0] == '%' or i[0] == '\n':
+                    pass
                 else:
-                    paramline = str(paramline[0]).split()
-                    if paramline[0] == 'mol':
-                        param[paramline[0]] = paramline[1].split(',')
-                    elif paramline[0] == 'mol_vmr' or paramline[0] == 'range_mol':
-                        param[paramline[0]] = paramline[1].split(',')
-                        for ob in range(0, len(param[paramline[0]])):
-                            param[paramline[0]][ob] = float(param[paramline[0]][ob])
-                        if paramline[0] == 'mol_vmr':
-                            for num, mol in enumerate(param['mol']):
-                                param['vmr_' + mol] = param['mol_vmr'][num]
-                        else:
-                            pass
-                    else:
+                    paramline = list(i.split('\t'))
+                    paramline[-1] = paramline[-1][:-1]
+                    if len(paramline) >= 2:
                         try:
                             param[paramline[0]] = float(paramline[-1])
                         except ValueError:
@@ -204,6 +180,37 @@ def read_parfile(param, parfile=None):
                                 param[paramline[0]] = None
                             else:
                                 param[paramline[0]] = str(paramline[1])
+
+                        if paramline[0] == 'file_output_name':
+                            try:
+                                param[paramline[0]] = str(int(paramline[1]))
+                            except ValueError:
+                                param[paramline[0]] = str(paramline[1])
+                    else:
+                        paramline = str(paramline[0]).split()
+                        if paramline[0] == 'mol':
+                            param[paramline[0]] = paramline[1].split(',')
+                        elif paramline[0] == 'mol_vmr' or paramline[0] == 'range_mol':
+                            param[paramline[0]] = paramline[1].split(',')
+                            for ob in range(0, len(param[paramline[0]])):
+                                param[paramline[0]][ob] = float(param[paramline[0]][ob])
+                            if paramline[0] == 'mol_vmr':
+                                for num, mol in enumerate(param['mol']):
+                                    param['vmr_' + mol] = param['mol_vmr'][num]
+                            else:
+                                pass
+                        else:
+                            try:
+                                param[paramline[0]] = float(paramline[-1])
+                            except ValueError:
+                                if str(paramline[1]) == str(True):
+                                    param[paramline[0]] = bool(paramline[1])
+                                elif str(paramline[1]) == str(False):
+                                    param[paramline[0]] = bool("")
+                                elif str(paramline[1]) == str(None):
+                                    param[paramline[0]] = None
+                                else:
+                                    param[paramline[0]] = str(paramline[1])
 
     if param['obs_numb'] is not None:
         param['obs_numb'] = int(param['obs_numb'])
@@ -217,12 +224,6 @@ def read_parfile(param, parfile=None):
 
     param['contribution'] = False
     param['mol_contr'] = None
-
-    if param['gen_dataset_mode']:
-        param['rocky'] = True
-        return param
-    else:
-        pass
 
     os.system('cp ' + cwd + '/' + parfile + ' ' + param['out_dir'])
 
@@ -246,6 +247,13 @@ def read_parfile(param, parfile=None):
     if param['gas_fill'] == 'N2':
         param['fit_N2'] = False
 
+    if 'vmr_range' in param.keys():
+        param['gas_par_space'] = 'vmr'
+    elif 'clr_range' in param.keys():
+        param['gas_par_space'] = 'clr'
+    elif 'pp_range' in param.keys():
+        param['gas_par_space'] = 'partial_pressure'
+
     if param['rocky'] and not param['fit_p0'] and param['P0'] is None and param['gas_par_space'] != 'partial_pressure':
         raise ValueError("Surface pressure (P0) needs to be specified since it is not a free parameter.")
 
@@ -260,12 +268,12 @@ def read_parfile(param, parfile=None):
         print('Surface albedo parameters number not defined. The parameter "surface_albedo_parameters" has been set to 1.')
 
     if not param['fit_g'] and not param['fit_Mp'] and not param['fit_Rp']:
-        if param['Rp'] is not None:
+        if (param['Rp'] is not None) or ('Rp_range' in param.keys()):
             param['Rp_provided'] = True
         else:
             param['Rp_provided'] = False
 
-        if param['Mp'] is not None:
+        if (param['Mp'] is not None) or ('Mp_range' in param.keys()):
             param['Mp_provided'] = True
         else:
             param['Mp_provided'] = False
@@ -276,7 +284,8 @@ def read_parfile(param, parfile=None):
             param['gp_provided'] = False
 
         if param['Rp'] is None and param['gp'] is None:
-            raise ValueError("If radius, mass, and gravity of the planet are not free parameters, please provide at least a combination of two in the parameter file.")
+            if not param['Rp_provided']:
+                raise ValueError("If radius, mass, and gravity of the planet are not free parameters, please provide at least a combination of two in the parameter file.")
 
     if param['cld_frac'] > 1.0 or param['cld_frac'] < 0.0:
         raise ValueError("The cloud fraction should be defined between [0.0, 1.0]. Please check the 'cld_frac' value in the parameter file.")
@@ -284,7 +293,9 @@ def read_parfile(param, parfile=None):
     if param['optimizer'] == 'multinest':
         param['nlive_p'] = int(param['nlive_p'])
         param['max_modes'] = int(param['max_modes'])
-    elif param['optimizer'] == 'dynesty':
+    elif param['optimizer'] == 'sobol' or param['optimizer'] == 'random':
+        param['n_spectra'] = int(param['n_spectra'])
+    else:
         pass
 
     if param['optimizer'] is not None:
@@ -999,6 +1010,25 @@ def retrieval_par_and_npar(param):
                 parameters.append("$\phi_" + str(obs) + "$")
 
     return parameters, len(parameters)
+
+
+def detect_gen_npar(param):
+    n_parameters = 0
+    parameters = []
+    for key, value in param.items():
+        if key.endswith('_range'):
+            if key == 'pp_range':
+                pass
+            else:
+                parameters.append(key)
+                n_parameters += 1
+
+    for i in param['fit_molecules']:
+        if param['fit_' + i]:
+            parameters.append(i)
+            n_parameters += 1
+
+    return n_parameters, parameters
 
 
 def clr_to_vmr(param, centered_log_ratio):

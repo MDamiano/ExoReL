@@ -178,8 +178,8 @@ class CREATE_DATASET:
         self.param['ret_mode'] = False
         self.canc_metadata = canc_metadata
 
-    def run_rand_forward(self, parfile):
-        self.param = read_parfile(self.param, parfile)
+    def run_forward(self, parfile):
+        self.param = read_parfile(self.param, parfile, json_format=True)
         from ExoReL.__gendataset import GEN_DATASET
         ob = GEN_DATASET(self.param)
         ob.run()

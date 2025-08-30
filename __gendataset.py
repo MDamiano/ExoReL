@@ -42,4 +42,17 @@ class GEN_DATASET:
         self.param = pre_load_variables(self.param)
 
     def run(self):
-        pass
+        npar, par = detect_gen_npar(self.param)
+        
+        if self.param['optimizer'] == 'sobol':
+            sampler = sp.stats.qmc.Sobol(d=npar, scramble=True)
+
+            # Best practice: draw 2**m points
+            X = sampler.random_base2(m=int(np.ceil(np.log2(self.param['n_spectra']))))     # 2**10 = 1024 points in [0,1)^d
+            print(X.shape)
+            sys.exit()
+
+            # # scale to parameter bounds
+            # lower = [0, -3, 10, 0.1, 1.0]
+            # upper = [1,  3, 50, 1.0, 2.0]
+            # X_scaled = qmc.scale(X, lower, upper)
