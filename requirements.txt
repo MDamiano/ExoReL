@@ -1,0 +1,15 @@
+# Core dependencies
+numpy
+scipy
+astropy
+scikit-bio
+matplotlib
+spectres
+
+# Optional: used for Google Drive auto-download of data folders
+# If not needed, you can remove/comment this.
+gdown
+
+# Optional (not installed by default):
+# pymultinest==2.11  # requires MultiNest system libraries
+# mpi4py             # for parallel retrievals
