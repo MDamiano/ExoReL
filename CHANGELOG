@@ -1,3 +1,9 @@
+## [2.5.2] - 08/30/25
+- Added automatic download of required data folders ("forward_mod", "PHO_STELLAR_MODEL") on import when missing, using 'gdown'; validates content and cleans temporary artifacts.
+- Introduced public helper `ensure_required_data()` to trigger the data check/download explicitly.
+- Refactored data download logic and improved error handling and user feedback with clearer messages.
+- Updated `requirements.txt` to include optional `gdown` dependency for Google Drive downloads.
+
 ## [2.5.1] - 08/29/25
 - Fixed verbosity of the model. When calling "CREATE_SPECTRUM" you can set verobose as bool variable.
 - Minor bugfixes
