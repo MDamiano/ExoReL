@@ -266,7 +266,7 @@ class GEN_DATASET:
 
             record = {
                 'index': int((start_index if 'start_index' in locals() else 0) + i),
-                # 'wavelength': np.asarray(wl, dtype=float).tolist(),
+                'wavelength': self.param['wave_file'],
                 'spectrum': np.asarray(model, dtype=float).tolist(),
                 'parameters': payload_params,
             }

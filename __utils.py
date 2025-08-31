@@ -39,6 +39,7 @@ def default_parameters():
     param['opar'] = 3.0  # correct the Rossland mean opacity at low pressure
 
     #### [MODEL_PAR] ####
+    param['physics_model'] = 'radiative_transfer'  # choose between 'radiative_transfer', 'dataset', or 'AI_model'
     param['P_standard'] = 10. ** np.arange(0.0, 12.01, step=0.01)  # standard pressure grid in Pa
     param['fit_p0'] = False  # whether to fit the surface parameter during retrieval
     param['fit_ag'] = False  # whether to fit the surface albedo during retrieval
@@ -992,7 +993,7 @@ def retrieval_par_and_npar(param):
     if param['fit_T']:
         parameters.append("T$_p$")
     if param['fit_cld_frac']:
-        parameters.append("cld frac")
+        parameters.append("Log(cld frac)")
     if param['fit_g']:
         parameters.append("Log(g)")
     if param['fit_Mp']:
@@ -1000,7 +1001,7 @@ def retrieval_par_and_npar(param):
     if param['fit_Rp']:
         parameters.append("R$_p$")
     if param['fit_p_size']:
-        parameters.append("P$_{size}$")
+        parameters.append("Log(P$_{size}$)")
     if param['fit_phi']:
         if param['obs_numb'] is None:
             parameters.append("$\phi$")
