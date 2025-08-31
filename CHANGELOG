@@ -1,3 +1,7 @@
+## [2.5.4] - 08/31/25
+- Strengthened dataset CSV validation in `GEN_DATASET`: compare exact header names against `['index'] + par` instead of only checking column count. Prevents appending to incompatible files and improves robustness.
+- Added the possibility to generate more samples for an existing generated dataset.
+
 ## [2.5.3] - 08/31/25
 - Developed the `CREATE_DATASET` module. ExoReL can now generate datasets by sampling multiple parameter ranges. `Sobol` or `random` sequencing can be chosen. It supports MPI for parallel computing.
 - Added fast CSV dataset export in `CREATE_DATASET`: writes `dataset.csv` with a leading `index` column and ordered parameter headers, plus `dataset_meta.json` sidecar with metadata. MPI-safe (writes on rank 0).

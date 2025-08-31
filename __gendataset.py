@@ -68,35 +68,92 @@ class GEN_DATASET:
             print("Columns mapping (index, parameter, lower, upper):\n" + "\n".join(lines))
             X_scaled = sp.stats.qmc.scale(X, lower, upper)
 
-        # Build and save the design matrix with an index and metadata (rank 0 only)
+        # Build the design matrix header (rank 0 only). Actual CSV write happens later.
         if MPIimport and MPIrank == 0:
-
-            nrows = X_scaled.shape[0]
-            # Prepend an index column for tracking
-            idx = np.arange(nrows, dtype=np.int64).reshape(-1, 1)
-            data = np.concatenate((idx, X_scaled), axis=1)
-            # Header: index followed by parameter names in the same order
             header = 'index,' + ','.join([str(p) for p in par])
-            csv_path = os.path.join(self.param['out_dir'], 'dataset.csv')
-            # Save as CSV with no comment prefix in header for easy parsing
-            np.savetxt(csv_path, data, delimiter=',', header=header, comments='', fmt='%g')
 
-            # Sidecar metadata with ordered parameter names
+        # Synchronize all processes, then broadcast X_scaled from rank 0
+        if MPIsize > 1:
+            MPI.COMM_WORLD.Barrier()
+            X_scaled = MPI.COMM_WORLD.bcast(X_scaled if MPIrank == 0 else None, root=0)
+            par = MPI.COMM_WORLD.bcast(par if MPIrank == 0 else None, root=0)
+
+        # Check for existing dataset and prepare appending/indexing strategy
+        # - Ensure output folder exists.
+        # - If dataset.csv exists, validate column count, determine next index, and append.
+        # - Otherwise, create a new dataset.csv with header.
+        csv_path = os.path.join(self.param['out_dir'], 'dataset.csv')
+
+        # Rank 0 performs filesystem I/O; broadcasts decisions
+        if MPIrank == 0:
+            os.makedirs(self.param['out_dir'], exist_ok=True)
+
+            append_mode = False
+            start_index = 0
+
+            # Validate that the existing header matches exactly the expected names
+            if os.path.isfile(csv_path):
+                with open(csv_path, 'r') as f:
+                    first_line = f.readline().strip()
+                header_cols = [h.strip() for h in first_line.split(',')]
+                expected_cols = ['index'] + [str(p) for p in par]
+                if header_cols != expected_cols:
+                    raise ValueError('Existing dataset.csv header does not match expected columns: ' + ','.join(header_cols))
+
+                # Determine max index to continue numbering
+                try:
+                    # Fast path: load first column only
+                    existing_idx = np.loadtxt(csv_path, delimiter=',', skiprows=1, usecols=0)
+                    if existing_idx.size == 0:
+                        start_index = 0
+                    else:
+                        # np.loadtxt returns scalar for single row; handle both cases
+                        start_index = int(np.max(existing_idx)) + 1
+                except Exception:
+                    # Fallback: stream through file
+                    max_idx = -1
+                    with open(csv_path, 'r') as f:
+                        _ = f.readline()  # skip header
+                        for line in f:
+                            if not line:
+                                continue
+                            try:
+                                val = int(line.split(',')[0])
+                                if val > max_idx:
+                                    max_idx = val
+                            except Exception:
+                                continue
+                    start_index = max_idx + 1 if max_idx >= 0 else 0
+
+                append_mode = True
+
+            # Write/append the design matrix built from X_scaled
+            nrows = X_scaled.shape[0]
+            idx = (np.arange(nrows, dtype=np.int64) + start_index).reshape(-1, 1)
+            data = np.concatenate((idx, X_scaled), axis=1)
+
+            if append_mode:
+                with open(csv_path, 'ab') as f:
+                    np.savetxt(f, data, delimiter=',', comments='', fmt='%g')
+            else:
+                header = 'index,' + ','.join([str(p) for p in par])
+                np.savetxt(csv_path, data, delimiter=',', header=header, comments='', fmt='%g')
+
+            # Update sidecar metadata
             meta = {
                 'columns': ['index'] + list(par),
-                'n_rows': int(nrows),
+                'n_rows': int(start_index + nrows),
                 'n_cols': int(data.shape[1] - 1),
                 'ExoReL_version': str(__version__),
             }
             with open(os.path.join(self.param['out_dir'], 'dataset_meta.json'), 'w') as f:
                 json.dump(meta, f, separators=(',', ':'))
 
-        # Synchronize all processes, then broadcast X_scaled from rank 0
-        if MPIimport:
+        if MPIsize > 1:
             MPI.COMM_WORLD.Barrier()
-            X_scaled = MPI.COMM_WORLD.bcast(X_scaled if MPIrank == 0 else None, root=0)
-            par = MPI.COMM_WORLD.bcast(par if MPIrank == 0 else None, root=0)
-
+            # Broadcast starting index to all ranks
+            start_index = MPI.COMM_WORLD.bcast(start_index if MPIrank == 0 else None, root=0)
+        
         # split X_scaled among MPI ranks for parallel processing if MPIsize is > 0.
         # Loop over the subset of X_scaled assigned to each rank, assign the samples
         # to the parameters in the self.param dictionary and generate the spectra.
@@ -208,13 +265,14 @@ class GEN_DATASET:
                     payload_params[str(k)] = self.param[str(k)]
 
             record = {
-                'index': int(i),
+                'index': int((start_index if 'start_index' in locals() else 0) + i),
                 # 'wavelength': np.asarray(wl, dtype=float).tolist(),
                 'spectrum': np.asarray(model, dtype=float).tolist(),
                 'parameters': payload_params,
             }
 
             # One file per sample to avoid MPI contention
-            fname = os.path.join(self.param['out_dir'], f'sample_{i:06d}.json')
+            gidx = int((start_index if 'start_index' in locals() else 0) + i)
+            fname = os.path.join(self.param['out_dir'], f'sample_{gidx:07d}.json')
             with open(fname, 'w') as f:
                 json.dump(record, f, separators=(',', ':'), ensure_ascii=False)
