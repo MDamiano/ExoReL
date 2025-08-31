@@ -1,0 +1,49 @@
+{
+    "Rs": 1.0,
+    "Ms": 1.0,
+    "Ts": 5760.0,
+    
+    "major-a": 1.0,
+    "eccentricity": 0.0,
+    "inclination": 90.0,
+    "Mp": 0.0031463518655061432,
+    "Tp": 294.0,
+    "Ag": 0.05,
+    "phi": 60.0,
+    
+    "fit_wtr_cld": true,
+    "adjust_VMR_gases": true,
+    "surface_albedo_parameters": 1,
+    
+    "use_adaptive_grid": true,
+    "n_layer": 100,
+    "fp_over_fs": true,
+    
+    "wave_file": "bins_UV7_VIS140_NIR70",
+    "output_directory": "test_6par/",
+    "n_spectra": 4,
+    
+    "Rp_range": [0.044607088905052314, 0.8921417781010462],
+    "Pw_top_range": [2.0, 7.0],
+    "cldw_depth_range": [2.0, 7.0],
+    "CR_H2O_range": [-7.0, 0.0],
+    "cld_frac_range": [0.0, 1.0],
+
+    "pp_range": [-7.0, 7.0],
+    "fit_H2O": true,
+    "fit_NH3": false,
+    "fit_CH4": false,
+    "fit_H2S": false,
+    "fit_SO2": false,
+    "fit_CO2": false,
+    "fit_CO": false,
+    "fit_O2": false,
+    "fit_O3": false,
+    "fit_N2O": false,
+    "fit_N2": true,
+    "fit_He": false,
+    "fit_H2": false,
+    
+    "optimizer": "sobol"
+
+}
