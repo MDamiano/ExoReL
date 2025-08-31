@@ -1,6 +1,6 @@
 ## [] -
 - Created `FORWARD_DATASET.run_forward` in `__forward.py`: for large datasets, loads only the k‑nearest samples to the target in parameter space (configurable via `interp_max_samples`, default 5000) before interpolating, reducing memory and CPU; uses Delaunay linear interpolation with nearest‑neighbor fallback. 
-- `FORWARD_DATASET` can be used during the retrieval process to retrieve on a pre-computed dataset instead of calculating the spectrum on the fly using the standard `FORWARD_MOD`.
+- `FORWARD_DATASET` can be used during the retrieval process to retrieve on a pre-computed dataset instead of calculating the spectrum on the fly using the standard `FORWARD_MOD`. It can also be used during when `create_spectrum` is invoked. Set `physics_model` equal to `dataset` and define `dataset_dir` with the dataset directory path in yhe parameter file to use this funcionality.
 
 ## [2.5.4] - 08/31/25
 - Strengthened dataset CSV validation in `GEN_DATASET`: compare exact header names against `['index'] + par` instead of only checking column count. Prevents appending to incompatible files and improves robustness.
