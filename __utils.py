@@ -39,6 +39,7 @@ def default_parameters():
     param['opar'] = 3.0  # correct the Rossland mean opacity at low pressure
 
     #### [MODEL_PAR] ####
+    param['P_standard'] = 10. ** np.arange(0.0, 12.01, step=0.01)  # standard pressure grid in Pa
     param['fit_p0'] = False  # whether to fit the surface parameter during retrieval
     param['fit_ag'] = False  # whether to fit the surface albedo during retrieval
     param['surface_albedo_parameters'] = 1  # how many different surface albedo to fit if 'param['fit_ag']' is True (choose between 1, 3, 5)
@@ -335,8 +336,6 @@ def par_and_calc(param):
     param['equivalent_a'] = a_ave
     param['F_ave'] = F_ave
     param['Tirr'] /= (param['equivalent_a'] ** 0.5)
-
-    param['P_standard'] = 10. ** np.arange(0.0, 12.01, step=0.01)
 
     if param['obs_numb'] is None:
         if not param['fit_phi']:
@@ -1017,7 +1016,7 @@ def detect_gen_npar(param):
     parameters = []
     for key, value in param.items():
         if key.endswith('_range'):
-            if key == 'pp_range':
+            if key == 'pp_range' or key == 'vmr_range':
                 pass
             else:
                 parameters.append(key)

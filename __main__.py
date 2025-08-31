@@ -17,7 +17,7 @@ class RETRIEVAL:
     def run_retrieval(self, parfile):
         self.param = read_parfile(self.param, parfile)
         if self.param['optimizer'] == 'multinest':
-            from ExoReL.__multinest import MULTINEST
+            from ExoReL.__multinest import MULTINEST # type: ignore
             bayes = MULTINEST(self.param)
             bayes.run_retrieval()
         else:
@@ -171,15 +171,17 @@ class CREATE_SPECTRUM:
 
 
 class CREATE_DATASET:
-    def __init__(self, canc_metadata=True):
+    def __init__(self, canc_metadata=True, verbose=False):
         param = default_parameters()
         param['pkg_dir'] = pkg_dir
         self.param = copy.deepcopy(param)
         self.param['ret_mode'] = False
-        self.canc_metadata = canc_metadata
+        self.param['canc_metadata'] = canc_metadata
+        self.param['verbose'] = verbose
 
     def run_forward(self, parfile):
         self.param = read_parfile(self.param, parfile, json_format=True)
-        from ExoReL.__gendataset import GEN_DATASET
+        self.param = load_input_spectrum(self.param)
+        from ExoReL.__gendataset import GEN_DATASET # type: ignore
         ob = GEN_DATASET(self.param)
         ob.run()

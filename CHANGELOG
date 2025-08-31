@@ -1,3 +1,8 @@
+## [2.5.3] - 08/31/25
+- Developed the `CREATE_DATASET` module. ExoReL can now generate datasets by sampling multiple parameter ranges. `Sobol` or `random` sequencing can be chosen. It supports MPI for parallel computing.
+- Added fast CSV dataset export in `CREATE_DATASET`: writes `dataset.csv` with a leading `index` column and ordered parameter headers, plus `dataset_meta.json` sidecar with metadata. MPI-safe (writes on rank 0).
+- Improved console mapping of sampled parameters to bounds in dataset generation.
+
 ## [2.5.2] - 08/30/25
 - Added automatic download of required data folders (`forward_mod`, `PHO_STELLAR_MODEL`) on import when missing, using `gdown`; validates content and cleans temporary artifacts.
 - Introduced public helper `ensure_required_data()` to trigger the data check/download explicitly.
