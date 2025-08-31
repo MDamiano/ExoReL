@@ -33,8 +33,7 @@ if multinest_import:
 
         print('MultiNest library: "' + str(lib_mpi) + '" correctly loaded.')
 else:
-    print('SOME ERRORS OCCURRED - MultiNest library is not loaded.')
-    raise ImportError
+    raise ImportError ('ERRORS OCCURRED - Check your MultiNest installation.')
 
 
 class MULTINEST:
