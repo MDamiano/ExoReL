@@ -1,6 +1,7 @@
 from .__basics import *
 from .__utils import *
 from .__forward import *
+from .__plotting import *
 from . import __version__
 
 # trying to initiate MPI parallelization
@@ -355,7 +356,7 @@ class MULTINEST:
                     cube[:, 0] = list(s['modes'][0]['maximum a posterior'])
 
                     self.plot_nest_spec(cube[:, 0])
-                    self.plot_chemistry()
+                    plot_chemistry(self.param, solutions=None)
                     if self.param['surface_albedo_parameters'] > 1:
                         self.plot_surface_albedo()
                     if self.param['plot_contribution'] and self.param['obs_numb'] is None:
@@ -366,7 +367,7 @@ class MULTINEST:
                         cube[:, i] = list(s['modes'][i]['maximum a posterior'])
 
                         self.plot_nest_spec(cube[:, i], solutions=i + 1)
-                        self.plot_chemistry(solutions=i + 1)
+                        plot_chemistry(self.param, solutions=i + 1)
                         if self.param['surface_albedo_parameters'] > 1:
                             self.plot_surface_albedo(solutions=i + 1)
                         if self.param['plot_contribution'] and self.param['obs_numb'] is None:
@@ -529,100 +530,6 @@ class MULTINEST:
             self.param['phi'] = cube[par + n_obs] * math.pi / 180.  # phi
 
         self.param['core_number'] = None
-
-    def plot_chemistry(self, solutions=None):
-        ## ------------------------
-        ## Chemistry plot
-        ## ------------------------
-
-        fig, ax = plt.subplots()
-
-        for mol in self.param['fit_molecules']:
-            ax.loglog(self.param['vmr_' + mol], self.param['P'], label=mol)
-            if mol == 'O3' and self.param['O3_earth']:
-                print(str(mol) + ' -> Stratosphere: ' + str(self.param['vmr_' + mol][np.where(self.param['vmr_' + mol] > 10.0 ** (-11.0))[0][0]]) + ', Elsewhere: 0.0')
-            else:
-                print(str(mol) + ' -> Top: ' + str(self.param['vmr_' + mol][0]) + ', Bottom: ' + str(self.param['vmr_' + mol][-1]))
-
-        if self.param['gas_fill'] is not None:
-            if not self.param['rocky']:
-                print('He' + ' -> Top: ' + str(self.param['vmr_He'][0]) + ', Bottom: ' + str(self.param['vmr_He'][-1]))
-                ax.loglog(self.param['vmr_He'], self.param['P'], label='He')
-            print(str(self.param['gas_fill']) + ' -> Top: ' + str(self.param['vmr_' + self.param['gas_fill']][0]) + ', Bottom: ' + str(self.param['vmr_' + self.param['gas_fill']][-1]))
-            ax.loglog(self.param['vmr_' + self.param['gas_fill']], self.param['P'], label=self.param['gas_fill'])
-
-        ax.set_xlim((1e-18, 1.5))
-        ax.set_xlabel('Molecule VMR')
-        ax.set_ylabel('Pressure [Pa]')
-
-        def pa_to_bar(y):
-            return y / (10. ** 5.)
-
-        def bar_to_pa(y):
-            return y * (10. ** 5.)
-
-        if self.param['fit_wtr_cld']:
-            pos_cldw = int(find_nearest(self.param['P'], self.param['Pw_top']))
-
-            plt.hlines(self.param['P'][int(find_nearest(self.param['P'], (self.param['cldw_depth'] + self.param['P'][pos_cldw])))], ax.get_xlim()[0], ax.get_xlim()[1], linestyle='--', alpha=0.5, color='black', label='H$_2$O cloud')
-            plt.hlines(self.param['P'][int(find_nearest(self.param['P'], self.param['Pw_top']))], ax.get_xlim()[0], ax.get_xlim()[1], linestyle='--', alpha=0.5, color='black')
-        if self.param['rocky']:
-            plt.hlines(self.param['P'][int(find_nearest(self.param['P'], self.param['P0']))], ax.get_xlim()[0], ax.get_xlim()[1], linestyle='-', color='black', alpha=0.75, label='Surface')
-
-        ax.yaxis.set_ticks(10. ** np.arange(1.0, 12.1, 1))
-        if sys.version[0] == '3':
-            secax_y = ax.secondary_yaxis('right', functions=(pa_to_bar, bar_to_pa))
-            secax_y.set_ylabel('Pressure [bar]')
-
-        if self.param['rocky']:
-            ax.set_ylim((1.0, self.param['P0'] + (0.1 * self.param['P0'])))
-        else:
-            bottom = 5 * self.param['P'][int(find_nearest(self.param['P'], (self.param['cldw_depth'] + self.param['P'][pos_cldw])))]
-            ax.set_ylim([1.0, bottom])
-        plt.gca().invert_yaxis()
-
-        ax.legend(loc='upper left', framealpha=0)
-        if solutions is None:
-            plt.savefig(self.param['out_dir'] + 'Nest_chemistry.pdf')
-        else:
-            plt.savefig(self.param['out_dir'] + 'Nest_chemistry (solution ' + str(solutions) + ').pdf')
-        plt.close()
-
-        ## ------------------------
-        ## Mean Molecular Mass plot
-        ## ------------------------
-
-        fig, ax = plt.subplots()
-        ax.semilogy(self.param['mean_mol_weight'], self.param['P'], label='Mean Molecular Mass')
-        ax.set_xlabel('Mean molecular weight')
-        ax.set_ylabel('Pressure [Pa]')
-
-        ax.set_xlim((ax.get_xlim()[0], ax.get_xlim()[1]))
-
-        if self.param['fit_wtr_cld']:
-            plt.hlines(self.param['P'][int(find_nearest(self.param['P'], (self.param['cldw_depth'] + self.param['P'][pos_cldw])))], ax.get_xlim()[0], ax.get_xlim()[1], linestyle='--', alpha=0.5, color='black', label='H$_2$O cloud')
-            plt.hlines(self.param['P'][int(find_nearest(self.param['P'], self.param['Pw_top']))], ax.get_xlim()[0], ax.get_xlim()[1], linestyle='--', alpha=0.5, color='black')
-        if self.param['rocky']:
-            plt.hlines(self.param['P'][int(find_nearest(self.param['P'], self.param['P0']))], ax.get_xlim()[0], ax.get_xlim()[1], linestyle='-', color='black', alpha=0.75, label='Surface')
-
-        ax.yaxis.set_ticks(10. ** np.arange(1.0, 12.1, 1))
-        if sys.version[0] == '3':
-            secax_y = ax.secondary_yaxis('right', functions=(pa_to_bar, bar_to_pa))
-            secax_y.set_ylabel('Pressure [bar]')
-
-        if self.param['rocky']:
-            ax.set_ylim((1.0, self.param['P0'] + (0.1 * self.param['P0'])))
-        else:
-            bottom = 5 * self.param['P'][int(find_nearest(self.param['P'], (self.param['cldw_depth'] + self.param['P'][pos_cldw])))]
-            ax.set_ylim([1.0, bottom])
-        plt.gca().invert_yaxis()
-
-        ax.legend(framealpha=0)
-        if solutions is None:
-            plt.savefig(self.param['out_dir'] + 'Nest_MMM.pdf')
-        else:
-            plt.savefig(self.param['out_dir'] + 'Nest_MMM (solution ' + str(solutions) + ').pdf')
-        plt.close()
 
     def plot_nest_spec(self, cube, solutions=None):
         self.cube_to_param(cube)
