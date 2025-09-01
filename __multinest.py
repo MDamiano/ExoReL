@@ -358,7 +358,7 @@ class MULTINEST:
                     self.plot_nest_spec(cube[:, 0])
                     plot_chemistry(self.param, solutions=None)
                     if self.param['surface_albedo_parameters'] > 1:
-                        self.plot_surface_albedo()
+                        plot_surface_albedo(self.param, solutions=None)
                     if self.param['plot_contribution'] and self.param['obs_numb'] is None:
                         self.plot_contribution(cube[:, 0])
                 else:
@@ -369,7 +369,7 @@ class MULTINEST:
                         self.plot_nest_spec(cube[:, i], solutions=i + 1)
                         plot_chemistry(self.param, solutions=i + 1)
                         if self.param['surface_albedo_parameters'] > 1:
-                            self.plot_surface_albedo(solutions=i + 1)
+                            plot_surface_albedo(self.param, solutions=i + 1)
                         if self.param['plot_contribution'] and self.param['obs_numb'] is None:
                             self.plot_contribution(cube[:, i], solutions=i + 1)
 
@@ -704,87 +704,6 @@ class MULTINEST:
             plt.savefig(self.param['out_dir'] + 'Nest_spectrum.pdf')
         else:
             plt.savefig(self.param['out_dir'] + 'Nest_spectrum (solution ' + str(solutions) + ').pdf')
-        plt.close()
-
-    def plot_surface_albedo(self, solutions=None):
-        # Define parameters for the step function
-        x1 = self.param['Ag_x1'] + 0.0
-        a1, a2 = self.param['Ag1'] + 0.0, self.param['Ag2'] + 0.0
-        if self.param['surface_albedo_parameters'] == int(5):
-            x2 = self.param['Ag_x2'] + 0.0  # wavelength cutoffs in microns
-            a3 = self.param['Ag3'] + 0.0  # albedo values for each region
-
-        # Create data for plotting
-        wavelength = np.linspace(self.param['min_wl'], self.param['max_wl'], 1000)  # x-axis: wavelength in microns
-
-        # Create the step function
-        step_albedo = np.zeros_like(wavelength)
-        step_albedo[wavelength < x1] = a1
-        if self.param['surface_albedo_parameters'] == int(3):
-            step_albedo[wavelength >= x1] = a2
-        elif self.param['surface_albedo_parameters'] == int(5):
-            step_albedo[(wavelength >= x1) & (wavelength < x2)] = a2
-            step_albedo[wavelength >= x2] = a3
-
-        # Create a high-quality figure
-        fig, ax = plt.subplots(figsize=(8, 5), dpi=150)
-
-        # Plot with enhanced styling
-        ax.plot(wavelength, step_albedo, linewidth=3, color='#ff7f0e', label='Retrieved surface albedo function')
-
-        # Fill areas under curves for visual enhancement
-        ax.fill_between(wavelength, 0, step_albedo, alpha=0.3, color='#ff7f0e')
-
-        # Add vertical lines at transition points
-        ax.axvline(x=x1, color='#9467bd', linestyle='--', linewidth=1.5, alpha=0.7, label=f'Transition $\lambda_1$: {np.round(x1,2)} $\mu$m')
-        if self.param['surface_albedo_parameters'] == int(5):
-            ax.axvline(x=x2, color='#d62728', linestyle='--', linewidth=1.5, alpha=0.7, label=f'Transition $\lambda_2$: {np.round(x2,2)} $\mu$m')
-
-        # Annotations for step values
-        ax.annotate(f'a$_1$ = {np.round(a1,2)}', xy=((self.param['min_wl'] + x1) / 2, a1), xytext=((self.param['min_wl'] + x1) / 2, a1 + 0.04),
-                    arrowprops=dict(facecolor='black', shrink=0.05, width=1.5, headwidth=8),
-                    fontsize=12)
-        if self.param['surface_albedo_parameters'] == int(3):
-            ax.annotate(f'a$_2$ = {np.round(a2, 2)}', xy=((x1 + self.param['max_wl']) / 2, a2), xytext=((x1 + self.param['max_wl']) / 2, a2 + 0.04),
-                        arrowprops=dict(facecolor='black', shrink=0.05, width=1.5, headwidth=8),
-                        fontsize=12)
-        elif self.param['surface_albedo_parameters'] == int(5):
-            ax.annotate(f'a$_2$ = {np.round(a2,2)}', xy=((x1 + x2) / 2, a2), xytext=((x1 + x2) / 2, a2 + 0.04),
-                        arrowprops=dict(facecolor='black', shrink=0.05, width=1.5, headwidth=8),
-                        fontsize=12)
-            ax.annotate(f'a$_3$ = {np.round(a3,2)}', xy=((x2 + self.param['max_wl']) / 2, a3), xytext=((x2 + self.param['max_wl']) / 2, a3 + 0.04),
-                        arrowprops=dict(facecolor='black', shrink=0.05, width=1.5, headwidth=8),
-                        fontsize=12)
-
-        # Enhance the axes and labels
-        ax.set_xlabel('Wavelength [$\mu$m]', fontsize=14, fontweight='bold')
-        ax.set_ylabel('Surface Albedo', fontsize=14, fontweight='bold')
-
-        # Set axis limits with a bit of padding
-        # ax.set_xlim(0.25, 1.85)
-        if self.param['surface_albedo_parameters'] == int(3):
-            ax.set_ylim(-0.02, np.max([a1, a2]) + 0.1)
-        elif self.param['surface_albedo_parameters'] == int(5):
-            ax.set_ylim(-0.02, np.max([a1, a2, a3]) + 0.1)
-
-        # Add a grid for better readability
-        ax.grid(True, linestyle='--', alpha=0.3)
-
-        # Format tick labels
-        ax.xaxis.set_major_formatter(ticker.FormatStrFormatter('%.1f'))
-        ax.yaxis.set_major_formatter(ticker.FormatStrFormatter('%.2f'))
-
-        # Customize tick parameters
-        ax.tick_params(axis='both', which='major', labelsize=12)
-
-        # Adjust layout
-        plt.tight_layout()
-
-        if solutions is None:
-            plt.savefig(self.param['out_dir'] + 'Nest_surface_albedo.pdf')
-        else:
-            plt.savefig(self.param['out_dir'] + 'Nest_surface_albedo (solution ' + str(solutions) + ').pdf')
-
         plt.close()
 
     def plot_contribution(self, cube, solutions=None):
