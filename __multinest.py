@@ -386,6 +386,7 @@ class MULTINEST:
         if MPIimport:
             MPI.Finalize()
 
+
     def filter_pymultinest_modes(self, mres):
         mds = len(mres.get_stats()['modes'])
         if mds == 1:
