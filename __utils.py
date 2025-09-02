@@ -231,6 +231,11 @@ def read_parfile(param, parfile=None, json_format=False):
     if param['albedo_calc']:
         param['fp_over_fs'] = False
 
+    if param['fit_wtr_cld'] and param['fit_amm_cld']:
+        param['double_cloud'] = True
+    else:
+        param['double_cloud'] = False
+
     if param['Mp'] is None or param['Mp'] <= 0.06:
         param['rocky'] = True
     else:
