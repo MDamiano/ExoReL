@@ -729,6 +729,141 @@ def ranges(param):
     return param
 
 
+def adjust_ranges_from_dataset(param):
+    """Adjust retrieval ranges to the min/max present in a dataset.
+
+    Expects a CSV file at ``param['dataset_dir']/dataset.csv`` with a header of the form:
+    ``index,<param_or_molecule>,...`` where parameter columns either match the
+    molecule names in ``param['fit_molecules']`` or specific ``*_range`` keys.
+
+    Returns the input ``param`` updated in place with new ``*_range`` bounds
+    based on the dataset column-wise min/max. Raises if required columns are
+    missing.
+    """
+    ds_dir = param.get('dataset_dir')
+    if ds_dir is None:
+        raise KeyError('Parameter "dataset_dir" must be set for physics_model == "dataset"')
+    csv_path = os.path.join(ds_dir, 'dataset.csv')
+    if not os.path.isfile(csv_path):
+        raise FileNotFoundError('dataset.csv not found in: ' + ds_dir)
+
+    # Load header and data (index | parameters...)
+    with open(csv_path, 'r') as f:
+        header = f.readline().strip()
+    cols = [h.strip() for h in header.split(',')]
+    if len(cols) < 2 or cols[0] != 'index':
+        raise ValueError('Invalid dataset.csv header; first column must be "index"')
+
+    data = np.loadtxt(csv_path, delimiter=',', skiprows=1)
+    if data.ndim == 1:
+        data = data.reshape(1, -1)
+    X = data[:, 1:]
+    colnames = cols[1:]
+
+    # Pre-compute bounds for each column
+    mins = np.nanmin(X, axis=0)
+    maxs = np.nanmax(X, axis=0)
+    idx_map = {name: i for i, name in enumerate(colnames)}
+
+    def get_bounds(candidates):
+        for name in candidates:
+            j = idx_map.get(name)
+            if j is not None:
+                return [float(mins[j]), float(maxs[j])]
+        return None
+
+    # Accept alternative aliases that might appear in datasets
+    alias = {
+        'p0_range': ['p0_range', 'P0_range'],
+        'ptopw_range': ['ptopw_range', 'Pw_top_range'],
+        'dcldw_range': ['dcldw_range', 'cldw_depth_range'],
+        'crh2o_range': ['crh2o_range', 'CR_H2O_range'],
+        'ptopa_range': ['ptopa_range', 'Pa_top_range'],
+        'dclda_range': ['dclda_range', 'clda_depth_range'],
+        'crnh3_range': ['crnh3_range', 'CR_NH3_range'],
+        'ag_range': ['ag_range'],
+        'ag1_range': ['ag1_range'],
+        'ag2_range': ['ag2_range'],
+        'ag3_range': ['ag3_range'],
+        'ag_x1_range': ['ag_x1_range'],
+        'ag_x2_range': ['ag_x2_range'],
+        'tp_range': ['tp_range', 'Tp_range'],
+        'cld_frac_range': ['cld_frac_range'],
+        'gp_range': ['gp_range'],
+        'Mp_range': ['Mp_range'],
+        'Rp_range': ['Rp_range'],
+        'p_size_range': ['p_size_range', 'P_size_range'],
+        'phi_range': ['phi_range']
+    }
+
+    missing = []
+
+    # Gas parameters (one column per molecule, in log10-space)
+    gps = param.get('gas_par_space')
+    for mol in param['fit_molecules']:
+        j = idx_map.get(mol)
+        if j is None:
+            missing.append(mol)
+            continue
+        if gps in ('volume_mixing_ratio', 'vmr'):
+            param['vmr' + mol + '_range'] = [float(mins[j]), float(maxs[j])]
+        elif gps == 'partial_pressure':
+            param['pp' + mol + '_range'] = [float(mins[j]), float(maxs[j])]
+        elif gps in ('centered_log_ratio', 'clr'):
+            param['clr' + mol + '_range'] = [float(mins[j]), float(maxs[j])]
+
+    # Scalar/free parameters mapped by *_range keys
+    def require_and_set(key):
+        rng = get_bounds(alias.get(key, [key]))
+        if rng is None:
+            missing.append(key)
+        else:
+            param[key] = rng
+
+    if param['fit_p0'] and param['gas_par_space'] != 'partial_pressure':
+        require_and_set('p0_range')
+    if param['fit_wtr_cld']:
+        require_and_set('ptopw_range')
+        require_and_set('dcldw_range')
+        require_and_set('crh2o_range')
+    if param['fit_amm_cld']:
+        require_and_set('ptopa_range')
+        require_and_set('dclda_range')
+        require_and_set('crnh3_range')
+    if param['fit_ag']:
+        if param['surface_albedo_parameters'] == int(1):
+            require_and_set('ag_range')
+        elif param['surface_albedo_parameters'] == int(3):
+            require_and_set('ag1_range')
+            require_and_set('ag2_range')
+            require_and_set('ag_x1_range')
+        elif param['surface_albedo_parameters'] == int(5):
+            require_and_set('ag1_range')
+            require_and_set('ag2_range')
+            require_and_set('ag3_range')
+            require_and_set('ag_x1_range')
+            require_and_set('ag_x2_range')
+    if param['fit_T']:
+        require_and_set('tp_range')
+    if param['fit_cld_frac']:
+        require_and_set('cld_frac_range')
+    if param['fit_g']:
+        require_and_set('gp_range')
+    if param['fit_Mp']:
+        require_and_set('Mp_range')
+    if param['fit_Rp']:
+        require_and_set('Rp_range')
+    if param['fit_p_size']:
+        require_and_set('p_size_range')
+    if param['fit_phi']:
+        require_and_set('phi_range')
+
+    if len(missing) > 0:
+        raise ValueError('Required fitted parameters not found in dataset columns: ' + ', '.join(missing))
+
+    return param
+
+
 def custom_spectral_binning(x, wl, model, err=None, bins=False):
     binned_mod = []
     if err is not None:
@@ -780,7 +915,7 @@ def custom_spectral_binning(x, wl, model, err=None, bins=False):
         return np.array(binned_mod), np.array(binned_er)
 
 
-def model_finalizzation(param, alb_wl, alb, planet_albedo=False, fp_over_fs=False, n_obs=None):
+def model_finalizzation(param, alb_wl, alb, planet_albedo=False, fp_over_fs=False, phys_mod='radiative_transfer', n_obs=None):
     if not param['wl_native']:
         if param['obs_numb'] is not None:
             wl = param['spectrum'][str(n_obs)]['wl'] + 0.0
@@ -804,15 +939,18 @@ def model_finalizzation(param, alb_wl, alb, planet_albedo=False, fp_over_fs=Fals
     if param['flat_albedo']:
         albedo = np.ones(len(albedo)) * param['flat_albedo_value']
 
-    if planet_albedo and not fp_over_fs:
+    if phys_mod == 'radiative_transfer':
+        if planet_albedo and not fp_over_fs:
+            return wl, albedo
+        elif fp_over_fs and not planet_albedo:
+            contrast = albedo * (((param['Rp'] * const.R_jup.value) / (param['major-a'] * const.au.value)) ** 2.0)
+            return wl, contrast
+        elif not planet_albedo and not fp_over_fs:
+            contrast = albedo * (((param['Rp'] * const.R_jup.value) / (param['major-a'] * const.au.value)) ** 2.0)
+            planet_flux = contrast * param['starfx']['y'] * (((param['Rs'] * const.R_sun.value) / (param['distance'] * const.pc.value)) ** 2.0)
+            return wl, planet_flux
+    else:
         return wl, albedo
-    elif fp_over_fs and not planet_albedo:
-        contrast = albedo * (((param['Rp'] * const.R_jup.value) / (param['major-a'] * const.au.value)) ** 2.0)
-        return wl, contrast
-    elif not planet_albedo and not fp_over_fs:
-        contrast = albedo * (((param['Rp'] * const.R_jup.value) / (param['major-a'] * const.au.value)) ** 2.0)
-        planet_flux = contrast * param['starfx']['y'] * (((param['Rs'] * const.R_sun.value) / (param['distance'] * const.pc.value)) ** 2.0)
-        return wl, planet_flux
 
 
 def take_star_spectrum(param, plot=False):

@@ -1499,6 +1499,8 @@ class FORWARD_MODEL:
         self.__run_structure()
         alb_wl, alb = self.__run_c_code()
 
+        alb_wl *= 10. ** (-3.)
+
         return alb_wl, alb
 
 
@@ -1661,10 +1663,7 @@ class FORWARD_DATASET:
         # For large datasets, load only k-nearest samples in parameter space to the target
         n_samples = X.shape[0]
         dim = X.shape[1]
-        if dim < 10:
-            file_to_open = 1000
-        else:
-            file_to_open = 2 ** dim
+        file_to_open = 2 ** dim
 
         if n_samples > file_to_open:
             # Compute squared distances to target and select k nearest
@@ -1702,7 +1701,7 @@ class FORWARD_DATASET:
         alb_wl = self._load_wavelength_grid(wave_file_id)
         alb = np.asarray(y, dtype=float)
 
-        return alb_wl, alb
+        return alb_wl, alb[0]
 
 
 def forward(parameters_dictionary, evaluation=None, phi=None, n_obs=None, retrieval_mode=True, core_number=None, albedo_calc=False, fp_over_fs=False, canc_metadata=False):
@@ -1793,18 +1792,6 @@ def forward(parameters_dictionary, evaluation=None, phi=None, n_obs=None, retrie
         param['vmr_O3'] = ozone_earth_mask(param)
     param = calc_mean_mol_mass(param)
 
-    if param['physics_model'] == 'radiative_transfer':
-        mod = FORWARD_MODEL(param, retrieval=retrieval_mode, canc_metadata=canc_metadata)
-    elif param['physics_model'] == 'dataset':
-        mod = FORWARD_DATASET(param, dataset_dir=param['dataset_dir'])
-    elif param['physics_model'] == 'AI_model':
-        pass # to be implemented
-    else:
-        raise ValueError('Unknown physics_model: ' + str(param['physics_model']))
-
-    alb_wl, alb = mod.run_forward()
-    alb_wl *= 10. ** (-3.)
-
     if not retrieval_mode and param['verbose']:
         if n_obs == 0 or n_obs is None:
             if albedo_calc and not fp_over_fs:
@@ -1814,7 +1801,18 @@ def forward(parameters_dictionary, evaluation=None, phi=None, n_obs=None, retrie
             else:
                 print('Calculating the planetary flux as function of wavelength')
 
-    wl, model = model_finalizzation(param, alb_wl, alb, planet_albedo=albedo_calc, fp_over_fs=fp_over_fs, n_obs=n_obs)
+    if param['physics_model'] == 'radiative_transfer':
+        mod = FORWARD_MODEL(param, retrieval=retrieval_mode, canc_metadata=canc_metadata)
+        alb_wl, alb = mod.run_forward()
+        wl, model = model_finalizzation(param, alb_wl, alb, planet_albedo=albedo_calc, fp_over_fs=fp_over_fs, n_obs=n_obs)
+    elif param['physics_model'] == 'dataset':
+        mod = FORWARD_DATASET(param, dataset_dir=param['dataset_dir'])
+        wl, fpfs = mod.run_forward()
+        wl, model = model_finalizzation(param, alb_wl, fpfs, phys_mod=param['physics_model'], n_obs=n_obs)
+    elif param['physics_model'] == 'AI_model':
+        pass # to be implemented
+    else:
+        raise ValueError('Unknown physics_model: ' + str(param['physics_model']))
 
     if retrieval_mode:
         return model
