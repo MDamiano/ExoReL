@@ -168,7 +168,7 @@ class GEN_DATASET:
 
         gps = self.param.get('gas_par_space')
 
-        other_params = ["Rs", "Ms", "Ts", "major-a", "Tp", "cld_frac", "Ag", "Ag1", "Ag2", "Ag3", "Ag_x1", "Ag_x2", "phi", "p_size"]
+        other_params = ["Rs", "Ms", "Ts", "major-a", "Tp", "cld_frac", "Ag", "Ag1", "Ag2", "Ag3", "Ag_x1", "Ag_x2", "phi"]
 
         # Tight loop over this rank's chunk
         for i in range(start, end):
@@ -221,6 +221,9 @@ class GEN_DATASET:
                 self.param['gp'] = (const.G.value * const.M_jup.value * self.param['Mp']) / ((const.R_jup.value * self.param['Rp']) ** 2.)
             elif self.param['Rp'] is not None and self.param['Mp'] is not None and self.param['gp'] is not None:
                 pass
+            
+            if "p_size" in eval_map.keys():
+                self.param["p_size"] = 10. ** eval_map["p_size"]
 
             for j in other_params:
                 if j in eval_map.keys():
