@@ -1590,7 +1590,7 @@ class FORWARD_DATASET:
                     v = self.param.get('vmr_' + mol)
                     if v is None:
                         raise KeyError('Missing self.param["vmr_' + mol + '"] for vmr gas_par_space')
-                    xtgt.append(float(v))
+                    xtgt.append(float(np.log10(v[-1])))
                 elif gps == 'partial_pressure':
                     v = self.param.get('vmr_' + mol)
                     P0 = self.param.get('P0')
@@ -1598,7 +1598,7 @@ class FORWARD_DATASET:
                         raise KeyError('Missing vmr_' + mol + ' or P0 for partial_pressure gas_par_space')
                     if v * P0 <= 0:
                         raise ValueError('vmr_' + mol + ' * P0 must be > 0 for log10 mapping')
-                    xtgt.append(float(np.log10(v * P0)))
+                    xtgt.append(float(np.log10(v * P0)[-1]))
         return np.array(xtgt, dtype=float)
 
     def _load_spectra_matrix(self, indices):
@@ -1661,11 +1661,15 @@ class FORWARD_DATASET:
         # For large datasets, load only k-nearest samples in parameter space to the target
         n_samples = X.shape[0]
         dim = X.shape[1]
+        if dim < 10:
+            file_to_open = 1000
+        else:
+            file_to_open = 2 ** dim
 
-        if n_samples > 5000:
+        if n_samples > file_to_open:
             # Compute squared distances to target and select k nearest
             d2 = np.sum((X - xtgt) ** 2, axis=1)
-            k = min(5000, n_samples)
+            k = min(file_to_open, n_samples)
             # Ensure we have at least dim+1 points for simplex interpolation when possible
             k = max(min(n_samples, k), min(dim + 1, n_samples))
             nn_idx = np.argpartition(d2, k - 1)[:k]
@@ -1699,6 +1703,7 @@ class FORWARD_DATASET:
         alb = np.asarray(y, dtype=float)
 
         return alb_wl, alb
+
 
 def forward(parameters_dictionary, evaluation=None, phi=None, n_obs=None, retrieval_mode=True, core_number=None, albedo_calc=False, fp_over_fs=False, canc_metadata=False):
     param = copy.deepcopy(parameters_dictionary)

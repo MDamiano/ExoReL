@@ -197,8 +197,8 @@ class GEN_DATASET:
                     # Ensure filler completes the sum to unity
                     s = 0.0
                     for mol in self.param['fit_molecules']:
-                        s += eval_map[mol]
-                        self.param['vmr_' + mol] = eval_map[mol] + 0.0
+                        s += 10. ** eval_map[mol]
+                        self.param['vmr_' + mol] = 10. ** eval_map[mol]
                     self.param['vmr_' + self.param['gas_fill']] = max(0.0, 1.0 - s)
                 elif gps == 'partial_pressure':
                     pp = []
