@@ -1803,16 +1803,15 @@ def forward(parameters_dictionary, evaluation=None, phi=None, n_obs=None, retrie
 
     if param['physics_model'] == 'radiative_transfer':
         mod = FORWARD_MODEL(param, retrieval=retrieval_mode, canc_metadata=canc_metadata)
-        alb_wl, alb = mod.run_forward()
-        wl, model = model_finalizzation(param, alb_wl, alb, planet_albedo=albedo_calc, fp_over_fs=fp_over_fs, n_obs=n_obs)
     elif param['physics_model'] == 'dataset':
         mod = FORWARD_DATASET(param, dataset_dir=param['dataset_dir'])
-        wl, fpfs = mod.run_forward()
-        wl, model = model_finalizzation(param, alb_wl, fpfs, phys_mod=param['physics_model'], n_obs=n_obs)
     elif param['physics_model'] == 'AI_model':
         pass # to be implemented
     else:
         raise ValueError('Unknown physics_model: ' + str(param['physics_model']))
+    
+    alb_wl, alb = mod.run_forward()
+    wl, model = model_finalizzation(param, alb_wl, alb, planet_albedo=albedo_calc, fp_over_fs=fp_over_fs, n_obs=n_obs)
 
     if retrieval_mode:
         return model

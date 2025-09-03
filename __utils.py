@@ -915,7 +915,7 @@ def custom_spectral_binning(x, wl, model, err=None, bins=False):
         return np.array(binned_mod), np.array(binned_er)
 
 
-def model_finalizzation(param, alb_wl, alb, planet_albedo=False, fp_over_fs=False, phys_mod='radiative_transfer', n_obs=None):
+def model_finalizzation(param, alb_wl, alb, planet_albedo=False, fp_over_fs=False, n_obs=None):
     if not param['wl_native']:
         if param['obs_numb'] is not None:
             wl = param['spectrum'][str(n_obs)]['wl'] + 0.0
@@ -939,18 +939,15 @@ def model_finalizzation(param, alb_wl, alb, planet_albedo=False, fp_over_fs=Fals
     if param['flat_albedo']:
         albedo = np.ones(len(albedo)) * param['flat_albedo_value']
 
-    if phys_mod == 'radiative_transfer':
-        if planet_albedo and not fp_over_fs:
-            return wl, albedo
-        elif fp_over_fs and not planet_albedo:
-            contrast = albedo * (((param['Rp'] * const.R_jup.value) / (param['major-a'] * const.au.value)) ** 2.0)
-            return wl, contrast
-        elif not planet_albedo and not fp_over_fs:
-            contrast = albedo * (((param['Rp'] * const.R_jup.value) / (param['major-a'] * const.au.value)) ** 2.0)
-            planet_flux = contrast * param['starfx']['y'] * (((param['Rs'] * const.R_sun.value) / (param['distance'] * const.pc.value)) ** 2.0)
-            return wl, planet_flux
-    else:
+    if planet_albedo and not fp_over_fs:
         return wl, albedo
+    elif fp_over_fs and not planet_albedo:
+        contrast = albedo * (((param['Rp'] * const.R_jup.value) / (param['major-a'] * const.au.value)) ** 2.0)
+        return wl, contrast
+    elif not planet_albedo and not fp_over_fs:
+        contrast = albedo * (((param['Rp'] * const.R_jup.value) / (param['major-a'] * const.au.value)) ** 2.0)
+        planet_flux = contrast * param['starfx']['y'] * (((param['Rs'] * const.R_sun.value) / (param['distance'] * const.pc.value)) ** 2.0)
+        return wl, planet_flux
 
 
 def take_star_spectrum(param, plot=False):
