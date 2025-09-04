@@ -6,6 +6,14 @@
 - Improved validation and error messages for dataset mode; clearer guidance when required files/keys are missing.
 - Performance: nearest-neighbor presampling via `interp_max_samples` (2 ** dimension) reduces memory/CPU for large datasets.
 
+## [2.5.5] - 09/01/25
+- Centralized post‑processing in `__plotting.py`: `MULTINEST` now delegates spectrum, chemistry, surface‑albedo, and posterior plots to shared helpers, reducing duplication and improving maintainability.
+- Added `plot_nest_spec`: overlays MAP model on data native and R=500 grids, optionally draws 1σ/2σ/3σ bands from `random_samples.dat`, and saves `Nest_spectrum.pdf` plus `Best_fit.dat` (per‑solution when multimodal).
+- Unified posterior plotting via `plot_posteriors`: preserves filenames (`Nest_trace.png`, `Nest_posteriors.pdf`), supports multi‑mode runs, and converts gas parameters to VMR space when applicable.
+- Light visual polish for plots (style, labels) and minor I/O reductions during post‑processing.
+- Simplified `MULTINEST` post‑processing: removed embedded plotting methods and now invoke helpers from `__plotting` for chemistry and surface‑albedo figures.
+- Refactored plotting to dedicated `__plotting.py` module: moved `plot_chemistry` and `plot_surface_albedo` out of `__multinest.py` and updated all references/calls.
+
 ## [2.5.4] - 08/31/25
 - Strengthened dataset CSV validation in `GEN_DATASET`: compare exact header names against `['index'] + par` instead of only checking column count. Prevents appending to incompatible files and improves robustness.
 - Added the possibility to generate more samples for an existing generated dataset.
