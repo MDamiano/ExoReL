@@ -17,7 +17,9 @@ if MPIimport:
     if MPIrank == 1:
         print('MPI enabled. Running on ' + str(MPIsize) + ' cores')
 else:
-    print('MPI disabled')
+    print('CAUTION - MPI disabled. Check mpi4py installation if you want to use MPI. The work will be done on a single core')
+    MPIrank = 0
+    MPIsize = 1
 
 
 class GEN_DATASET:
@@ -26,7 +28,7 @@ class GEN_DATASET:
         self.param = pre_load_variables(self.param)
 
     def run(self):
-        if MPIimport and MPIrank == 0:
+        if MPIrank == 0:
             print(f"Running ExoReL – version {__version__}")
             npar, par = detect_gen_npar(self.param)
         
@@ -68,8 +70,7 @@ class GEN_DATASET:
             print("Columns mapping (index, parameter, lower, upper):\n" + "\n".join(lines))
             X_scaled = sp.stats.qmc.scale(X, lower, upper)
 
-        # Build the design matrix header (rank 0 only). Actual CSV write happens later.
-        if MPIimport and MPIrank == 0:
+            # Build the design matrix header (rank 0 only). Actual CSV write happens later.
             header = 'index,' + ','.join([str(p) for p in par])
 
         # Synchronize all processes, then broadcast X_scaled from rank 0
@@ -159,127 +160,126 @@ class GEN_DATASET:
         # to the parameters in the self.param dictionary and generate the spectra.
         # Recompute the ordered parameter list consistently across ranks
 
-        # Determine work partition for this rank
-        total = X_scaled.shape[0]
-        size = MPIsize if MPIimport else 1
-        rank = MPIrank if MPIimport else 0
-        start = (total * rank) // size
-        end = (total * (rank + 1)) // size
+        if MPIimport or MPIrank == 0:
+            # Determine work partition for this rank
+            total = X_scaled.shape[0]
+            size = MPIsize if MPIimport else 1
+            rank = MPIrank if MPIimport else 0
+            start = (total * rank) // size
+            end = (total * (rank + 1)) // size
 
-        gps = self.param.get('gas_par_space')
+            gps = self.param.get('gas_par_space')
 
-        other_params = ["Rs", "Ms", "Ts", "major-a", "Tp", "cld_frac", "Ag", "Ag1", "Ag2", "Ag3", "Ag_x1", "Ag_x2", "phi"]
 
-        # Tight loop over this rank's chunk
-        for i in range(start, end):
-            row = X_scaled[i]
+            other_params = ["Rs", "Ms", "Ts", "major-a", "Tp", "cld_frac", "Ag", "Ag1", "Ag2", "Ag3", "Ag_x1", "Ag_x2", "phi"]
 
-            # Build evaluation dict mapping each parameter to its sampled value
-            eval_map = {}
-            for j, name in enumerate(par):
-                if name.endswith('_range'):
-                    key = name[:-6]
+            # Tight loop over this rank's chunk
+            for i in range(start, end):
+                row = X_scaled[i]
+
+                # Build evaluation dict mapping each parameter to its sampled value
+                eval_map = {}
+                for j, name in enumerate(par):
+                    if name.endswith('_range'):
+                        key = name[:-6]
+                    else:
+                        # Molecule names and other direct keys
+                        key = name
+                    eval_map[key] = row[j]
+                
+                if self.param['fit_wtr_cld']:
+                    for j in ['Pw_top', 'cldw_depth', 'CR_H2O']:
+                            self.param[j] = 10. ** eval_map[j]
+                if self.param['fit_amm_cld']:
+                    for j in ['Pa_top', 'clda_depth', 'CR_NH3']:
+                            self.param[j] = 10. ** eval_map[j]
+
+                if gps in ('volume_mixing_ratio', 'vmr') and (self.param.get('gas_fill') is not None):
+                    # Ensure filler completes the sum to unity
+                    s = 0.0
+                    for mol in self.param['fit_molecules']:
+                        s += 10. ** eval_map[mol]
+                        self.param['vmr_' + mol] = 10. ** eval_map[mol]
+                    self.param['vmr_' + self.param['gas_fill']] = max(0.0, 1.0 - s)
+                elif gps == 'partial_pressure':
+                    pp = []
+                    for mol in self.param['fit_molecules']:
+                        pp.append(10.0 ** eval_map[mol])
+                    self.param['P0'] = np.sum(pp)
+                    for mol in self.param['fit_molecules']:
+                        self.param['vmr_' + mol] = (10.0 ** eval_map[mol]) / self.param['P0']
+
+                if 'Rp' in eval_map.keys():
+                    self.param['Rp'] = eval_map['Rp'] + 0.0
+                if 'Mp' in eval_map.keys():
+                    self.param['Mp'] = eval_map['Mp'] + 0.0
+                if 'gp' in eval_map.keys():
+                    self.param['gp'] = eval_map['gp'] + 0.0
+
+                if self.param['gp'] is not None and self.param['Mp'] is not None and self.param['Rp'] is None:
+                    self.param['Rp'] = (np.sqrt((const.G.value * const.M_jup.value * self.param['Mp']) / self.param['gp'])) / const.R_jup.value
+                elif self.param['gp'] is not None and self.param['Rp'] is not None and self.param['Mp'] is None:
+                    self.param['Mp'] = ((self.param['gp'] * ((self.param['Rp'] * const.R_jup.value) ** 2.)) / const.G.value) / const.M_jup.value
+                elif self.param['Mp'] is not None and self.param['Rp'] is not None and self.param['gp'] is None:
+                    self.param['gp'] = (const.G.value * const.M_jup.value * self.param['Mp']) / ((const.R_jup.value * self.param['Rp']) ** 2.)
+                elif self.param['Rp'] is not None and self.param['Mp'] is not None and self.param['gp'] is not None:
+                    pass
+
+                for j in other_params:
+                    if j in eval_map.keys():
+                        self.param[j] = eval_map[j] + 0.0
+
+                self.param = par_and_calc(self.param)
+
+                # Generate spectrum for this sample on this rank
+                wl, model = forward(
+                    self.param,
+                    evaluation=None,
+                    retrieval_mode=False,
+                    core_number=rank,
+                    albedo_calc=self.param['albedo_calc'],
+                    fp_over_fs=self.param['fp_over_fs'],
+                    canc_metadata=True
+                )
+
+                if self.param['cld_frac'] != 1.0 and self.param['fit_wtr_cld']:
+                    self.param['fit_wtr_cld'] = False
+                    self.param['ret_mode'] = True
+                    model_no_cld = forward(self.param, retrieval_mode=self.param['ret_mode'], albedo_calc=self.param['albedo_calc'], fp_over_fs=self.param['fp_over_fs'], canc_metadata=self.param['canc_metadata'])
+                    self.param['fit_wtr_cld'] = True
+                    self.param['ret_mode'] = False
+                    model = (self.param['cld_frac'] * model) + ((1.0 - self.param['cld_frac']) * model_no_cld)
+
+                # Save spectrum and sampled parameters to a JSON file for this sample
+                # Build parameters payload: prefix gas keys with 'vmr_'
+                payload_params = {}
+
+                if gps != 'partial_pressure':
+                    gas_fill = self.param.get('gas_fill')
+                    payload_params['P0'] = self.param['P0'] + 0.0
                 else:
-                    # Molecule names and other direct keys
-                    key = name
-                eval_map[key] = row[j]
-            
-            if self.param['fit_wtr_cld']:
-                for j in ['Pw_top', 'cldw_depth', 'CR_H2O']:
-                        self.param[j] = 10. ** eval_map[j]
-            if self.param['fit_amm_cld']:
-                for j in ['Pa_top', 'clda_depth', 'CR_NH3']:
-                        self.param[j] = 10. ** eval_map[j]
+                    gas_fill = None
 
-            if gps in ('volume_mixing_ratio', 'vmr') and (self.param.get('gas_fill') is not None):
-                # Ensure filler completes the sum to unity
-                s = 0.0
-                for mol in self.param['fit_molecules']:
-                    s += 10. ** eval_map[mol]
-                    self.param['vmr_' + mol] = 10. ** eval_map[mol]
-                self.param['vmr_' + self.param['gas_fill']] = max(0.0, 1.0 - s)
-            elif gps == 'partial_pressure':
-                pp = []
-                for mol in self.param['fit_molecules']:
-                    pp.append(10.0 ** eval_map[mol])
-                self.param['P0'] = np.sum(pp)
-                for mol in self.param['fit_molecules']:
-                    self.param['vmr_' + mol] = (10.0 ** eval_map[mol]) / self.param['P0']
+                for k, v in eval_map.items():
+                    if (k in self.param['fit_molecules']) or (gas_fill is not None and k == gas_fill):
+                        payload_params['vmr_' + str(k)] = self.param['vmr_' + str(k)]
+                    else:
+                        # Keep other sampled parameters as-is (e.g., 'Rp', 'P0', 'ag1', ...)
+                        payload_params[str(k)] = self.param[str(k)]
 
-            if 'Rp' in eval_map.keys():
-                self.param['Rp'] = eval_map['Rp'] + 0.0
-            if 'Mp' in eval_map.keys():
-                self.param['Mp'] = eval_map['Mp'] + 0.0
-            if 'gp' in eval_map.keys():
-                self.param['gp'] = eval_map['gp'] + 0.0
+                record = {
+                    'index': int((start_index if 'start_index' in locals() else 0) + i),
+                    'wavelength': self.param['wave_file'],
+                    'spectrum': np.asarray(model, dtype=float).tolist(),
+                    'parameters': payload_params,
+                }
 
-            if self.param['gp'] is not None and self.param['Mp'] is not None and self.param['Rp'] is None:
-                self.param['Rp'] = (np.sqrt((const.G.value * const.M_jup.value * self.param['Mp']) / self.param['gp'])) / const.R_jup.value
-            elif self.param['gp'] is not None and self.param['Rp'] is not None and self.param['Mp'] is None:
-                self.param['Mp'] = ((self.param['gp'] * ((self.param['Rp'] * const.R_jup.value) ** 2.)) / const.G.value) / const.M_jup.value
-            elif self.param['Mp'] is not None and self.param['Rp'] is not None and self.param['gp'] is None:
-                self.param['gp'] = (const.G.value * const.M_jup.value * self.param['Mp']) / ((const.R_jup.value * self.param['Rp']) ** 2.)
-            elif self.param['Rp'] is not None and self.param['Mp'] is not None and self.param['gp'] is not None:
-                pass
-            
-            if "p_size" in eval_map.keys():
-                self.param["p_size"] = 10. ** eval_map["p_size"]
+                # One file per sample to avoid MPI contention
+                gidx = int((start_index if 'start_index' in locals() else 0) + i)
+                fname = os.path.join(self.param['out_dir'], f'sample_{gidx:07d}.json')
+                with open(fname, 'w') as f:
+                    json.dump(record, f, separators=(',', ':'), ensure_ascii=False)
 
-            for j in other_params:
-                if j in eval_map.keys():
-                    self.param[j] = eval_map[j] + 0.0
-
-            self.param = par_and_calc(self.param)
-
-            # Generate spectrum for this sample on this rank
-            wl, model = forward(
-                self.param,
-                evaluation=None,
-                retrieval_mode=False,
-                core_number=rank,
-                albedo_calc=self.param['albedo_calc'],
-                fp_over_fs=self.param['fp_over_fs'],
-                canc_metadata=True
-            )
-
-            if self.param['cld_frac'] != 1.0 and self.param['fit_wtr_cld']:
-                self.param['fit_wtr_cld'] = False
-                self.param['ret_mode'] = True
-                model_no_cld = forward(self.param, retrieval_mode=self.param['ret_mode'], albedo_calc=self.param['albedo_calc'], fp_over_fs=self.param['fp_over_fs'], canc_metadata=self.param['canc_metadata'])
-                self.param['fit_wtr_cld'] = True
-                self.param['ret_mode'] = False
-                model = (self.param['cld_frac'] * model) + ((1.0 - self.param['cld_frac']) * model_no_cld)
-
-            # Save spectrum and sampled parameters to a JSON file for this sample
-            # Build parameters payload: prefix gas keys with 'vmr_'
-            payload_params = {}
-
-            if gps != 'partial_pressure':
-                gas_fill = self.param.get('gas_fill')
-                payload_params['P0'] = self.param['P0'] + 0.0
-            else:
-                gas_fill = None
-
-            for k, v in eval_map.items():
-                if (k in self.param['fit_molecules']) or (gas_fill is not None and k == gas_fill):
-                    payload_params['vmr_' + str(k)] = self.param['vmr_' + str(k)]
-                else:
-                    # Keep other sampled parameters as-is (e.g., 'Rp', 'P0', 'ag1', ...)
-                    payload_params[str(k)] = self.param[str(k)]
-
-            record = {
-                'index': int((start_index if 'start_index' in locals() else 0) + i),
-                'wavelength': self.param['wave_file'],
-                'spectrum': np.asarray(model, dtype=float).tolist(),
-                'parameters': payload_params,
-            }
-
-            # One file per sample to avoid MPI contention
-            gidx = int((start_index if 'start_index' in locals() else 0) + i)
-            fname = os.path.join(self.param['out_dir'], f'sample_{gidx:07d}.json')
-            with open(fname, 'w') as f:
-                json.dump(record, f, separators=(',', ':'), ensure_ascii=False)
-
-        # Guard against improper exit
-        if MPIimport:
-            MPI.COMM_WORLD.Barrier()
+            # Guard against improper exit
+            if MPIimport:
+                MPI.COMM_WORLD.Barrier()

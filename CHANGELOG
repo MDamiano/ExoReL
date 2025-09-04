@@ -1,3 +1,11 @@
+## [2.6.0] - 09/03/25
+- Created `FORWARD_DATASET.run_forward` in `__forward.py`: for large datasets, loads only the k‑nearest samples to the target in parameter space (configurable via `interp_max_samples`, default 5000) before interpolating, reducing memory and CPU; uses Delaunay linear interpolation with nearest‑neighbor fallback. 
+- `FORWARD_DATASET` can be used during the retrieval process to retrieve on a pre-computed dataset instead of calculating the spectrum on the fly using the standard `FORWARD_MOD`. It can also be used during when `create_spectrum` is invoked. Set `physics_model` equal to `dataset` and define `dataset_dir` with the dataset directory path in yhe parameter file to use this funcionality.
+- Integrated dataset interpolation path across the pipeline: `forward()` and `MULTINEST` respect `param['physics_model'] == 'dataset'` and read from `param['dataset_dir']`.
+- Added `__utils.adjust_ranges_from_dataset()` to auto-derive retrieval bounds from `dataset.csv` (validates columns, supports common aliases).
+- Improved validation and error messages for dataset mode; clearer guidance when required files/keys are missing.
+- Performance: nearest-neighbor presampling via `interp_max_samples` (2 ** dimension) reduces memory/CPU for large datasets.
+
 ## [2.5.5] - 09/01/25
 - Centralized post‑processing in `__plotting.py`: `MULTINEST` now delegates spectrum, chemistry, surface‑albedo, and posterior plots to shared helpers, reducing duplication and improving maintainability.
 - Added `plot_nest_spec`: overlays MAP model on data native and R=500 grids, optionally draws 1σ/2σ/3σ bands from `random_samples.dat`, and saves `Nest_spectrum.pdf` plus `Best_fit.dat` (per‑solution when multimodal).
@@ -11,7 +19,7 @@
 - Added the possibility to generate more samples for an existing generated dataset.
 
 ## [2.5.3] - 08/31/25
-- Developed the `CREATE_DATASET` module. ExoReL can now generate datasets by sampling multiple parameter ranges. `Sobol` or `random` sequencing can be chosen. It supports MPI for parallel computing.
+- Developed the `CREATE_DATASET` module. ExoReL can now generate datasets by sampling multiple parameter ranges. `sobol` or `random` sequencing can be chosen. It supports MPI for parallel computing.
 - Added fast CSV dataset export in `CREATE_DATASET`: writes `dataset.csv` with a leading `index` column and ordered parameter headers, plus `dataset_meta.json` sidecar with metadata. MPI-safe (writes on rank 0).
 - Improved console mapping of sampled parameters to bounds in dataset generation.
 

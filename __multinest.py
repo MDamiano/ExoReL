@@ -60,12 +60,17 @@ class MULTINEST:
             else:
                 print('Using ExoReL-R for giant gaseous planets')
 
-        if MPIimport:
-            MPI.COMM_WORLD.Barrier()  # wait for everybody to synchronize here
-
         parameters, n_params = retrieval_par_and_npar(self.param)
         if (self.param['gas_par_space'] == 'clr' or self.param['gas_par_space'] == 'centered_log_ratio') and self.param['mod_prior']:
             ppf = np.loadtxt(self.param['pkg_dir'] + 'forward_mod/Data/prior/prior_cube_' + str(len(self.param['fit_molecules'])) + 'gas.dat')
+
+        if self.param['physics_model'] == 'dataset':
+            # Update retrieval ranges to dataset min/max and validate coverage
+            if (not MPIimport) or (MPIimport and MPIrank == 0):
+                self.param = adjust_ranges_from_dataset(self.param)
+
+        if MPIimport:
+            MPI.COMM_WORLD.Barrier()  # wait for everybody to synchronize here
 
         self.param = MPI.COMM_WORLD.bcast(self.param, root=0)
 
