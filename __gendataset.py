@@ -278,3 +278,7 @@ class GEN_DATASET:
                 fname = os.path.join(self.param['out_dir'], f'sample_{gidx:07d}.json')
                 with open(fname, 'w') as f:
                     json.dump(record, f, separators=(',', ':'), ensure_ascii=False)
+
+            # Guard against improper exit
+            if MPIimport:
+                MPI.COMM_WORLD.Barrier()
