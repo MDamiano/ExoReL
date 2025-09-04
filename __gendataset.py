@@ -170,7 +170,8 @@ class GEN_DATASET:
 
             gps = self.param.get('gas_par_space')
 
-            other_params = ["Rs", "Ms", "Ts", "major-a", "Tp", "cld_frac", "Ag", "Ag1", "Ag2", "Ag3", "Ag_x1", "Ag_x2", "phi", "p_size"]
+
+            other_params = ["Rs", "Ms", "Ts", "major-a", "Tp", "cld_frac", "Ag", "Ag1", "Ag2", "Ag3", "Ag_x1", "Ag_x2", "phi"]
 
             # Tight loop over this rank's chunk
             for i in range(start, end):

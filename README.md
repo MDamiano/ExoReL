@@ -2,11 +2,11 @@
 
 # ExoReL<sup>R</sup>
 
-Version 2.5.4
-
 Includes:
-* A routine to generate of reflected light spectra;
+* A routine to generate single reflected light spectra with and without noise and errorbars;
+* A routine to generate datasets of reflected light spectra using Sobol or random sequencing;
 * A retrieval routine based on nested sampling (i.e. MultiNest).
+* The retrieval routine can use the radiative transfer calculations or interpolation of existing generated datasets as physics forward model.
 
 ## Authors
 * [Mario Damiano](https://mdamiano.github.io/) (Jet Propulsion Laboratory, California Institute of Technology)
@@ -17,17 +17,21 @@ Includes:
 * Zachary Burr (ETH Zurich - Jet Propulsion Laboratory, California Institute of Technology)
 
 ## Installation:
-Install python packages dependency:
+Navigate to the desired location for the ExoReL folder. Therefore clone the code via `git`:
 
-`pip install numpy scipy astropy scikit-bio matplotlib spectres`
+`git clone https://github.com/MDamiano/ExoReL.git`
 
-Download the .zip file from Github, unzip it and place it in a folder at your preference. 
-Therefore, make the folder searchable for python in your `.bash_profile` or `.bashrc` depending on your system
+Navigate into the downloaded ExoReL folder. Activate yout preferred python environment. Install python packages dependency:
+
+`pip install -r requirements.txt`
+
+Do not forget to make the folder reachable by python in your `.bash_profile` or `.bashrc` depending on your system
 
 `export PYTHONPATH="$PYTHONPATH:/full/path/of/folder/containing/ExoReL:"`
 
-Download the folders "PHO_STELLAR_MODEL" and "forward_mod" from the following link : [Google Drive](https://drive.google.com/drive/folders/1CQutXQ8Ki59TB9Dndo61sktwS3uOM7qZ?usp=sharing) .
-Place the downloaded folders inside the ExoReL folder.
+After installation, upon the first import of the package, ExoReL will automaticaly download required files from GDrive. It generally teke less than a minute.
+
+It will download the folders "PHO_STELLAR_MODEL" and "forward_mod" from the following link : [Google Drive](https://drive.google.com/drive/folders/1CQutXQ8Ki59TB9Dndo61sktwS3uOM7qZ?usp=sharing). The required folders will be placed inside the ExoReL folder.
 
 ## Usage
 You have to prepare the "retrieval_example.dat" and "forward_example.dat" parameters files before running ExoReL.
