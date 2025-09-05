@@ -11,7 +11,7 @@ from astropy import constants as const
 from skbio.stats.composition import clr, clr_inv
 
 from .__utils import find_nearest, model_finalizzation
-from .__forward import FORWARD_MODEL
+from .__forward import FORWARD_MODEL, FORWARD_DATASET
 
 
 def plot_nest_spec(mnest, cube, solutions=None):
@@ -56,9 +56,13 @@ def plot_nest_spec(mnest, cube, solutions=None):
             capsize=2.0, label='Data')
 
         # Model on native grid
-        mod = FORWARD_MODEL(mnest.param, retrieval=False, canc_metadata=True)
+        if mnest.param['physics_model'] == 'radiative_transfer':
+            mod = FORWARD_MODEL(mnest.param, retrieval=False, canc_metadata=True)
+        elif mnest.param['physics_model'] == 'dataset':
+            mod = FORWARD_DATASET(mnest.param, dataset_dir=mnest.param['dataset_dir'])
+        else:
+            pass
         alb_wl, alb = mod.run_forward()
-        alb_wl *= 10.0 ** (-3.0)
         if mnest.param['fit_wtr_cld'] and mnest.param['cld_frac'] != 1.0:
             alb = mnest.adjust_for_cld_frac(alb, cube)
             mnest.cube_to_param(cube)
@@ -96,9 +100,13 @@ def plot_nest_spec(mnest, cube, solutions=None):
         mnest.param['stop_c_wl_grid'] = find_nearest(mnest.param['wl_C_grid'], mnest.param['max_wl']) + 35
 
         # Model on R=500 grid
-        mod = FORWARD_MODEL(mnest.param, retrieval=False, canc_metadata=True)
+        if mnest.param['physics_model'] == 'radiative_transfer':
+            mod = FORWARD_MODEL(mnest.param, retrieval=False, canc_metadata=True)
+        elif mnest.param['physics_model'] == 'dataset':
+            mod = FORWARD_DATASET(mnest.param, dataset_dir=mnest.param['dataset_dir'])
+        else:
+            pass
         alb_wl, alb = mod.run_forward()
-        alb_wl *= 10.0 ** (-3.0)
         if mnest.param['fit_wtr_cld'] and mnest.param['cld_frac'] != 1.0:
             alb = mnest.adjust_for_cld_frac(alb, cube)
             mnest.cube_to_param(cube)
@@ -167,11 +175,15 @@ def plot_nest_spec(mnest, cube, solutions=None):
         new_wl, new_wl_central = _load_target_bins(mnest.param)
         mnest.param['spectrum']['bins'] = False
 
-        mod = FORWARD_MODEL(mnest.param, retrieval=False, canc_metadata=True)
+        if mnest.param['physics_model'] == 'radiative_transfer':
+            mod = FORWARD_MODEL(mnest.param, retrieval=False, canc_metadata=True)
+        elif mnest.param['physics_model'] == 'dataset':
+            mod = FORWARD_DATASET(mnest.param, dataset_dir=mnest.param['dataset_dir'])
+        else:
+            pass
         for obs in range(0, mnest.param['obs_numb']):
             mnest.cube_to_param(cube, n_obs=obs)
             alb_wl, alb = mod.run_forward()
-            alb_wl *= 10.0 ** (-3.0)
             if mnest.param['fit_cld_frac'] and mnest.param['fit_wtr_cld'] and mnest.param['cld_frac'] != 1.0:
                 alb = mnest.adjust_for_cld_frac(alb, cube)
                 mnest.cube_to_param(cube, n_obs=obs)
@@ -2049,6 +2061,130 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
             par.append("$\mu$ (derived)")
             json.dump(par, open(prefix + 'params.json', 'w'))
 
+    def _quantile(x, q, weights=None):
+            """
+            Compute (weighted) quantiles from an input set of samples.
+            Parameters
+            ----------
+            x : `~numpy.ndarray` with shape (nsamps,)
+                Input samples.
+            q : `~numpy.ndarray` with shape (nquantiles,)
+               The list of quantiles to compute from `[0., 1.]`.
+            weights : `~numpy.ndarray` with shape (nsamps,), optional
+                The associated weight from each sample.
+            Returns
+            -------
+            quantiles : `~numpy.ndarray` with shape (nquantiles,)
+                The weighted sample quantiles computed at `q`.
+            """
+
+            # Initial check.
+            x = np.atleast_1d(x)
+            q = np.atleast_1d(q)
+
+            # Quantile check.
+            if np.any(q < 0.0) or np.any(q > 1.0):
+                raise ValueError("Quantiles must be between 0. and 1.")
+
+            if weights is None:
+                # If no weights provided, this simply calls `np.percentile`.
+                return np.percentile(x, list(100.0 * q))
+            else:
+                # If weights are provided, compute the weighted quantiles.
+                weights = np.atleast_1d(weights)
+                if len(x) != len(weights):
+                    raise ValueError("Dimension mismatch: len(weights) != len(x).")
+                idx = np.argsort(x)  # sort samples
+                sw = weights[idx]  # sort weights
+                cdf = np.cumsum(sw)[:-1]  # compute CDF
+                cdf /= cdf[-1]  # normalize CDF
+                cdf = np.append(0, cdf)  # ensure proper span
+                quantiles = np.interp(q, cdf, x[idx]).tolist()
+                return quantiles
+    
+    def _store_nest_solutions():
+            NEST_out = {'solutions': {}}
+            data = np.loadtxt(prefix + '.txt')
+            NEST_stats = multinest_results.get_stats()
+            NEST_out['NEST_stats'] = NEST_stats
+            NEST_out['global_logE'] = (NEST_out['NEST_stats']['global evidence'], NEST_out['NEST_stats']['global evidence error'])
+
+            modes = []
+            modes_weights = []
+            modes_loglike = []
+            chains = []
+            chains_weights = []
+            chains_loglike = []
+
+            if mnest.param['multimodal'] and mds_orig > 1:
+                # separate modes. get individual samples for each mode
+                # get parameter values and sample probability (=weight) for each mode
+                with open(prefix + 'post_separate.dat') as f:
+                    lines = f.readlines()
+                    for idx, line in enumerate(lines):
+                        if idx > 2:  # skip the first two lines
+                            if lines[idx - 1] == '\n' and lines[idx - 2] == '\n':
+                                modes.append(chains)
+                                modes_weights.append(chains_weights)
+                                modes_loglike.append(chains_loglike)
+                                chains = []
+                                chains_weights = []
+                                chains_loglike = []
+                        chain = [float(x) for x in line.split()[2:]]
+                        if len(chain) > 0:
+                            chains.append(chain)
+                            chains_weights.append(float(line.split()[0]))
+                            chains_loglike.append(float(line.split()[1]))
+                    modes.append(chains)
+                    modes_weights.append(chains_weights)
+                    modes_loglike.append(chains_loglike)
+                modes_array = []
+                for mode in modes:
+                    mode_array = np.zeros((len(mode), len(mode[0])))
+                    for idx, line in enumerate(mode):
+                        mode_array[idx, :] = line
+                    modes_array.append(mode_array)
+            else:
+                # not running in multimode. Get chains directly from file prefix.txt
+                modes_array = [data[:, 2:]]
+                chains_weights = [data[:, 0]]
+                modes_weights.append(chains_weights[0])
+                chains_loglike = [data[:, 1]]
+                modes_loglike.append(chains_loglike[0])
+                modes = [0]
+
+            for nmode in range(len(modes)):
+                mydict = {'type': 'nest',
+                          'local_logE': (NEST_out['NEST_stats']['modes'][nmode]['local log-evidence'], NEST_out['NEST_stats']['modes'][nmode]['local log-evidence error']),
+                          'weights': np.asarray(modes_weights[nmode]),
+                          'loglike': np.asarray(modes_loglike[nmode]),
+                          'tracedata': modes_array[nmode],
+                          'fit_params': {}}
+
+                for idx, param_name in enumerate(parameters):
+                    trace = modes_array[nmode][:, idx]
+                    q_16, q_50, q_84 = _quantile(trace, [0.16, 0.5, 0.84], weights=np.asarray(modes_weights[nmode]))
+                    mydict['fit_params'][param_name] = {
+                        'value': q_50,
+                        'sigma_m': q_50 - q_16,
+                        'sigma_p': q_84 - q_50,
+                        'nest_map': NEST_stats['modes'][nmode]['maximum a posterior'][idx],
+                        'mean': NEST_stats['modes'][nmode]['mean'][idx],
+                        'nest_sigma': NEST_stats['modes'][nmode]['sigma'][idx],
+                        'trace': trace,
+                    }
+
+                NEST_out['solutions']['solution{}'.format(nmode)] = mydict
+
+            if len(NEST_out['solutions']) > 1:
+                for i in range(len(NEST_out['solutions'])):
+                    fl = np.ones((len(NEST_out['solutions']['solution' + str(i)]['weights']), len(NEST_out['solutions']['solution' + str(i)]['tracedata'][0, :]) + 2))
+                    fl[:, 0] = NEST_out['solutions']['solution' + str(i)]['weights']
+                    fl[:, 1] = NEST_out['solutions']['solution' + str(i)]['loglike']
+                    fl[:, 2:] = NEST_out['solutions']['solution' + str(i)]['tracedata']
+                    np.savetxt(prefix + 'solution' + str(i) + '.txt', fl)
+
+            return NEST_out
     # Enhance corner: show median and 1-sigma above 1D plots
     def _annotate_1d_stats(ax, data, weights, fmt='{:g} [−{:g}, +{:g}]'):
         q16, q50, q84 = _weighted_quantiles(data, [0.16, 0.5, 0.84], w=weights)
@@ -2207,8 +2343,7 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
         colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f']
 
         # Load stats.json (as in original) to obtain local evidences
-        with open(prefix + 'stats.json', 'r') as fh:
-            nest_out = json.load(fh)
+        nest_out = _store_nest_solutions()
 
         # Pick maximum-evidence mode first
         max_ev, max_idx = -1e99, 0
@@ -2369,9 +2504,13 @@ def plot_contribution(mnest, cube, solutions=None):
     for mol in mnest.param['fit_molecules']:
         print('Plotting the contribution of ' + str(mol) + ' : VMR -> ' + str(mnest.param['vmr_' + mol][-1]))
         mnest.param['mol_contr'] = mol
-        mod = FORWARD_MODEL(mnest.param, retrieval=False, canc_metadata=True)
+        if mnest.param['physics_model'] == 'radiative_transfer':
+            mod = FORWARD_MODEL(mnest.param, retrieval=False, canc_metadata=True)
+        elif mnest.param['physics_model'] == 'dataset':
+            mod = FORWARD_DATASET(mnest.param, dataset_dir=mnest.param['dataset_dir'])
+        else:
+            pass
         alb_wl, alb = mod.run_forward()
-        alb_wl *= 10.0 ** (-3.0)
 
         if mnest.param['fit_wtr_cld'] and mnest.param['cld_frac'] != 1.0:
             alb = mnest.adjust_for_cld_frac(alb, cube)
@@ -2385,9 +2524,13 @@ def plot_contribution(mnest, cube, solutions=None):
 
     # Cloud-only curve (keep contribution=True, remove molecule tag)
     mnest.param['mol_contr'] = None
-    mod = FORWARD_MODEL(mnest.param, retrieval=False, canc_metadata=True)
+    if mnest.param['physics_model'] == 'radiative_transfer':
+        mod = FORWARD_MODEL(mnest.param, retrieval=False, canc_metadata=True)
+    elif mnest.param['physics_model'] == 'dataset':
+        mod = FORWARD_DATASET(mnest.param, dataset_dir=mnest.param['dataset_dir'])
+    else:
+        pass
     alb_wl, alb = mod.run_forward()
-    alb_wl *= 10.0 ** (-3.0)
     if mnest.param['fit_wtr_cld'] and mnest.param['cld_frac'] != 1.0:
         alb = mnest.adjust_for_cld_frac(alb, cube)
         mnest.cube_to_param(cube)
