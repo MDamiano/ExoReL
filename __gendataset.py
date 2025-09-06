@@ -170,8 +170,10 @@ class GEN_DATASET:
 
             gps = self.param.get('gas_par_space')
 
-
             other_params = ["Rs", "Ms", "Ts", "major-a", "Tp", "cld_frac", "Ag", "Ag1", "Ag2", "Ag3", "Ag_x1", "Ag_x2", "phi"]
+
+            copy_tp = copy.deepcopy(self.param['Tp'])
+            copy_phi = copy.deepcopy(self.param['phi'])
 
             # Tight loop over this rank's chunk
             for i in range(start, end):
@@ -229,7 +231,23 @@ class GEN_DATASET:
                     if j in eval_map.keys():
                         self.param[j] = eval_map[j] + 0.0
 
-                self.param = par_and_calc(self.param)
+                Ls = (self.param['Rs'] ** 2.) * ((self.param['Ts'] / 5760.) ** 4.)
+                F_ave = Ls / (self.param['major-a'] ** 2.)
+                a_ave = 1. / (F_ave ** 0.5)
+                self.param['equivalent_a'] = a_ave
+                self.param['Tirr'] = 394.109 / (a_ave ** 0.5)
+
+                if 'Tp' not in eval_map.keys():
+                    if copy_tp is not None:
+                        self.param['Tp'] = copy_tp + 0.0
+                    else:
+                        t1 = ((self.param['Rs'] * const.R_sun.value) / (2. * self.param['major-a'] * const.au.value)) ** 0.5
+                        self.param['Tp'] = t1 * ((1 - 0.3) ** 0.25) * self.param['Ts']
+
+                if "phi" not in eval_map.keys():
+                    self.param['phi'] = math.pi * copy_phi / 180.0
+                else:
+                    self.param['phi'] = math.pi * self.param['phi'] / 180.0
 
                 # Generate spectrum for this sample on this rank
                 wl, model = forward(

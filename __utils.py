@@ -23,6 +23,7 @@ def default_parameters():
     param['Mp'] = None  # Planet mass [Jupiter mass]
     param['Mp_err'] = None  # Planet mass error
     param['gp'] = None  # Planet surface gravity [m/s^2]
+    param['Tp'] = None  # Planet surface temperature [K]
     param['Tirr'] = 394.109  # Irradiation Temperature at 1 AU related to the Sun case [K]
     param['Tint'] = 110.0  # Intrinsic (internal) Temperature [K]
     param['phi'] = None  # Phase angle [deg]
