@@ -1330,10 +1330,10 @@ def add_noise(param, data, noise_model=0):
         SNR = F_p * wl * (R * (F_p + param['alpha1'] * F_s * (wl ** 2) + param['alpha2'] * F_s)) ** (-0.5)
 
         try:
-            param['beta'] += 0.0
+            param['alpha3'] += 0.0
         except KeyError:
-            param['beta'] = param['snr'] / SNR[i0]
-        SNR *= param['beta']
+            param['alpha3'] = param['snr'] / SNR[i0]
+        SNR *= param['alpha3']
 
         # convert SNR to error
         err = contrast / SNR

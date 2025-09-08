@@ -1663,7 +1663,7 @@ class FORWARD_DATASET:
         # For large datasets, load only k-nearest samples in parameter space to the target
         n_samples = X.shape[0]
         dim = X.shape[1]
-        file_to_open = 2000
+        file_to_open = int(2 ** dim)
 
         if n_samples > file_to_open:
             # Compute squared distances to target and select k nearest
