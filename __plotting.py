@@ -2022,11 +2022,11 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
                 par.append("Log(CR$_{NH_3}$)")
             for mol in mnest.param['fit_molecules']:
                 par.append(mnest.param['formatted_labels'][mol])
-                if mnest.param['gas_fill'] is not None:
-                    if mnest.param['rocky']:
-                        par.append(mnest.param['formatted_labels'][mnest.param['gas_fill']] + " (derived)")
-                    else:
-                        par.append("Log(H$_2$ + He) (derived)")
+            if mnest.param['gas_fill'] is not None:
+                if mnest.param['rocky']:
+                    par.append(mnest.param['formatted_labels'][mnest.param['gas_fill']] + " (derived)")
+                else:
+                    par.append("Log(H$_2$ + He) (derived)")
             if mnest.param['fit_ag']:
                 if mnest.param['surface_albedo_parameters'] == int(1):
                     par.append("$a_{surf}$")
