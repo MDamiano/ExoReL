@@ -217,6 +217,8 @@ class GEN_DATASET:
                     self.param['Mp'] = eval_map['Mp'] + 0.0
                 if 'gp' in eval_map.keys():
                     self.param['gp'] = eval_map['gp'] + 0.0
+                else:
+                    self.param['gp'] = None
 
                 if self.param['gp'] is not None and self.param['Mp'] is not None and self.param['Rp'] is None:
                     self.param['Rp'] = (np.sqrt((const.G.value * const.M_jup.value * self.param['Mp']) / self.param['gp'])) / const.R_jup.value

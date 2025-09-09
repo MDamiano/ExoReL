@@ -238,6 +238,9 @@ def read_parfile(param, parfile=None, json_format=False):
     else:
         param['double_cloud'] = False
 
+    if "Mp_range" in param.keys():
+        param['Mp'] = param["Mp_range"][0] + 0.0
+
     if param['Mp'] is None or param['Mp'] <= 0.06:
         param['rocky'] = True
     else:
