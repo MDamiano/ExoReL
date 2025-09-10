@@ -90,11 +90,12 @@ class MULTINEST:
             elif not self.param['fit_wtr_cld'] and free_cld_calc:
                 par += 3
 
-            if self.param['fit_amm_cld'] and not free_cld_calc:
-                evaluation['pNH3'], evaluation['dNH3'], evaluation['crNH3'] = (10.0 ** cube[par]), (10.0 ** cube[par + 1]), (10.0 ** cube[par + 2])  # pNH3, dNH3, crNH3
-                par += 3
-            elif not self.param['fit_amm_cld'] and free_cld_calc:
-                par += 3
+            if self.param['double_cloud']:
+                if self.param['fit_amm_cld'] and not free_cld_calc:
+                    evaluation['pNH3'], evaluation['dNH3'], evaluation['crNH3'] = (10.0 ** cube[par]), (10.0 ** cube[par + 1]), (10.0 ** cube[par + 2])  # pNH3, dNH3, crNH3
+                    par += 3
+                elif not self.param['fit_amm_cld'] and free_cld_calc:
+                    par += 3
 
             if self.param['gas_par_space'] == 'centered_log_ratio' or self.param['gas_par_space'] == 'clr':
                 c_l_r = cube[par: par + len(self.param['fit_molecules'])]  # CLR Molecules
