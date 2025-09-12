@@ -61,6 +61,7 @@ class MULTINEST:
                 print('Using ExoReL-R for giant gaseous planets')
 
         parameters, n_params = retrieval_par_and_npar(self.param)
+        self.param['fitting_parameters'] = parameters
         if (self.param['gas_par_space'] == 'clr' or self.param['gas_par_space'] == 'centered_log_ratio') and self.param['mod_prior']:
             ppf = np.loadtxt(self.param['pkg_dir'] + 'forward_mod/Data/prior/prior_cube_' + str(len(self.param['fit_molecules'])) + 'gas.dat')
 

@@ -1584,14 +1584,19 @@ class FORWARD_DATASET:
                     if val <= 0:
                         raise ValueError('Parameter "' + key + '" must be > 0 for log10 mapping')
                     val = np.log10(val)
+                if key == 'phi':
+                   val = self.param[key] * 180.0 / math.pi
                 xtgt.append(float(val))
             else:
                 # Molecule dimension
                 mol = cname
                 if gps in ('volume_mixing_ratio', 'vmr'):
                     v = self.param.get('vmr_' + mol)
-                    if v is None:
-                        raise KeyError('Missing self.param["vmr_' + mol + '"] for vmr gas_par_space')
+                    try:
+                        if len(v) > 0:
+                            pass
+                    except TypeError:
+                        v = np.ones(len(self.param['P'])) * (10 ** (-11.5))  # Default tiny VMR if missing
                     xtgt.append(float(np.log10(v[-1])))
                 elif gps == 'partial_pressure':
                     v = self.param.get('vmr_' + mol)
@@ -1662,21 +1667,16 @@ class FORWARD_DATASET:
         # 4) Load spectra matrix and wavelength id
         # For large datasets, load only k-nearest samples in parameter space to the target
         n_samples = X.shape[0]
-        dim = X.shape[1]
-        file_to_open = int(2 ** dim)
+        file_to_open = 1000
 
         if n_samples > file_to_open:
             # Compute squared distances to target and select k nearest
             d2 = np.sum((X - xtgt) ** 2, axis=1)
-            k = min(file_to_open, n_samples)
-            # Ensure we have at least dim+1 points for simplex interpolation when possible
-            k = max(min(n_samples, k), min(dim + 1, n_samples))
-            nn_idx = np.argpartition(d2, k - 1)[:k]
+            nn_idx = np.argpartition(d2, file_to_open - 1)[:file_to_open]
             X_use = X[nn_idx]
             idx_use = idx[nn_idx]
         else:
-            X_use = X
-            idx_use = idx
+            raise ValueError('Dataset too small for interpolation; need more than ' + str(file_to_open) + ' samples')
 
         Y, wave_file_id = self._load_spectra_matrix(idx_use)
 
@@ -1685,16 +1685,13 @@ class FORWARD_DATASET:
         # Build Delaunay on the working set and interpolate
         # If target lies outside this subset hull or triangulation fails, fall back to nearest
         y = None
-        try:
+        if X_use.shape[1] <= 8:  # Delaunay takes too much time in high-D
             tri = sp.spatial.Delaunay(X_use)
             simplex = tri.find_simplex(xtgt)
             if simplex >= 0:
                 interp = sp.interpolate.LinearNDInterpolator(tri, Y)
                 y = interp(xtgt)
-        except Exception:
-            y = None
-
-        if y is None or np.any(~np.isfinite(y)):
+        else:
             # Fallback to nearest interpolation on the working set
             y = sp.interpolate.NearestNDInterpolator(X_use, Y)(xtgt)
 

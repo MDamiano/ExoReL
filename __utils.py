@@ -329,7 +329,7 @@ def par_and_calc(param):
     if not param['fit_T']:
         try:
             param['Tp'] += 0.0
-        except KeyError:
+        except (KeyError, TypeError):
             t1 = ((param['Rs'] * const.R_sun.value) / (2. * param['major-a'] * const.au.value)) ** 0.5
             param['Tp'] = t1 * ((1 - 0.3) ** 0.25) * param['Ts']
 
