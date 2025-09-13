@@ -16,6 +16,7 @@ class RETRIEVAL:
 
     def run_retrieval(self, parfile):
         self.param = read_parfile(self.param, parfile)
+        self.param = setup_param_dict(self.param)
         if self.param['optimizer'] == 'multinest':
             from ExoReL.__multinest import MULTINEST # type: ignore
             bayes = MULTINEST(self.param)
@@ -37,6 +38,7 @@ class CREATE_SPECTRUM:
         if self.param['verbose']:
             print(f"Running ExoReL – version {__version__}")
         self.param = read_parfile(self.param, parfile)
+        self.param = setup_param_dict(self.param)
         self.param = par_and_calc(self.param)
         self.param = load_input_spectrum(self.param)
 
@@ -181,6 +183,7 @@ class CREATE_DATASET:
 
     def run_forward(self, parfile):
         self.param = read_parfile(self.param, parfile, json_format=True)
+        self.param = setup_param_dict(self.param)
         self.param = load_input_spectrum(self.param)
         from ExoReL.__gendataset import GEN_DATASET # type: ignore
         ob = GEN_DATASET(self.param)

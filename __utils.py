@@ -215,8 +215,6 @@ def read_parfile(param, parfile=None, json_format=False):
                                 else:
                                     param[paramline[0]] = str(paramline[1])
 
-    if param['obs_numb'] is not None:
-        param['obs_numb'] = int(param['obs_numb'])
     param['wkg_dir'] = cwd + '/'
     param['out_dir'] = param['wkg_dir'] + param['output_directory']
     try:
@@ -225,10 +223,17 @@ def read_parfile(param, parfile=None, json_format=False):
         pass
     del param['output_directory']
 
+    os.system('cp ' + cwd + '/' + parfile + ' ' + param['out_dir'])
+
+    return param
+
+
+def setup_param_dict(param):
+    if param['obs_numb'] is not None:
+        param['obs_numb'] = int(param['obs_numb'])
+
     param['contribution'] = False
     param['mol_contr'] = None
-
-    os.system('cp ' + cwd + '/' + parfile + ' ' + param['out_dir'])
 
     if param['albedo_calc']:
         param['fp_over_fs'] = False
