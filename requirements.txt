@@ -13,3 +13,5 @@ gdown
 # Optional (not installed by default):
 # pymultinest==2.11  # requires MultiNest system libraries
 # mpi4py             # for parallel retrievals
+# torch              # for neural network surrogate model
+# torchvision        # for neural network surrogate model

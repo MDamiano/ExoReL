@@ -1,98 +1,99 @@
-# PLAN:
-# - Provide helpers to load a trained checkpoint and reconstruct the transformer model.
-# - Implement a batched prediction utility accepting arbitrary wavelength grids.
-# - Offer a CLI demo that plots predictions for a provided parameter vector and wavelength file.
+"""Inference utility for the ExoReL albedo transformer."""
+
 from __future__ import annotations
 
 import argparse
-import json
+import time
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable
 
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from .model import AlbedoTransformer, AlbedoTransformerConfig
+from .data import ExoReLAlbedoDataset
+from .model import AlbedoTransformer, ModelConfig
+from .utils import ensure_output_tree, load_config, select_device
 
 
-def load_model(checkpoint_path: str | Path, device: str = "cpu") -> AlbedoTransformer:
-    ckpt = torch.load(checkpoint_path, map_location=device)
-    config = AlbedoTransformerConfig(**ckpt["model_config"])
-    model = AlbedoTransformer(config)
-    model.load_state_dict(ckpt["model_state"])
+def load_vector(path: Path) -> np.ndarray:
+    if not path.exists():
+        raise FileNotFoundError(f"Vector file not found: {path}")
+    if path.suffix in {".npy", ".npz"}:
+        arr = np.load(path)
+        if isinstance(arr, np.lib.npyio.NpzFile):
+            if len(arr.files) != 1:
+                raise ValueError("NPZ files must contain a single array")
+            arr = arr[arr.files[0]]
+    else:
+        arr = np.loadtxt(path, dtype=np.float32)
+    arr = np.asarray(arr, dtype=np.float32).squeeze()
+    if arr.ndim != 1:
+        raise ValueError("Loaded vector must be 1D")
+    return arr
+
+
+def prepare_model(dataset: ExoReLAlbedoDataset, device: torch.device, checkpoint: Path) -> AlbedoTransformer:
+    model = AlbedoTransformer(param_dim=len(dataset.param_columns), config=ModelConfig())
+    payload = torch.load(checkpoint, map_location="cpu")
+    model.load_state_dict(payload["state_dict"])
     model.to(device)
     model.eval()
     return model
 
 
-def _prepare_tensor(values: Iterable[float]) -> torch.Tensor:
-    return torch.tensor(list(values), dtype=torch.float32)
-
-
-def predict_albedo(
-    model: AlbedoTransformer,
-    params: torch.Tensor,
-    lam: torch.Tensor,
-    throughput: Optional[torch.Tensor] = None,
-    lsf_sigma: Optional[float] = None,
-) -> torch.Tensor:
-    if params.dim() == 1:
-        params = params.unsqueeze(0)
-    if lam.dim() == 1:
-        lam = lam.unsqueeze(0)
-    if throughput is not None and throughput.dim() == 1:
-        throughput = throughput.unsqueeze(0)
-    device = next(model.parameters()).device
-    params = params.to(device)
-    lam = lam.to(device)
-    throughput = throughput.to(device) if throughput is not None else None
+def run_inference(cfg_path: Path, p_file: Path, lam_file: Path, output_array: Path | None = None) -> np.ndarray:
+    cfg = load_config(cfg_path)
+    output_dirs = ensure_output_tree(cfg["output_directory"])
+    checkpoint = output_dirs["checkpoints"] / "best.pt"
+    if not checkpoint.exists():
+        raise FileNotFoundError(f"Checkpoint not found: {checkpoint}")
+    device = select_device(cfg.get("network_training", {}).get("device", "auto"))
+    dataset = ExoReLAlbedoDataset(cfg["dataset_dir"], random_lambda_fraction=1.0)
+    stats = dataset.parameter_stats()
+    model = prepare_model(dataset, device, checkpoint)
+    params = load_vector(p_file)
+    lam = load_vector(lam_file)
+    if params.shape[0] != len(dataset.param_columns):
+        raise ValueError(
+            f"Parameter vector length {params.shape[0]} does not match model input {len(dataset.param_columns)}"
+        )
+    minimum = stats.minimum.cpu().numpy()
+    scale = stats.scale.cpu().numpy()
+    params_tensor = torch.from_numpy((params - minimum) / scale).unsqueeze(0).to(device)
+    lam_tensor = torch.from_numpy(lam).unsqueeze(0).to(device)
+    mask = torch.ones_like(lam_tensor, dtype=torch.bool)
     with torch.no_grad():
-        pred = model(lam, params, throughput=throughput, lsf_sigma=lsf_sigma)
-    return pred.cpu()
+        model.fourier.fit(lam_tensor.squeeze(0).cpu())
+        prediction = model(params_tensor, lam_tensor, mask=mask)
+    albedo = prediction.squeeze(0).cpu().numpy()
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    fig_path = output_dirs["plots"] / f"inference_{timestamp}.png"
+    plt.figure(figsize=(6, 4))
+    plt.plot(lam, albedo, label="prediction")
+    plt.xlabel("wavelength")
+    plt.ylabel("albedo")
+    plt.ylim(0.0, 1.0)
+    plt.tight_layout()
+    plt.savefig(fig_path)
+    plt.close()
+    if output_array is not None:
+        np.savetxt(output_array, np.vstack([lam, albedo]).T, delimiter=",")
+    return albedo
 
 
-def parse_array(path_or_values: str) -> np.ndarray:
-    candidate = Path(path_or_values)
-    if candidate.exists():
-        text = candidate.read_text()
-        try:
-            data = json.loads(text)
-            return np.asarray(data, dtype=np.float32)
-        except json.JSONDecodeError:
-            return np.loadtxt(candidate, dtype=np.float32)
-    return np.asarray([float(x) for x in path_or_values.split(",")], dtype=np.float32)
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run inference with the trained albedo transformer")
+    parser.add_argument("--par", type=str, required=True, help="Path to params.json")
+    parser.add_argument("--p_file", type=str, required=True, help="Parameter vector file")
+    parser.add_argument("--lam_file", type=str, required=True, help="Wavelength grid file")
+    parser.add_argument("--out", type=str, default=None, help="Optional output file for predicted albedo")
+    return parser.parse_args()
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run ExoReL albedo inference")
-    parser.add_argument("checkpoint")
-    parser.add_argument("--params", required=True, help="Comma-separated values or path to json/txt")
-    parser.add_argument("--wavelength", required=True, help="Comma-separated values or path to file")
-    parser.add_argument("--throughput", help="Optional throughput values")
-    parser.add_argument("--lsf-sigma", type=float)
-    parser.add_argument("--output", default="demo_prediction.png")
-    args = parser.parse_args()
-
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = load_model(args.checkpoint, device=device)
-    params = _prepare_tensor(parse_array(args.params))
-    lam = _prepare_tensor(parse_array(args.wavelength))
-    throughput = None
-    if args.throughput:
-        throughput = _prepare_tensor(parse_array(args.throughput))
-    pred = predict_albedo(model, params, lam.unsqueeze(0), throughput.unsqueeze(0) if throughput is not None else None, args.lsf_sigma)
-    lam_np = lam.numpy()
-    plt.figure(figsize=(8, 4))
-    plt.plot(lam_np, pred.squeeze(0).numpy(), label="Prediction")
-    if throughput is not None:
-        plt.plot(lam_np, throughput.numpy(), label="Throughput")
-    plt.xlabel("Wavelength")
-    plt.ylabel("Albedo")
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(args.output)
-    plt.close()
+    args = parse_args()
+    run_inference(Path(args.par), Path(args.p_file), Path(args.lam_file), Path(args.out) if args.out else None)
 
 
 if __name__ == "__main__":

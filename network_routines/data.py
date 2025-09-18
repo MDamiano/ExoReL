@@ -1,209 +1,183 @@
-# PLAN:
-# - Parse the dataset artifacts produced by GEN_DATASET: a design matrix CSV and sample JSON files.
-# - Build SampleRecord objects keyed by dataset index and expose deterministic train/val splits.
-# - Load spectra, resolve wavelength grids, and support optional random subsampling for efficiency.
+"""Dataset utilities for ExoReL Albedo transformer."""
+
 from __future__ import annotations
 
 import json
-import random
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Tuple
 
 import numpy as np
+import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
 
-@dataclass
-class SampleRecord:
-    index: int
-    params: torch.Tensor
-    sample_path: Path
+PKG_DIR = Path(__file__).resolve().parent.parent
+WAVELENGTH_DIR = PKG_DIR / "forward_mod" / "Data" / "wl_bins"
+
+
+@dataclass(frozen=True)
+class DatasetStats:
+    """Parameter statistics for normalisation."""
+
+    minimum: torch.Tensor
+    maximum: torch.Tensor
+
+    @property
+    def scale(self) -> torch.Tensor:
+        return torch.clamp(self.maximum - self.minimum, min=1e-6)
 
 
 class ExoReLAlbedoDataset(Dataset):
-    _split_cache: Dict[tuple[str, float, int], Dict[str, List[int]]] = {}
+    """PyTorch dataset binding ExoReL generated spectra."""
 
     def __init__(
         self,
         dataset_dir: str | Path,
-        split: str = "train",
-        random_lambda_fraction: Optional[float] = None,
-        seed: int = 0,
-        val_fraction: float = 0.1,
+        random_lambda_fraction: float = 1.0,
+        dtype: torch.dtype = torch.float32,
     ) -> None:
-        super().__init__()
         self.dataset_dir = Path(dataset_dir)
-        self.split = split.lower()
-        self.random_lambda_fraction = random_lambda_fraction
-        self.rng = random.Random(seed)
-        self.val_fraction = val_fraction
-        self._wavelength_cache: Dict[str, torch.Tensor] = {}
+        self.random_lambda_fraction = float(random_lambda_fraction)
+        self.dtype = dtype
+        csv_path = self.dataset_dir / "dataset.csv"
+        if not csv_path.exists():
+            raise FileNotFoundError(f"dataset.csv not found in {self.dataset_dir}")
 
-        manifest = self.dataset_dir / "dataset.csv"
-        if not manifest.exists():
-            raise FileNotFoundError(f"Missing dataset manifest: {manifest}")
-        self.param_names, records_by_index = self._load_design_matrix(manifest)
-        self._records_by_index = records_by_index
-        self._all_indices = sorted(records_by_index.keys())
+        frame = pd.read_csv(csv_path)
+        if "index" in frame.columns:
+            frame = frame.drop(columns=["index"])
+        self.param_columns = list(frame.columns)
+        if not self.param_columns:
+            raise ValueError("dataset.csv must include at least one parameter column")
 
-        key = (str(self.dataset_dir.resolve()), float(self.val_fraction), int(seed))
-        if key not in self._split_cache:
-            self._split_cache[key] = self._make_split_indices(self._all_indices, self.val_fraction, seed)
-        splits = self._split_cache[key]
-        selected = splits.get(self.split, splits.get("all", self._all_indices))
-        if not selected:
-            raise ValueError(f"No samples available for split '{self.split}' in {self.dataset_dir}")
-        self._active_indices = selected
-        self.records: List[SampleRecord] = [self._records_by_index[idx] for idx in self._active_indices]
+        self.params = torch.tensor(frame.to_numpy(dtype=np.float32), dtype=dtype)
+        self.stats = DatasetStats(minimum=self.params.min(dim=0).values, maximum=self.params.max(dim=0).values)
+        self.sample_files = self._build_sample_index(len(frame))
 
-    def _load_design_matrix(self, manifest: Path) -> tuple[List[str], Dict[int, SampleRecord]]:
-        with manifest.open("r") as handle:
-            header = handle.readline().strip()
-        columns = [col.strip() for col in header.split(",") if col]
-        data = np.loadtxt(manifest, delimiter=",", skiprows=1)
-        if data.size == 0:
-            raise ValueError("dataset.csv contains no samples")
-        if data.ndim == 1:
-            data = data.reshape(1, -1)
-        has_index_column = bool(columns) and columns[0].lower() == "index"
-        param_offset = 1 if has_index_column else 0
-        param_names = columns[param_offset:]
-        params = data[:, param_offset:]
-        records: Dict[int, SampleRecord] = {}
-        for row_idx, row in enumerate(params):
-            sample_path = self.dataset_dir / f"sample_{row_idx:07d}.json"
-            if not sample_path.exists():
-                raise FileNotFoundError(f"Missing sample file: {sample_path}")
-            records[row_idx] = SampleRecord(
-                index=row_idx,
-                params=torch.tensor(row, dtype=torch.float32),
-                sample_path=sample_path,
-            )
-        return param_names, records
-
-    def _make_split_indices(
-        self, indices: List[int], val_fraction: float, seed: int
-    ) -> Dict[str, List[int]]:
-        splits: Dict[str, List[int]] = {"all": list(indices)}
-        if val_fraction <= 0 or len(indices) < 2:
-            splits["train"] = list(indices)
-            splits["val"] = []
-            return splits
-        rng = random.Random(seed)
-        shuffled = list(indices)
-        rng.shuffle(shuffled)
-        val_count = max(1, int(len(shuffled) * val_fraction))
-        val_ids = sorted(shuffled[:val_count])
-        train_ids = sorted(shuffled[val_count:])
-        if not train_ids:
-            train_ids, val_ids = val_ids, []
-        splits["train"] = train_ids
-        splits["val"] = val_ids
-        return splits
+    def _build_sample_index(self, n_samples: int) -> List[Path]:
+        sample_files: List[Path] = []
+        for row_idx in range(n_samples):
+            fname = self.dataset_dir / f"sample_{row_idx:07d}.json"
+            if not fname.exists():
+                raise FileNotFoundError(f"Sample file missing: {fname}")
+            sample_files.append(fname)
+        return sample_files
 
     def __len__(self) -> int:
-        return len(self.records)
+        return len(self.sample_files)
 
-    def _resolve_wavelength(self, value) -> torch.Tensor:
-        if value is None:
-            raise ValueError("Sample JSON missing 'wavelength' entry")
-        if isinstance(value, list):
-            return torch.tensor(value, dtype=torch.float32)
-        if isinstance(value, str):
-            if value in self._wavelength_cache:
-                return self._wavelength_cache[value]
-            candidates = [
-                self.dataset_dir / f"{value}.npy",
-                self.dataset_dir / f"{value}.json",
-                self.dataset_dir / f"{value}.dat",
-                Path(__file__).resolve().parent.parent
-                / "forward_mod"
-                / "Data"
-                / "wl_bins"
-                / f"{value}.dat",
-            ]
-            spectrum = None
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        params = self.params[idx]
+        params_norm = (params - self.stats.minimum) / self.stats.scale
+        sample = self._load_sample(idx)
+        lam = sample["lam"]
+        target = sample["target"]
+        lam, target = self._maybe_subsample(lam, target)
+        return {
+            "p": params_norm.to(dtype=self.dtype),
+            "lam": lam.to(dtype=self.dtype),
+            "target": target.to(dtype=self.dtype),
+        }
+
+    def parameter_stats(self) -> DatasetStats:
+        return self.stats
+
+    def _maybe_subsample(
+        self, lam: torch.Tensor, target: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        frac = max(0.0, min(1.0, self.random_lambda_fraction))
+        if frac >= 0.999:
+            return lam, target
+        count = lam.shape[0]
+        k = max(8, int(round(count * frac)))
+        k = min(k, count)
+        if k == count:
+            return lam, target
+        idx = torch.randperm(count)[:k]
+        idx, _ = torch.sort(idx)
+        return lam.index_select(0, idx), target.index_select(0, idx)
+
+    def _load_sample(self, idx: int) -> Dict[str, torch.Tensor]:
+        sample_path = self.sample_files[idx]
+        with sample_path.open("r", encoding="utf-8") as fh:
+            payload = json.load(fh)
+        lam_raw = payload.get("wavelength")
+        lam = self._load_lambda(lam_raw)
+        spectrum = np.asarray(payload.get("spectrum"), dtype=np.float32)
+        if spectrum.ndim != 1:
+            raise ValueError(f"Spectrum in {sample_path} must be 1D")
+        if lam.shape[0] != spectrum.shape[0]:
+            raise ValueError(f"Length mismatch in {sample_path}: λ={lam.shape[0]} vs spectrum={spectrum.shape[0]}")
+        lam_tensor = torch.from_numpy(lam)
+        spec_tensor = torch.from_numpy(spectrum)
+        if not torch.isfinite(lam_tensor).all():
+            raise ValueError(f"Non-finite wavelength values in {sample_path}")
+        if not torch.isfinite(spec_tensor).all():
+            raise ValueError(f"Non-finite spectrum values in {sample_path}")
+        return {"lam": lam_tensor, "target": spec_tensor}
+
+    def _load_lambda(self, lam_raw) -> np.ndarray:
+        if isinstance(lam_raw, list):
+            lam = np.asarray(lam_raw, dtype=np.float32)
+        else:
+            lam_path = Path(str(lam_raw)).expanduser()
+            candidates: List[Path] = []
+            seen: set[str] = set()
+
+            def push_with_suffix(base: Path) -> None:
+                base = Path(base)
+                key = str(base)
+                if key not in seen:
+                    seen.add(key)
+                    candidates.append(base)
+                if base.suffix.lower() != ".dat":
+                    extra = base.with_suffix(".dat")
+                    extra_key = str(extra)
+                    if extra_key not in seen:
+                        seen.add(extra_key)
+                        candidates.append(extra)
+
+            push_with_suffix(lam_path)
+            if not lam_path.is_absolute():
+                push_with_suffix(self.dataset_dir / lam_path)
+                push_with_suffix(WAVELENGTH_DIR / lam_path)
+
+            lam = None
             for candidate in candidates:
                 if candidate.exists():
-                    if candidate.suffix == ".npy":
-                        spectrum = np.load(candidate)
-                    elif candidate.suffix == ".json":
-                        spectrum = np.asarray(json.loads(candidate.read_text()), dtype=float)
-                    else:
-                        spectrum = np.loadtxt(candidate)
+                    lam = np.loadtxt(candidate, dtype=np.float32)
                     break
-            if spectrum is None:
-                raise FileNotFoundError(f"Cannot resolve wavelength grid '{value}'")
-            if spectrum.ndim == 2:
-                if spectrum.shape[1] == 2:
-                    spectrum = spectrum.mean(axis=1)
-                else:
-                    spectrum = spectrum[:, 2]
-            lam = torch.tensor(spectrum, dtype=torch.float32)
-            self._wavelength_cache[value] = lam
-            return lam
-        if isinstance(value, np.ndarray):
-            return torch.tensor(value, dtype=torch.float32)
-        raise TypeError("Unsupported wavelength representation: %r" % (value,))
-
-    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor | float | None]:
-        record = self.records[idx]
-        payload = json.loads(record.sample_path.read_text())
-        lam = self._resolve_wavelength(payload.get("wavelength"))
-        target = torch.tensor(payload["spectrum"], dtype=torch.float32)
-        throughput_data = payload.get("throughput")
-        throughput = (
-            torch.tensor(throughput_data, dtype=torch.float32)
-            if throughput_data is not None
-            else torch.ones_like(lam)
-        )
-        lsf_sigma = payload.get("lsf_sigma")
-        params = record.params.clone()
-
-        if self.random_lambda_fraction and 0 < self.random_lambda_fraction < 1.0:
-            count = max(4, int(len(lam) * self.random_lambda_fraction))
-            indices = sorted(self.rng.sample(range(len(lam)), count))
-            lam = lam[indices]
-            target = target[indices]
-            throughput = throughput[indices]
-
-        return {
-            "p": params,
-            "lam": lam,
-            "target": target,
-            "throughput": throughput,
-            "lsf_sigma": lsf_sigma,
-        }
-
-    @staticmethod
-    def collate_fn(batch: List[Dict[str, torch.Tensor | float | None]]) -> Dict[str, torch.Tensor | None]:
-        batch_size = len(batch)
-        lengths = [item["lam"].shape[0] for item in batch]
-        max_len = max(lengths)
-        lam_tensor = torch.zeros(batch_size, max_len, dtype=torch.float32)
-        target_tensor = torch.zeros(batch_size, max_len, dtype=torch.float32)
-        throughput_tensor = torch.ones(batch_size, max_len, dtype=torch.float32)
-        mask = torch.zeros(batch_size, max_len, dtype=torch.bool)
-        params = torch.stack([item["p"] for item in batch])
-        lsf_sigma = batch[0]["lsf_sigma"] if batch[0]["lsf_sigma"] is not None else None
-        for i, item in enumerate(batch):
-            length = item["lam"].shape[0]
-            lam_tensor[i, :length] = item["lam"]
-            target_tensor[i, :length] = item["target"]
-            throughput_tensor[i, :length] = item["throughput"]
-            mask[i, :length] = True
-            if item["lsf_sigma"] is not None:
-                lsf_sigma = item["lsf_sigma"]
-        return {
-            "p": params,
-            "lam": lam_tensor,
-            "target": target_tensor,
-            "mask": mask,
-            "throughput": throughput_tensor,
-            "lsf_sigma": lsf_sigma,
-        }
+            if lam is None:
+                raise FileNotFoundError(
+                    f"Wavelength file not found. Checked: {', '.join(str(p) for p in candidates)}"
+                )
+        if lam.ndim == 2:
+            cols = lam.shape[1]
+            if cols == 1:
+                lam = lam[:, 0]
+            elif cols == 2:
+                lam = (lam[:, 0] + lam[:, 1]) * 0.5
+            else:
+                raise ValueError("Wavelength grid must have one or two columns")
+        if lam.ndim != 1:
+            raise ValueError("Wavelength grid must be 1D")
+        return lam
 
 
-__all__ = ["ExoReLAlbedoDataset", "SampleRecord"]
+def pad_collate(batch: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
+    if not batch:
+        raise ValueError("Empty batch provided to pad_collate")
+    max_len = max(item["lam"].shape[0] for item in batch)
+    batch_size = len(batch)
+    lam_pad = batch[0]["lam"].new_zeros((batch_size, max_len))
+    target_pad = batch[0]["target"].new_zeros((batch_size, max_len))
+    mask = torch.zeros((batch_size, max_len), dtype=torch.bool, device=batch[0]["lam"].device)
+    params = torch.stack([item["p"] for item in batch], dim=0)
+    for i, item in enumerate(batch):
+        L = item["lam"].shape[0]
+        lam_pad[i, :L] = item["lam"]
+        target_pad[i, :L] = item["target"]
+        mask[i, :L] = True
+    return {"p": params, "lam": lam_pad, "target": target_pad, "mask": mask}

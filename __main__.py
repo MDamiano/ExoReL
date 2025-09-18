@@ -1,10 +1,8 @@
-from dataclasses import fields
-
 from .__basics import *
 from .__utils import *
 from .__forward import *
 from . import __version__
-from .network_routines.train import TrainingConfig, train
+from .network_routines.train import train
 
 path = os.path.abspath(__file__)
 pkg_dir = os.path.dirname(path) + '/'
@@ -202,14 +200,28 @@ class TRAIN_NN:
     def run_training(self, parfile):
         config = read_parfile(self.param, parfile, json_format=True)
         network_cfg = config.get('network_training')
-        network_cfg["dataset_dir"] = config["dataset_dir"]
-        network_cfg["output_dir"] = config["out_dir"]
-        if network_cfg is None:
+        if not isinstance(network_cfg, dict):
             raise RuntimeError('Parfile must contain a "network_training" section with configuration values.')
-        cfg_kwargs = {}
-        for field in fields(TrainingConfig):
-            if field.name in network_cfg:
-                cfg_kwargs[field.name] = network_cfg[field.name]
-        if 'dataset_dir' not in cfg_kwargs or 'output_dir' not in cfg_kwargs:
-            raise RuntimeError('network_training section must define dataset_dir and output_dir.')
-        train(TrainingConfig(**cfg_kwargs))
+
+        dataset_dir = network_cfg.get('dataset_dir') or config.get('dataset_dir')
+        output_dir = (
+            network_cfg.get('output_directory')
+            or network_cfg.get('output_dir')
+            or config.get('output_directory')
+            or config.get('out_dir')
+        )
+        if dataset_dir is None or output_dir is None:
+            raise RuntimeError('Training configuration must provide dataset_dir and output_directory.')
+
+        cleaned_network_cfg = {
+            key: value
+            for key, value in network_cfg.items()
+            if key not in {'dataset_dir', 'output_dir', 'output_directory'}
+        }
+
+        payload = {
+            'dataset_dir': dataset_dir,
+            'output_directory': output_dir,
+            'network_training': cleaned_network_cfg,
+        }
+        train(payload)

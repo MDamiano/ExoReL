@@ -1,3 +1,6 @@
+## [2.6.3] - 09/18/25
+- Debugging network routines.
+
 ## [2.6.2] - 09/17/25
 - Added transformer-based neural surrogate stack under `network_routines` for albedo prediction, including dataset loader, training loop, inference helpers, and Fourier/LSF utilities tuned for retrieval datasets.
 - Wired a `TRAIN_NN` CLI entry point that reads `network_training` parameters from the parfile, links dataset/output locations, and launches training checkpoints/plots via the new pipeline.

@@ -1,17 +1,31 @@
-# PLAN:
-# - Re-export key components for convenient package-level imports.
-# - Keep namespace tidy for training/inference modules.
-from .data import ExoReLAlbedoDataset
-from .infer import load_model, predict_albedo
-from .model import AlbedoTransformer, AlbedoTransformerConfig
-from .train import TrainingConfig, train
+"""ExoReL neural network routines package."""
+
+from .utils import (
+    load_config,
+    ensure_output_tree,
+    seed_everything,
+    select_device,
+    setup_logger,
+    assert_finite,
+)
+from .fourier import FourierFeatures
+from .data import ExoReLAlbedoDataset, pad_collate
+from .model import AlbedoTransformer
+from .loss import masked_mae, masked_mse, masked_huber, second_derivative_penalty
 
 __all__ = [
+    "load_config",
+    "ensure_output_tree",
+    "seed_everything",
+    "select_device",
+    "setup_logger",
+    "assert_finite",
+    "FourierFeatures",
     "ExoReLAlbedoDataset",
+    "pad_collate",
     "AlbedoTransformer",
-    "AlbedoTransformerConfig",
-    "TrainingConfig",
-    "train",
-    "load_model",
-    "predict_albedo",
+    "masked_mae",
+    "masked_mse",
+    "masked_huber",
+    "second_derivative_penalty",
 ]

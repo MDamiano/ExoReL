@@ -1,264 +1,283 @@
-# PLAN:
-# - Define dataclasses encapsulating optimiser/training settings and seed control.
-# - Build training/validation loops leveraging datasets, model, and loss helpers.
-# - Provide CLI entry that saves checkpoints, metrics, and a quick validation plot.
+"""Training entry-point for the ExoReL albedo transformer."""
+
 from __future__ import annotations
 
 import argparse
-import json
-import math
-import random
-from dataclasses import asdict, dataclass
+import time
 from pathlib import Path
-from typing import Dict, Tuple
+import os
+from typing import Any, Dict, List, Mapping, Tuple, Union
+from contextlib import nullcontext
 
 import matplotlib.pyplot as plt
-import numpy as np
 import torch
 from torch import nn
-from torch.cuda import amp
-from torch.utils.data import DataLoader
+from torch.cuda.amp import GradScaler
+from torch.utils.data import DataLoader, random_split
 
-from .data import ExoReLAlbedoDataset
-from .loss import masked_mse, smoothness_penalty
-from .model import AlbedoTransformer, AlbedoTransformerConfig
-
-
-@dataclass
-class TrainingConfig:
-    dataset_dir: str
-    output_dir: str
-    epochs: int = 50
-    batch_size: int = 16
-    lr: float = 1e-3
-    weight_decay: float = 1e-2
-    smoothness_weight: float = 0.0
-    patience: int = 8
-    seed: int = 42
-    random_lambda_fraction: float = 1.0
-    device: str = "auto"
-    val_fraction: float = 0.1
+from .data import ExoReLAlbedoDataset, pad_collate
+from .loss import compute_metrics, line_core_weights, masked_mae, masked_huber, masked_mse, second_derivative_penalty
+from .model import AlbedoTransformer, ModelConfig
+from .utils import (
+    TrainingConfig,
+    cosine_schedule_with_warmup,
+    ensure_output_tree,
+    load_config,
+    save_json,
+    seed_everything,
+    select_device,
+    setup_logger,
+)
 
 
-def set_seed(seed: int) -> None:
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
+def build_dataloaders(dataset: ExoReLAlbedoDataset, cfg: TrainingConfig) -> Tuple[DataLoader, DataLoader]:
+    val_fraction = min(max(cfg.val_fraction, 0.05), 0.5)
+    val_size = max(1, int(len(dataset) * val_fraction))
+    train_size = len(dataset) - val_size
+    if train_size <= 0:
+        raise ValueError("Dataset too small for the chosen validation split")
+    generator = torch.Generator().manual_seed(cfg.seed)
+    train_set, val_set = random_split(dataset, [train_size, val_size], generator=generator)
+    train_loader = DataLoader(
+        train_set,
+        batch_size=cfg.batch_size,
+        shuffle=True,
+        drop_last=False,
+        collate_fn=pad_collate,
+    )
+    val_loader = DataLoader(
+        val_set,
+        batch_size=cfg.batch_size,
+        shuffle=False,
+        drop_last=False,
+        collate_fn=pad_collate,
+    )
+    return train_loader, val_loader
 
 
-def select_device(device: str) -> torch.device:
-    if device == "auto":
-        if torch.cuda.is_available():
-            return torch.device("cuda")
-        if torch.backends.mps.is_available():
-            return torch.device("mps")
-    return torch.device(device)
+def create_model(dataset: ExoReLAlbedoDataset, device: torch.device) -> AlbedoTransformer:
+    param_dim = len(dataset.param_columns)
+    model_cfg = ModelConfig()
+    model = AlbedoTransformer(param_dim=param_dim, config=model_cfg)
+    return model.to(device)
 
 
-def compute_metrics(pred: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> Dict[str, float]:
-    diff = (pred - target).abs()
-    diff = diff[mask]
-    mae = diff.mean().item()
-    rmse = math.sqrt(((pred - target)[mask] ** 2).mean().item())
-    within_1 = (diff < 0.01).float().mean().item()
-    within_2 = (diff < 0.02).float().mean().item()
-    within_5 = (diff < 0.05).float().mean().item()
-    return {
-        "mae": mae,
-        "rmse": rmse,
-        "pct_within_1": within_1,
-        "pct_within_2": within_2,
-        "pct_within_5": within_5,
-    }
+def elementwise_loss(pred: torch.Tensor, target: torch.Tensor, loss_type: str, delta: float) -> torch.Tensor:
+    if loss_type == "mae":
+        return torch.abs(pred - target)
+    if loss_type == "mse":
+        return (pred - target) ** 2
+    diff = torch.abs(pred - target)
+    quadratic = torch.clamp(diff, max=delta)
+    linear = diff - quadratic
+    return 0.5 * quadratic ** 2 + delta * linear
 
 
-def run_epoch(
-    model: nn.Module,
+def reduce_loss(loss_values: torch.Tensor, mask: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
+    weighted_mask = mask.float() * weights
+    denom = weighted_mask.sum().clamp(min=1.0)
+    return (loss_values * weighted_mask).sum() / denom
+
+
+def train_epoch(
+    model: AlbedoTransformer,
     loader: DataLoader,
     optimizer: torch.optim.Optimizer,
-    scaler: amp.GradScaler,
+    scaler: GradScaler,
     device: torch.device,
-    smoothness_weight: float,
-) -> float:
+    cfg: TrainingConfig,
+) -> Tuple[float, float]:
     model.train()
     total_loss = 0.0
+    total_mae = 0.0
+    batches = 0
+    mixed_precision = device.type in ("cuda", "mps")
     for batch in loader:
         params = batch["p"].to(device)
         lam = batch["lam"].to(device)
         target = batch["target"].to(device)
         mask = batch["mask"].to(device)
-        throughput = batch["throughput"].to(device)
-        lsf_sigma = batch["lsf_sigma"]
         optimizer.zero_grad(set_to_none=True)
-        with amp.autocast(enabled=device.type == "cuda"):
-            pred = model(lam, params, throughput=throughput, lsf_sigma=lsf_sigma)
-            loss = masked_mse(pred, target, mask)
-            if smoothness_weight > 0:
-                loss = loss + smoothness_weight * smoothness_penalty(pred, mask)
+        autocast_context = torch.autocast(device_type=device.type) if mixed_precision else nullcontext()
+        with autocast_context:
+            pred = model(params, lam, mask=mask)
+            weights = torch.ones_like(target)
+            if cfg.line_core_fraction > 0.0:
+                weights = line_core_weights(lam, target, mask, cfg.line_core_fraction)
+            loss_values = elementwise_loss(pred, target, cfg.loss, cfg.huber_delta)
+            loss = reduce_loss(loss_values, mask, weights)
+            if cfg.smoothness_weight > 0.0:
+                smooth_penalty = second_derivative_penalty(pred, lam, mask)
+                loss = loss + cfg.smoothness_weight * smooth_penalty
         scaler.scale(loss).backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        if cfg.grad_clip is not None and cfg.grad_clip > 0.0:
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.grad_clip)
         scaler.step(optimizer)
         scaler.update()
-        total_loss += loss.item() * lam.shape[0]
-    return total_loss / len(loader.dataset)
+        with torch.no_grad():
+            batch_mae = masked_mae(pred, target, mask).item()
+        total_loss += loss.item()
+        total_mae += batch_mae
+        batches += 1
+    return total_loss / max(1, batches), total_mae / max(1, batches)
 
 
-@torch.no_grad()
-def evaluate(model: nn.Module, loader: DataLoader, device: torch.device) -> Tuple[float, Dict[str, float], Dict[str, torch.Tensor]]:
+def validate_epoch(
+    model: AlbedoTransformer,
+    loader: DataLoader,
+    device: torch.device,
+) -> Tuple[float, Dict[str, float]]:
     model.eval()
-    losses = []
-    metrics_accum = []
-    sample_batch: Dict[str, torch.Tensor] | None = None
-    for batch in loader:
-        params = batch["p"].to(device)
-        lam = batch["lam"].to(device)
-        target = batch["target"].to(device)
-        mask = batch["mask"].to(device)
-        throughput = batch["throughput"].to(device)
-        lsf_sigma = batch["lsf_sigma"]
-        pred = model(lam, params, throughput=throughput, lsf_sigma=lsf_sigma)
-        losses.append(masked_mse(pred, target, mask).item())
-        metrics_accum.append(compute_metrics(pred, target, mask))
-        if sample_batch is None:
-            sample_batch = {
-                "lam": lam.cpu(),
-                "target": target.cpu(),
-                "pred": pred.cpu(),
-                "mask": mask.cpu(),
-            }
-    avg_metrics = {k: float(np.mean([m[k] for m in metrics_accum])) for k in metrics_accum[0]}
-    return float(np.mean(losses)), avg_metrics, sample_batch or {}
+    total_mae = 0.0
+    batches = 0
+    aggregate_metrics: Dict[str, float] = {"mae": 0.0, "rmse": 0.0, "pct_lt_1": 0.0, "pct_lt_2": 0.0, "pct_lt_5": 0.0}
+    with torch.no_grad():
+        for batch in loader:
+            params = batch["p"].to(device)
+            lam = batch["lam"].to(device)
+            target = batch["target"].to(device)
+            mask = batch["mask"].to(device)
+            pred = model(params, lam, mask=mask)
+            batch_metrics = compute_metrics(pred, target, mask)
+            for key in aggregate_metrics:
+                aggregate_metrics[key] += batch_metrics[key]
+            total_mae += batch_metrics["mae"]
+            batches += 1
+    if batches > 0:
+        for key in aggregate_metrics:
+            aggregate_metrics[key] /= batches
+        total_mae /= batches
+    return total_mae, aggregate_metrics
 
 
-def save_checkpoint(
-    model: nn.Module,
-    model_config: AlbedoTransformerConfig,
-    config: TrainingConfig,
-    epoch: int,
-    metrics: Dict[str, float],
-    path: Path,
-) -> None:
-    payload = {
-        "model_state": model.state_dict(),
-        "train_config": asdict(config),
-        "model_config": asdict(model_config),
-        "metrics": metrics,
-        "epoch": epoch,
-    }
-    torch.save(payload, path)
-
-
-def plot_validation(sample: Dict[str, torch.Tensor], output_path: Path) -> None:
-    if not sample:
-        return
-    lam = sample["lam"][0].numpy()
-    target = sample["target"][0].numpy()
-    pred = sample["pred"][0].numpy()
-    mask = sample["mask"][0].numpy().astype(bool)
-    plt.figure(figsize=(8, 4))
-    plt.plot(lam[mask], target[mask], label="Target")
-    plt.plot(lam[mask], pred[mask], label="Prediction")
-    plt.xlabel("Wavelength")
-    plt.ylabel("Albedo")
+def plot_training(history: List[Dict[str, float]], output_path: Path) -> None:
+    epochs = list(range(1, len(history) + 1))
+    train_mae = [row["train_mae"] for row in history]
+    val_mae = [row["val_mae"] for row in history]
+    plt.figure(figsize=(6, 4))
+    plt.plot(epochs, train_mae, label="train")
+    plt.plot(epochs, val_mae, label="val")
+    plt.xlabel("epoch")
+    plt.ylabel("MAE")
     plt.legend()
     plt.tight_layout()
     plt.savefig(output_path)
     plt.close()
 
 
-def train(config: TrainingConfig) -> Dict[str, float]:
-    set_seed(config.seed)
-    device = select_device(config.device)
-    train_dataset = ExoReLAlbedoDataset(
-        dataset_dir=config.dataset_dir,
-        split="train",
-        random_lambda_fraction=config.random_lambda_fraction,
-        seed=config.seed,
-        val_fraction=config.val_fraction,
+def save_checkpoint(
+    model: AlbedoTransformer,
+    optimizer: torch.optim.Optimizer,
+    history: List[Dict[str, float]],
+    cfg: Dict[str, any],
+    path: Path,
+) -> None:
+    payload = {
+        "state_dict": model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "history": history,
+        "config": cfg,
+    }
+    torch.save(payload, path)
+
+
+ConfigSource = Union[Path, str, os.PathLike, Mapping[str, Any]]
+
+
+def _load_config(cfg_source: ConfigSource) -> Dict[str, Any]:
+    if isinstance(cfg_source, Mapping):
+        cfg = {**cfg_source}
+        if "dataset_dir" not in cfg:
+            raise KeyError("Configuration dictionary must include 'dataset_dir'.")
+        if "output_directory" not in cfg:
+            raise KeyError("Configuration dictionary must include 'output_directory'.")
+        cfg.setdefault("network_training", {})
+        if not isinstance(cfg["network_training"], Mapping):
+            raise TypeError("'network_training' must be a mapping when provided explicitly.")
+        cfg["network_training"] = dict(cfg["network_training"])
+        return cfg
+    path = Path(cfg_source)
+    return load_config(path)
+
+
+def run_training(cfg_source: ConfigSource) -> Dict[str, any]:
+    cfg = _load_config(cfg_source)
+    training_cfg = TrainingConfig.from_dict(cfg.get("network_training"))
+    output_dirs = ensure_output_tree(cfg["output_directory"])
+    seed_everything(training_cfg.seed)
+    device = select_device(training_cfg.device)
+    logger = setup_logger(output_dirs["logs"])
+    dataset = ExoReLAlbedoDataset(
+        dataset_dir=cfg["dataset_dir"],
+        random_lambda_fraction=training_cfg.random_lambda_fraction,
     )
-    val_dataset = ExoReLAlbedoDataset(
-        dataset_dir=config.dataset_dir,
-        split="val",
-        random_lambda_fraction=None,
-        seed=config.seed,
-        val_fraction=config.val_fraction,
-    )
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=config.batch_size,
-        shuffle=True,
-        collate_fn=ExoReLAlbedoDataset.collate_fn,
-    )
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=config.batch_size,
-        shuffle=False,
-        collate_fn=ExoReLAlbedoDataset.collate_fn,
-    )
-    model_config = AlbedoTransformerConfig(param_dim=train_dataset[0]["p"].shape[0])
-    model = AlbedoTransformer(model_config).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=config.lr, weight_decay=config.weight_decay)
-    scaler = amp.GradScaler(enabled=device.type == "cuda")
+    train_loader, val_loader = build_dataloaders(dataset, training_cfg)
+    model = create_model(dataset, device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=training_cfg.lr, weight_decay=training_cfg.weight_decay)
+    scaler = GradScaler(enabled=device.type in ("cuda", "mps"))
+    schedule = cosine_schedule_with_warmup(training_cfg.epochs, training_cfg.warmup_epochs, training_cfg.lr)
+
+    logger.info("Starting training for %d epochs", training_cfg.epochs)
+    history: List[Dict[str, float]] = []
     best_val = float("inf")
-    patience_left = config.patience
-    output_dir = Path(config.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    history_path = output_dir / "metrics.json"
-    history = []
-    for epoch in range(1, config.epochs + 1):
-        train_loss = run_epoch(model, train_loader, optimizer, scaler, device, config.smoothness_weight)
-        val_loss, metrics, sample = evaluate(model, val_loader, device)
-        history.append({"epoch": epoch, "train_loss": train_loss, "val_loss": val_loss, **metrics})
-        if val_loss + 1e-6 < best_val:
-            best_val = val_loss
-            patience_left = config.patience
-            ckpt_path = output_dir / f"checkpoint_epoch_{epoch}.pt"
-            save_checkpoint(model, model_config, config, epoch, metrics, ckpt_path)
-            plot_validation(sample, output_dir / f"val_plot_epoch_{epoch}.png")
+    best_epoch = -1
+    patience_counter = 0
+
+    for epoch in range(training_cfg.epochs):
+        for group in optimizer.param_groups:
+            group["lr"] = schedule[min(epoch, len(schedule) - 1)]
+        start = time.time()
+        train_loss, train_mae = train_epoch(model, train_loader, optimizer, scaler, device, training_cfg)
+        val_mae, val_metrics = validate_epoch(model, val_loader, device)
+        elapsed = time.time() - start
+        history.append({"train_loss": train_loss, "train_mae": train_mae, "val_mae": val_mae, **val_metrics})
+        logger.info(
+            "Epoch %d | train_loss=%.5f train_mae=%.5f val_mae=%.5f time=%.1fs",
+            epoch + 1,
+            train_loss,
+            train_mae,
+            val_mae,
+            elapsed,
+        )
+        if val_mae + 1e-6 < best_val:
+            best_val = val_mae
+            best_epoch = epoch
+            patience_counter = 0
+            save_checkpoint(
+                model,
+                optimizer,
+                history,
+                cfg,
+                output_dirs["checkpoints"] / "best.pt",
+            )
         else:
-            patience_left -= 1
-            if patience_left <= 0:
-                break
-    history_path.write_text(json.dumps(history, indent=2))
-    return history[-1] if history else {}
+            patience_counter += 1
+        if patience_counter >= training_cfg.patience:
+            logger.info("Early stopping triggered at epoch %d", epoch + 1)
+            break
+
+    save_json(cfg, output_dirs["root"] / "config_snapshot.json")
+    plot_training(history, output_dirs["plots"] / "learning_curve.png")
+    logger.info("Best validation MAE %.5f at epoch %d", best_val, best_epoch + 1)
+    return {"history": history, "best_val": best_val, "best_epoch": best_epoch}
 
 
-def parse_args() -> TrainingConfig:
-    parser = argparse.ArgumentParser(description="Train ExoReL Albedo Transformer")
-    parser.add_argument("dataset_dir")
-    parser.add_argument("output_dir")
-    parser.add_argument("--epochs", type=int, default=50)
-    parser.add_argument("--batch-size", type=int, default=16)
-    parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--weight-decay", type=float, default=1e-2)
-    parser.add_argument("--smoothness-weight", type=float, default=0.0)
-    parser.add_argument("--patience", type=int, default=8)
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--random-lambda-fraction", type=float, default=1.0)
-    parser.add_argument("--device", type=str, default="auto")
-    parser.add_argument("--val-fraction", type=float, default=0.1)
-    args = parser.parse_args()
-    return TrainingConfig(
-        dataset_dir=args.dataset_dir,
-        output_dir=args.output_dir,
-        epochs=args.epochs,
-        batch_size=args.batch_size,
-        lr=args.lr,
-        weight_decay=args.weight_decay,
-        smoothness_weight=args.smoothness_weight,
-        patience=args.patience,
-        seed=args.seed,
-        random_lambda_fraction=args.random_lambda_fraction,
-        device=args.device,
-        val_fraction=args.val_fraction,
-    )
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Train the ExoReL albedo transformer")
+    parser.add_argument("--par", type=str, required=True, help="Path to params.json configuration")
+    return parser.parse_args()
 
 
 def main() -> None:
-    config = parse_args()
-    train(config)
+    args = parse_args()
+    run_training(Path(args.par))
+
+
+def train(source: ConfigSource) -> Dict[str, any]:
+    """Backwards-compatible alias for :func:`run_training`."""
+
+    return run_training(source)
 
 
 if __name__ == "__main__":
