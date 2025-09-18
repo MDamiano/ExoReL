@@ -1,7 +1,10 @@
+from dataclasses import fields
+
 from .__basics import *
 from .__utils import *
 from .__forward import *
 from . import __version__
+from .network_routines.train import TrainingConfig, train
 
 path = os.path.abspath(__file__)
 pkg_dir = os.path.dirname(path) + '/'
@@ -188,3 +191,25 @@ class CREATE_DATASET:
         from ExoReL.__gendataset import GEN_DATASET # type: ignore
         ob = GEN_DATASET(self.param)
         ob.run()
+
+
+class TRAIN_NN:
+    def __init__(self):
+        param = default_parameters()
+        param['pkg_dir'] = pkg_dir
+        self.param = copy.deepcopy(param)
+
+    def run_training(self, parfile):
+        config = read_parfile(self.param, parfile, json_format=True)
+        network_cfg = config.get('network_training')
+        network_cfg["dataset_dir"] = config["dataset_dir"]
+        network_cfg["output_dir"] = config["out_dir"]
+        if network_cfg is None:
+            raise RuntimeError('Parfile must contain a "network_training" section with configuration values.')
+        cfg_kwargs = {}
+        for field in fields(TrainingConfig):
+            if field.name in network_cfg:
+                cfg_kwargs[field.name] = network_cfg[field.name]
+        if 'dataset_dir' not in cfg_kwargs or 'output_dir' not in cfg_kwargs:
+            raise RuntimeError('network_training section must define dataset_dir and output_dir.')
+        train(TrainingConfig(**cfg_kwargs))

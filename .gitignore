@@ -209,11 +209,10 @@ __marimo__/
 # User defined
 PHO_STELLAR_MODEL/
 plotting_routine/
-network_routines/
-__network.py
 forward_mod/
 examples/
 debug/
+tests/
 *.pyc
 .DS_Store
 .idea
