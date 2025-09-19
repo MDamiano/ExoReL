@@ -6,7 +6,7 @@ import argparse
 import time
 from pathlib import Path
 import os
-from typing import Any, Dict, List, Mapping, Tuple, Union
+from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
 from contextlib import nullcontext
 
 import matplotlib.pyplot as plt
@@ -182,6 +182,64 @@ def save_checkpoint(
     torch.save(payload, path)
 
 
+def build_checkpoint_path(checkpoint_dir: Path, out_name: Optional[str]) -> Path:
+    """Resolve checkpoint filename, ensuring .pt suffix and removing directories."""
+
+    name = (out_name or "best").strip()
+    if not name:
+        name = "best"
+    name = Path(name).name  # prevent nested paths
+    if not name.endswith(".pt"):
+        name = f"{name}.pt"
+    return checkpoint_dir / name
+
+
+def resume_training_state(
+    checkpoint_path: Path,
+    model: AlbedoTransformer,
+    optimizer: torch.optim.Optimizer,
+    device: torch.device,
+    logger,
+) -> Tuple[List[Dict[str, float]], float, int, int]:
+    """Restore model/optimizer state from checkpoint if available."""
+
+    print(checkpoint_path)
+
+    if not checkpoint_path.exists():
+        logger.warning("Resume requested but checkpoint '%s' not found; starting fresh.", checkpoint_path.name)
+        return [], float("inf"), -1, 0
+
+    print('after warning')
+
+    payload = torch.load(checkpoint_path, map_location=device)
+    model.load_state_dict(payload["state_dict"])
+    optimizer_state = payload.get("optimizer")
+    if optimizer_state is not None:
+        optimizer.load_state_dict(optimizer_state)
+
+    history_entries = [dict(row) for row in payload.get("history", []) if isinstance(row, dict)]
+
+    best_val = float("inf")
+    best_epoch = -1
+    for idx, row in enumerate(history_entries):
+        val = row.get("val_mae", float("inf"))
+        if val < best_val:
+            best_val = val
+            best_epoch = idx
+
+    start_epoch = len(history_entries)
+
+    logger.info(
+        "Resuming training from checkpoint '%s' at epoch %d.",
+        checkpoint_path.name,
+        start_epoch,
+    )
+    if best_epoch >= 0 and best_val < float("inf"):
+        logger.info("Loaded best validation MAE %.5f from epoch %d.", best_val, best_epoch + 1)
+
+    return history_entries, best_val, best_epoch, start_epoch
+
+
 ConfigSource = Union[Path, str, os.PathLike, Mapping[str, Any]]
 
 
@@ -218,13 +276,26 @@ def run_training(cfg_source: ConfigSource) -> Dict[str, any]:
     scaler = GradScaler(enabled=device.type in ("cuda", "mps"))
     schedule = cosine_schedule_with_warmup(training_cfg.epochs, training_cfg.warmup_epochs, training_cfg.lr)
 
+    checkpoint_path = build_checkpoint_path(output_dirs["checkpoints"], cfg.get("out_net_name"))
+    resume_requested = bool(cfg.get("network_training", "resume_training"))
+
+    print(resume_requested, cfg.get("out_net_name"))
+
     logger.info("Starting training for %d epochs", training_cfg.epochs)
-    history: List[Dict[str, float]] = []
-    best_val = float("inf")
-    best_epoch = -1
+    if resume_requested:
+        history, best_val, best_epoch, start_epoch = resume_training_state(
+            checkpoint_path, model, optimizer, device, logger
+        )
+    else:
+        history = []
+        best_val = float("inf")
+        best_epoch = -1
+        start_epoch = 0
     patience_counter = 0
 
-    for epoch in range(training_cfg.epochs):
+    if start_epoch >= training_cfg.epochs:
+        logger.info("Checkpoint already includes %d epochs, nothing to train.", start_epoch)
+    for epoch in range(start_epoch, training_cfg.epochs):
         for group in optimizer.param_groups:
             group["lr"] = schedule[min(epoch, len(schedule) - 1)]
         start = time.time()
@@ -249,7 +320,7 @@ def run_training(cfg_source: ConfigSource) -> Dict[str, any]:
                 optimizer,
                 history,
                 cfg,
-                output_dirs["checkpoints"] / "best.pt",
+                checkpoint_path,
             )
         else:
             patience_counter += 1
@@ -272,12 +343,6 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     run_training(Path(args.par))
-
-
-def train(source: ConfigSource) -> Dict[str, any]:
-    """Backwards-compatible alias for :func:`run_training`."""
-
-    return run_training(source)
 
 
 if __name__ == "__main__":

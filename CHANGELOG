@@ -1,3 +1,7 @@
+## [2.6.4] - 09/19/25
+- `TRAIN_NN` now forwards `out_net_name` so checkpoints adopt the name defined in the params file instead of always writing `best.pt`.
+- Added checkpoint utilities (`build_checkpoint_path`, `resume_training_state`) to allow `run_training` to resume from saved weights and skip epochs already completed.
+
 ## [2.6.3] - 09/18/25
 - Debugging network routines.
 

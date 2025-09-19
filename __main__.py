@@ -2,7 +2,7 @@ from .__basics import *
 from .__utils import *
 from .__forward import *
 from . import __version__
-from .network_routines.train import train
+from .network_routines.train import run_training
 
 path = os.path.abspath(__file__)
 pkg_dir = os.path.dirname(path) + '/'
@@ -222,6 +222,7 @@ class TRAIN_NN:
         payload = {
             'dataset_dir': dataset_dir,
             'output_directory': output_dir,
+            "out_net_name": config.get("out_net_name"),
             'network_training': cleaned_network_cfg,
         }
-        train(payload)
+        run_training(payload)
