@@ -11,7 +11,18 @@ from astropy import constants as const
 from skbio.stats.composition import clr, clr_inv
 
 from .__utils import find_nearest, model_finalizzation
-from .__forward import FORWARD_MODEL, FORWARD_DATASET
+from .__forward import FORWARD_MODEL, FORWARD_DATASET, FORWARD_AI
+
+
+def _instantiate_forward_model(param):
+    model_type = param.get('physics_model')
+    if model_type == 'radiative_transfer':
+        return FORWARD_MODEL(param, retrieval=False, canc_metadata=True)
+    if model_type == 'dataset':
+        return FORWARD_DATASET(param, dataset_dir=param['dataset_dir'])
+    if model_type == 'AI_model':
+        return FORWARD_AI(param)
+    raise ValueError('Unknown physics_model: ' + str(model_type))
 
 
 def plot_nest_spec(mnest, cube, solutions=None):
@@ -56,12 +67,7 @@ def plot_nest_spec(mnest, cube, solutions=None):
             capsize=2.0, label='Data')
 
         # Model on native grid
-        if mnest.param['physics_model'] == 'radiative_transfer':
-            mod = FORWARD_MODEL(mnest.param, retrieval=False, canc_metadata=True)
-        elif mnest.param['physics_model'] == 'dataset':
-            mod = FORWARD_DATASET(mnest.param, dataset_dir=mnest.param['dataset_dir'])
-        else:
-            pass
+        mod = _instantiate_forward_model(mnest.param)
         alb_wl, alb = mod.run_forward()
         if mnest.param['fit_wtr_cld'] and mnest.param['cld_frac'] != 1.0:
             alb = mnest.adjust_for_cld_frac(alb, cube)
@@ -100,12 +106,7 @@ def plot_nest_spec(mnest, cube, solutions=None):
         mnest.param['stop_c_wl_grid'] = find_nearest(mnest.param['wl_C_grid'], mnest.param['max_wl']) + 35
 
         # Model on R=500 grid
-        if mnest.param['physics_model'] == 'radiative_transfer':
-            mod = FORWARD_MODEL(mnest.param, retrieval=False, canc_metadata=True)
-        elif mnest.param['physics_model'] == 'dataset':
-            mod = FORWARD_DATASET(mnest.param, dataset_dir=mnest.param['dataset_dir'])
-        else:
-            pass
+        mod = _instantiate_forward_model(mnest.param)
         alb_wl, alb = mod.run_forward()
         if mnest.param['fit_wtr_cld'] and mnest.param['cld_frac'] != 1.0:
             alb = mnest.adjust_for_cld_frac(alb, cube)
@@ -175,14 +176,9 @@ def plot_nest_spec(mnest, cube, solutions=None):
         new_wl, new_wl_central = _load_target_bins(mnest.param)
         mnest.param['spectrum']['bins'] = False
 
-        if mnest.param['physics_model'] == 'radiative_transfer':
-            mod = FORWARD_MODEL(mnest.param, retrieval=False, canc_metadata=True)
-        elif mnest.param['physics_model'] == 'dataset':
-            mod = FORWARD_DATASET(mnest.param, dataset_dir=mnest.param['dataset_dir'])
-        else:
-            pass
         for obs in range(0, mnest.param['obs_numb']):
             mnest.cube_to_param(cube, n_obs=obs)
+            mod = _instantiate_forward_model(mnest.param)
             alb_wl, alb = mod.run_forward()
             if mnest.param['fit_cld_frac'] and mnest.param['fit_wtr_cld'] and mnest.param['cld_frac'] != 1.0:
                 alb = mnest.adjust_for_cld_frac(alb, cube)
@@ -211,6 +207,7 @@ def plot_nest_spec(mnest, cube, solutions=None):
             temp = mnest.param['spectrum'][str(obs)]['wl'] + 0.0
             mnest.param['spectrum'][str(obs)]['wl'] = new_wl_central[start:stop]
 
+            mod = _instantiate_forward_model(mnest.param)
             alb_wl, alb = mod.run_forward()
             alb_wl *= 10.0 ** (-3.0)
             if mnest.param['fit_cld_frac'] and mnest.param['fit_wtr_cld'] and mnest.param['cld_frac'] != 1.0:
@@ -2504,12 +2501,7 @@ def plot_contribution(mnest, cube, solutions=None):
     for mol in mnest.param['fit_molecules']:
         print('Plotting the contribution of ' + str(mol) + ' : VMR -> ' + str(mnest.param['vmr_' + mol][-1]))
         mnest.param['mol_contr'] = mol
-        if mnest.param['physics_model'] == 'radiative_transfer':
-            mod = FORWARD_MODEL(mnest.param, retrieval=False, canc_metadata=True)
-        elif mnest.param['physics_model'] == 'dataset':
-            mod = FORWARD_DATASET(mnest.param, dataset_dir=mnest.param['dataset_dir'])
-        else:
-            pass
+        mod = _instantiate_forward_model(mnest.param)
         alb_wl, alb = mod.run_forward()
 
         if mnest.param['fit_wtr_cld'] and mnest.param['cld_frac'] != 1.0:
@@ -2524,12 +2516,7 @@ def plot_contribution(mnest, cube, solutions=None):
 
     # Cloud-only curve (keep contribution=True, remove molecule tag)
     mnest.param['mol_contr'] = None
-    if mnest.param['physics_model'] == 'radiative_transfer':
-        mod = FORWARD_MODEL(mnest.param, retrieval=False, canc_metadata=True)
-    elif mnest.param['physics_model'] == 'dataset':
-        mod = FORWARD_DATASET(mnest.param, dataset_dir=mnest.param['dataset_dir'])
-    else:
-        pass
+    mod = _instantiate_forward_model(mnest.param)
     alb_wl, alb = mod.run_forward()
     if mnest.param['fit_wtr_cld'] and mnest.param['cld_frac'] != 1.0:
         alb = mnest.adjust_for_cld_frac(alb, cube)

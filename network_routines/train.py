@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 import os
 from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
+from dataclasses import asdict
 from contextlib import nullcontext
 
 import matplotlib.pyplot as plt
@@ -194,6 +195,13 @@ def build_checkpoint_path(checkpoint_dir: Path, out_name: Optional[str]) -> Path
     return checkpoint_dir / name
 
 
+def _torch_load_checkpoint(path: Path, map_location: torch.device):
+    try:
+        return torch.load(path, map_location=map_location, weights_only=False)
+    except TypeError:
+        return torch.load(path, map_location=map_location)
+
+
 def resume_training_state(
     checkpoint_path: Path,
     model: AlbedoTransformer,
@@ -203,15 +211,11 @@ def resume_training_state(
 ) -> Tuple[List[Dict[str, float]], float, int, int]:
     """Restore model/optimizer state from checkpoint if available."""
 
-    print(checkpoint_path)
-
     if not checkpoint_path.exists():
         logger.warning("Resume requested but checkpoint '%s' not found; starting fresh.", checkpoint_path.name)
         return [], float("inf"), -1, 0
 
-    print('after warning')
-
-    payload = torch.load(checkpoint_path, map_location=device)
+    payload = _torch_load_checkpoint(checkpoint_path, map_location=device)
     model.load_state_dict(payload["state_dict"])
     optimizer_state = payload.get("optimizer")
     if optimizer_state is not None:
@@ -258,11 +262,27 @@ def _load_config(cfg_source: ConfigSource) -> Dict[str, Any]:
     path = Path(cfg_source)
     return load_config(path)
 
-
 def run_training(cfg_source: ConfigSource) -> Dict[str, any]:
     cfg = _load_config(cfg_source)
     training_cfg = TrainingConfig.from_dict(cfg.get("network_training"))
     output_dirs = ensure_output_tree(cfg["output_directory"])
+    output_root = output_dirs["root"]
+
+    def _normalize(value: Any) -> Any:
+        if isinstance(value, Mapping):
+            return {k: _normalize(v) for k, v in value.items()}
+        if isinstance(value, (list, tuple)):
+            return [_normalize(v) for v in value]
+        if isinstance(value, (Path, os.PathLike)):
+            return os.fspath(value)
+        return value
+
+    config_snapshot = {k: _normalize(v) for k, v in cfg.items() if k != "network_training"}
+    config_snapshot["output_directory"] = os.fspath(output_root)
+    training_cfg_snapshot = asdict(training_cfg)
+    training_cfg_snapshot["output_dir"] = os.fspath(output_root)
+    config_snapshot["network_training"] = _normalize(training_cfg_snapshot)
+
     seed_everything(training_cfg.seed)
     device = select_device(training_cfg.device)
     logger = setup_logger(output_dirs["logs"])
@@ -270,6 +290,15 @@ def run_training(cfg_source: ConfigSource) -> Dict[str, any]:
         dataset_dir=cfg["dataset_dir"],
         random_lambda_fraction=training_cfg.random_lambda_fraction,
     )
+
+    stats = dataset.parameter_stats()
+    inference_stats = {
+        "param_columns": list(dataset.param_columns),
+        "minimum": [float(x) for x in stats.minimum.cpu().tolist()],
+        "scale": [float(x) for x in stats.scale.cpu().tolist()],
+    }
+    config_snapshot["inference_stats"] = _normalize(inference_stats)
+    save_json(config_snapshot, output_root / "network_config.json")
     train_loader, val_loader = build_dataloaders(dataset, training_cfg)
     model = create_model(dataset, device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=training_cfg.lr, weight_decay=training_cfg.weight_decay)
@@ -279,7 +308,16 @@ def run_training(cfg_source: ConfigSource) -> Dict[str, any]:
     checkpoint_path = build_checkpoint_path(output_dirs["checkpoints"], cfg.get("out_net_name"))
     resume_requested = bool(cfg.get("network_training", "resume_training"))
 
-    print(resume_requested, cfg.get("out_net_name"))
+    if resume_requested and checkpoint_path.exists():
+        network_name = cfg.get("out_net_name")
+        if not network_name:
+            network_name = checkpoint_path.stem
+        resume_msg = (
+            f"Found checkpoint '{checkpoint_path.name}' for network '{network_name}'. "
+            "Resuming training from this checkpoint."
+        )
+        print(resume_msg)
+        logger.info(resume_msg)
 
     logger.info("Starting training for %d epochs", training_cfg.epochs)
     if resume_requested:

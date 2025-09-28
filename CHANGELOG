@@ -1,3 +1,8 @@
+## [2.6.5] - 09/28/25
+- Added neural-network forward model support throughout plotting and runtime paths; `FORWARD_AI` now loads inference statistics from `network_config.json` written by the training pipeline, removing the dependency on the original dataset at inference time.
+- Training now writes a single consolidated `network_config.json` that includes both configuration metadata and the inference statistics needed by `FORWARD_AI`; resume logic accepts custom checkpoint names and logs the checkpoint being resumed.
+- Hardened checkpoint loading against PyTorch 2.6's `weights_only=True` default for both training resumption and AI inference.
+
 ## [2.6.4] - 09/19/25
 - `TRAIN_NN` now forwards `out_net_name` so checkpoints adopt the name defined in the params file instead of always writing `best.pt`.
 - Added checkpoint utilities (`build_checkpoint_path`, `resume_training_state`) to allow `run_training` to resume from saved weights and skip epochs already completed.
