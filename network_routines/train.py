@@ -366,7 +366,6 @@ def run_training(cfg_source: ConfigSource) -> Dict[str, any]:
             logger.info("Early stopping triggered at epoch %d", epoch + 1)
             break
 
-    save_json(cfg, output_dirs["root"] / "config_snapshot.json")
     plot_training(history, output_dirs["plots"] / "learning_curve.png")
     logger.info("Best validation MAE %.5f at epoch %d", best_val, best_epoch + 1)
     return {"history": history, "best_val": best_val, "best_epoch": best_epoch}
