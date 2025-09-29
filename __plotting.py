@@ -1895,8 +1895,19 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
         span = 0.999999426697
         lo, hi = [], []
         for i in range(samples.shape[1]):
+            # Drop non-finite sample/weight pairs to avoid propagating NaNs into the bounds
+            finite = np.isfinite(samples[:, i]) & np.isfinite(weights)
+            if not np.any(finite):
+                lo.append(0.0)
+                hi.append(0.0)
+                continue
+            col = samples[finite, i]
+            w = weights[finite]
             q = [0.5 - 0.5 * span, 0.5 + 0.5 * span]
-            v = _weighted_quantiles(samples[:, i], q, w=weights)
+            if np.sum(w) <= 0:
+                v = _weighted_quantiles(col, q, w=None)
+            else:
+                v = _weighted_quantiles(col, q, w=w)
             lo.append(v[0])
             hi.append(v[1])
         return list(zip(lo, hi))
