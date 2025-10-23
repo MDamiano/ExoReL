@@ -114,8 +114,10 @@ class ExoReLAlbedoDataset(Dataset):
         spec_tensor = torch.from_numpy(spectrum)
         if not torch.isfinite(lam_tensor).all():
             raise ValueError(f"Non-finite wavelength values in {sample_path}")
-        if not torch.isfinite(spec_tensor).all():
+        if torch.isinf(spec_tensor).any():
             raise ValueError(f"Non-finite spectrum values in {sample_path}")
+        if torch.isnan(spec_tensor).any():
+            spec_tensor = torch.nan_to_num(spec_tensor, nan=0.0)
         return {"lam": lam_tensor, "target": spec_tensor}
 
     def _load_lambda(self, lam_raw) -> np.ndarray:

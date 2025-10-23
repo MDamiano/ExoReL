@@ -246,7 +246,7 @@ def setup_param_dict(param):
     if "Mp_range" in param.keys():
         param['Mp'] = param["Mp_range"][0] + 0.0
 
-    if param['Mp'] is None or param['Mp'] <= 0.06:
+    if param['Mp'] <= 0.06:
         param['rocky'] = True
     else:
         param['rocky'] = False
@@ -277,8 +277,16 @@ def setup_param_dict(param):
         param['fit_p0'] = False
         print('The parameter "fit_p0" has been set to False since the atmospheric chemistry will be fit in the "partial pressure" parameter space.')
 
-    if param['rocky'] and not param['fit_ag'] and param['Ag'] is None:
-        raise ValueError("Surface albedo (Ag) needs to be specified since it is not a free parameter.")
+    if param['rocky'] and not param['fit_ag']:
+        if param['surface_albedo_parameters'] == int(1) and param['Ag'] is None:
+            raise ValueError("Surface albedo (Ag) needs to be specified since it is not a free parameter.")
+        elif param['surface_albedo_parameters'] == int(3) and (param['Ag1'] is None or param['Ag2'] is None or param['Ag_x1'] is None):
+            raise ValueError("Surface albedo parameters (Ag1, Ag2, Ag_x1) need to be specified since they are not free parameters and the number of parameters is set to 3.")
+        elif param['surface_albedo_parameters'] == int(5) and (param['Ag1'] is None or param['Ag2'] is None or param['Ag3'] is None or param['Ag_x1'] is None or param['Ag_x2'] is None):
+            raise ValueError("Surface albedo parameters (Ag1, Ag2, Ag3, Ag_x1, Ag_x2) need to be specified since they are not free parameters and the number of parameters is set to 5.")
+        else:
+            pass
+
     if param['rocky'] and param['fit_ag'] and param['surface_albedo_parameters'] is None:
         param['surface_albedo_parameters'] = int(1)
         print('Surface albedo parameters number not defined. The parameter "surface_albedo_parameters" has been set to 1.')

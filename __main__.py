@@ -108,7 +108,18 @@ class CREATE_SPECTRUM:
             print('Mp \t\t = \t' + str(self.param['Mp']))
             print('Rp \t\t = \t' + str(self.param['Rp']))
             print('Tp \t\t = \t' + str(self.param['Tp']))
-            print('Ag \t\t = \t' + str(self.param['Ag']))
+            if self.param['surface_albedo_parameters'] == int(1):
+                print('Ag \t\t = \t' + str(self.param['Ag']))
+            elif self.param['surface_albedo_parameters'] == int(3):
+                print('Ag1 \t\t = \t' + str(self.param['Ag1']))
+                print('Ag2 \t\t = \t' + str(self.param['Ag2']))
+                print('Ag_x1 \t\t = \t' + str(self.param['Ag_x1']))
+            elif self.param['surface_albedo_parameters'] == int(5):
+                print('Ag1 \t\t = \t' + str(self.param['Ag1']))
+                print('Ag2 \t\t = \t' + str(self.param['Ag2']))
+                print('Ag3 \t\t = \t' + str(self.param['Ag3']))
+                print('Ag_x1 \t\t = \t' + str(self.param['Ag_x1']))
+                print('Ag_x2 \t\t = \t' + str(self.param['Ag_x2']))
             print('Log(P0) \t = \t' + str(np.log10(self.param['P0'])))
             print('phi \t\t = \t' + str(self.param['phi'] * 180.0 / math.pi))
 

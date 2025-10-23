@@ -23,25 +23,19 @@ class FORWARD_MODEL:
             self.working_dir = os.getcwd()
 
     def __surface_structure(self):
-        if self.param['fit_ag']:
-            self.surf_alb = np.ones(len(self.param['wl_C_grid']))
-            if self.param['surface_albedo_parameters'] == int(1):
-                self.surf_alb *= self.param['Ag']
-            elif self.param['surface_albedo_parameters'] == int(3):
-                x1_indx = np.where(self.param['wl_C_grid'] < self.param['Ag_x1'])[0]
-                self.surf_alb[x1_indx] *= self.param['Ag1']
-                self.surf_alb[x1_indx[-1] + 1:] *= self.param['Ag2']
-            elif self.param['surface_albedo_parameters'] == int(5):
-                x1_indx = np.where(self.param['wl_C_grid'] < self.param['Ag_x1'])[0]
-                x2_indx = np.where((self.param['wl_C_grid'] > self.param['Ag_x1']) & (self.param['wl_C_grid'] < self.param['Ag_x2']))[0]
-                self.surf_alb[x1_indx] *= self.param['Ag1']
-                self.surf_alb[x2_indx] *= self.param['Ag2']
-                self.surf_alb[x2_indx[-1] + 1:] *= self.param['Ag3']
-        else:
-            if self.param['Ag'] is not None:
-                self.surf_alb = self.param['Ag'] * np.ones(len(self.param['wl_C_grid']))
-            else:
-                self.surf_alb = np.zeros(len(self.param['wl_C_grid']))
+        self.surf_alb = np.zeros(len(self.param['wl_C_grid']))
+        if self.param['surface_albedo_parameters'] == int(1):
+            self.surf_alb += self.param['Ag']
+        elif self.param['surface_albedo_parameters'] == int(3):
+            x1_indx = np.where(self.param['wl_C_grid'] < self.param['Ag_x1'])[0]
+            self.surf_alb[x1_indx] += self.param['Ag1']
+            self.surf_alb[x1_indx[-1] + 1:] += self.param['Ag2']
+        elif self.param['surface_albedo_parameters'] == int(5):
+            x1_indx = np.where(self.param['wl_C_grid'] < self.param['Ag_x1'])[0]
+            x2_indx = np.where((self.param['wl_C_grid'] > self.param['Ag_x1']) & (self.param['wl_C_grid'] < self.param['Ag_x2']))[0]
+            self.surf_alb[x1_indx] += self.param['Ag1']
+            self.surf_alb[x2_indx] += self.param['Ag2']
+            self.surf_alb[x2_indx[-1] + 1:] += self.param['Ag3']
 
         with open(self.outdir + 'surface_albedo.dat', 'w') as file:
             for i in range(0, len(self.surf_alb)):
