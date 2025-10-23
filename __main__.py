@@ -16,7 +16,7 @@ class RETRIEVAL:
         self.param['ret_mode'] = True
 
     def run_retrieval(self, parfile):
-        self.param = read_parfile(self.param, parfile)
+        self.param = read_parfile(self.param, parfile, json_format=True)
         self.param = setup_param_dict(self.param)
         if self.param['optimizer'] == 'multinest':
             from ExoReL.__multinest import MULTINEST # type: ignore

@@ -2296,6 +2296,127 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
                                 ax.axhline(truths[j], color='red', lw=0.8)
         fig.tight_layout()
         return fig
+    
+    def _plot_1d_posteriors(sample_sets, weight_sets, labels, bounds, outfile, colors, truths=None, legend_labels=None):
+        """Create grid of 1D posterior PDFs (matching the corner diagonal panels)."""
+        from matplotlib.lines import Line2D
+        sample_sets = sample_sets if isinstance(sample_sets, (list, tuple)) else [sample_sets]
+        weight_sets = weight_sets if isinstance(weight_sets, (list, tuple)) else [weight_sets]
+        sample_sets = [np.asarray(s) for s in sample_sets]
+        weight_sets = [np.asarray(w) for w in weight_sets]
+        npar = sample_sets[0].shape[1]
+
+        def _grid_shape(npars):
+            if npars <= 0:
+                return 1, 1
+            cols = int(np.ceil(np.sqrt(2 * npars)))
+            cols = max(cols, 2)
+            rows = int(np.ceil(npars / cols))
+            while rows * 2 > cols:
+                cols = rows * 2
+                rows = int(np.ceil(npars / cols))
+            return rows, cols
+
+        rows, cols = _grid_shape(npar)
+        fig, axes = plt.subplots(rows, cols, figsize=(cols * 2.8, rows * 2.2), dpi=130)
+        axes = np.atleast_1d(axes).reshape(rows, cols)
+        flat_axes = axes.ravel()
+
+        for idx, ax in enumerate(flat_axes):
+            if idx >= npar:
+                ax.axis('off')
+                continue
+            lo, hi = bounds[idx]
+            grid = np.linspace(lo, hi, 320)
+            ymax = 0.0
+            for j, (samples, weights) in enumerate(zip(sample_sets, weight_sets)):
+                color = colors[j % len(colors)]
+                vec = samples[:, idx]
+                msk = (vec >= lo) & (vec <= hi)
+                try:
+                    if msk.sum() > 4:
+                        kde = gaussian_kde(vec[msk], weights=weights[msk],
+                                           bw_method=lambda s: s.scotts_factor() * 0.25)
+                        dens = kde(grid)
+                        ax.plot(grid, dens, color=color, lw=1.6, alpha=0.9)
+                        ymax = max(ymax, float(dens.max()) if dens.size else ymax)
+                    else:
+                        raise RuntimeError("Too few points for KDE")
+                except Exception:
+                    hist, edges = np.histogram(vec, bins=40, weights=weights, range=(lo, hi))
+                    centers = 0.5 * (edges[1:] + edges[:-1])
+                    ax.plot(centers, hist, color=color, lw=1.2, alpha=0.9, drawstyle='steps-mid')
+                    ymax = max(ymax, float(hist.max()) if hist.size else ymax)
+            if truths is not None and truths[idx] is not None:
+                try:
+                    iterator = truths[idx]
+                    for t in iterator:
+                        ax.axvline(t, color='red', lw=1.0, alpha=0.8)
+                except Exception:
+                    ax.axvline(truths[idx], color='red', lw=1.0, alpha=0.8)
+            ax.set_xlim(lo, hi)
+            ax.set_xlabel(labels[idx])
+            ax.set_yticks([])
+            if ymax > 0.0:
+                ax.set_ylim(0.0, ymax * 1.05)
+            _annotate_1d_stats(ax, sample_sets[0][:, idx], weight_sets[0])
+
+        if legend_labels and len(sample_sets) > 1:
+            handles = [Line2D([0], [0], color=colors[i % len(colors)], lw=1.6, label=legend_labels[i])
+                       for i in range(len(sample_sets))]
+            fig.legend(handles=handles, loc='upper right', fontsize=8, frameon=False)
+
+        fig.tight_layout()
+        fig.savefig(outfile, bbox_inches='tight')
+        plt.close(fig)
+
+    def _corner_selected(labels):
+        """Return sorted label indices requested for the corner plot, or None."""
+        sel_cfg = mnest.param.get('corner_selected_params')
+        if not sel_cfg:
+            return None
+
+        from collections import defaultdict
+        import re
+
+        if isinstance(sel_cfg, str):
+            raw_terms = [chunk.strip() for chunk in re.split(r'[;,]', sel_cfg) if chunk.strip()]
+        else:
+            raw_terms = [str(chunk).strip() for chunk in sel_cfg if str(chunk).strip()]
+        if not raw_terms:
+            return None
+
+        label_lookup = defaultdict(list)
+        for idx, label in enumerate(labels):
+            label_lookup[label].append(idx)
+
+        selected = []
+        used = set()
+        missing = []
+
+        for raw in raw_terms:
+            candidates = label_lookup.get(raw, [])
+            if not candidates:
+                missing.append(raw)
+                continue
+
+            chosen = None
+            for idx in candidates:
+                if idx not in used:
+                    chosen = idx
+                    break
+            if chosen is None and candidates:
+                chosen = candidates[0]
+            if chosen is not None:
+                used.add(chosen)
+                selected.append(chosen)
+
+        if missing:
+            print(f"corner_selected_params - could not match: {', '.join(missing)}")
+
+        if not selected:
+            return None
+        return sorted(set(selected))
 
     print('Generating the Posterior Distribution Functions (PDFs) plot')
 
@@ -2334,9 +2455,27 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
                 truths = None
         if truths is not None:
             truths = list(truths) + [None] * (len(labels) - len(truths))
-        fig = _corner(samples, weights, labels, bounds, truths=truths, color='#404784')
-        plt.savefig(prefix + 'Nest_posteriors.pdf', bbox_inches='tight')
+        selected_idx = _corner_selected(labels)
+        corner_labels_all = [labels[i] for i in selected_idx] if selected_idx else labels
+        corner_labels = [labels[i] for i in selected_idx] if selected_idx else labels
+        if selected_idx:
+            corner_samples = samples[:, selected_idx]
+            corner_bounds = [bounds[i] for i in selected_idx]
+            corner_truths = [truths[i] for i in selected_idx] if truths is not None else None
+        else:
+            corner_samples = samples
+            corner_bounds = bounds
+            corner_truths = truths
+        fig = _corner(corner_samples, weights, corner_labels, corner_bounds, truths=corner_truths, color='#404784')
+        if mnest.param.get('corner_selected_params') is None:
+            plt.savefig(prefix + 'Nest_posteriors.pdf', bbox_inches='tight')
+        else:
+            plt.savefig(prefix + 'Nest_selected_posteriors.pdf', bbox_inches='tight')
         plt.close(fig)
+
+        _plot_1d_posteriors(corner_samples, weights, corner_labels, corner_bounds,
+                             prefix + 'Nest_1D_posteriors.pdf', colors=['#404784'],
+                             truths=corner_truths)
 
         # Restore modified files (if any)
         if mnest.param['rocky'] and mnest.param['mod_prior']:
@@ -2399,6 +2538,7 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
                 to_add += 1
 
         labels = json.load(open(prefix + 'params.json'))
+        selected_idx = _corner_selected(labels)
 
         # Individual traces and corner plots
         for k, midx in enumerate(to_plot):
@@ -2414,8 +2554,17 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
                     truths = None
             if truths is not None:
                 truths = list(truths) + [None] * (len(labels) - len(truths))
-            fig = _corner(result[str(k)]['samples'], result[str(k)]['weights'], labels, bnd,
-                          truths=truths, color=colors[k])
+            corner_labels = corner_labels_all
+            if selected_idx:
+                corner_samples = result[str(k)]['samples'][:, selected_idx]
+                corner_bounds = [bnd[i] for i in selected_idx]
+                corner_truths = [truths[i] for i in selected_idx] if truths is not None else None
+            else:
+                corner_samples = result[str(k)]['samples']
+                corner_bounds = bnd
+                corner_truths = truths
+            fig = _corner(corner_samples, result[str(k)]['weights'], corner_labels, corner_bounds,
+                          truths=corner_truths, color=colors[k])
             outp = prefix + ('Nest_posteriors (solution' + str(midx + 1) + ').pdf' if len(to_plot) > 1 else 'Nest_posteriors.pdf')
             plt.savefig(outp, bbox_inches='tight')
             plt.close(fig)
@@ -2440,12 +2589,39 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
                 truths = None
         if truths is not None:
             truths = list(truths) + [None] * (len(labels) - len(truths))
+        overlay_labels = corner_labels_all
+        if selected_idx:
+            overlay_bounds = [union_bounds[i] for i in selected_idx]
+            overlay_truths = [truths[i] for i in selected_idx] if truths is not None else None
+        else:
+            overlay_bounds = union_bounds
+            overlay_truths = truths
         for k in range(to_add):
-            fig = _corner(result[str(k)]['samples'], result[str(k)]['weights'], labels,
-                          union_bounds, truths=truths, color=colors[k], fig=fig)
+            overlay_samples = result[str(k)]['samples'][:, selected_idx] if selected_idx else result[str(k)]['samples']
+            fig = _corner(overlay_samples, result[str(k)]['weights'], overlay_labels,
+                          overlay_bounds, truths=overlay_truths, color=colors[k], fig=fig)
 
-        plt.savefig(prefix + 'Nest_posteriors.pdf', bbox_inches='tight')
+        if mnest.param.get('corner_selected_params') is None:
+            plt.savefig(prefix + 'Nest_posteriors.pdf', bbox_inches='tight')
+        else:
+            plt.savefig(prefix + 'Nest_selected_posteriors.pdf', bbox_inches='tight')
         plt.close()
+
+        sample_sets = [result[str(k)]['samples'] for k in range(to_add)]
+        weight_sets = [result[str(k)]['weights'] for k in range(to_add)]
+        legend_labels = [f'Solution {to_plot[k] + 1}' for k in range(to_add)] if to_add > 1 else None
+        sel_colors = [colors[k % len(colors)] for k in range(to_add)]
+        plot_labels = corner_labels_all
+        if selected_idx:
+            plot_bounds = [union_bounds[i] for i in selected_idx]
+            plot_truths = [truths[i] for i in selected_idx] if truths is not None else None
+            sample_sets = [s[:, selected_idx] for s in sample_sets]
+        else:
+            plot_bounds = union_bounds
+            plot_truths = truths
+        _plot_1d_posteriors(sample_sets, weight_sets, plot_labels, plot_bounds,
+                             prefix + 'Nest_1D_posteriors.pdf', colors=sel_colors,
+                             truths=plot_truths, legend_labels=legend_labels)
 
         # Restore modified files (if any)
         for modes in kept_modes:

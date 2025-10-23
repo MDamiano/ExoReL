@@ -1,3 +1,9 @@
+## [2.6.6] - 10/23/25
+- `plot_posteriors` now honors `corner_selected_params`, trims corner overlays accordingly, and emits `Nest_selected_posteriors.pdf` plus a companion `Nest_1D_posteriors.pdf` for quick 1D diagnostics.
+- Corner plotting adds KDE-backed 1D density helper with histogram fallback, saner grid sizing, and per-solution legends so multimodal runs compare cleanly.
+- `default_parameters()` exposes a `corner_selected_params` knob (default `None`) so scripted runs can opt into the focused posterior view without manual wiring.
+- `ExoReLAlbedoDataset` zero-fills infinite spectral values instead of aborting, keeping training robust when upstream data contains overflow artifacts.
+
 ## [2.6.5] - 09/28/25
 - Added neural-network forward model support throughout plotting and runtime paths; `FORWARD_AI` now loads inference statistics from `network_config.json` written by the training pipeline, removing the dependency on the original dataset at inference time.
 - Training now writes a single consolidated `network_config.json` that includes both configuration metadata and the inference statistics needed by `FORWARD_AI`; resume logic accepts custom checkpoint names and logs the checkpoint being resumed.
