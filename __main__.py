@@ -16,6 +16,8 @@ class RETRIEVAL:
         self.param['ret_mode'] = True
 
     def run_retrieval(self, parfile):
+        if parfile.endswith('.dat'):
+            raise RuntimeError("Please, convert your '.dat' partfile to a JSON file. '.dat' files have been phased out.")
         self.param = read_parfile(self.param, parfile, json_format=True)
         self.param = setup_param_dict(self.param)
         if self.param['optimizer'] == 'multinest':
