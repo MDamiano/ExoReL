@@ -2467,15 +2467,21 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
             corner_bounds = bounds
             corner_truths = truths
         fig = _corner(corner_samples, weights, corner_labels, corner_bounds, truths=corner_truths, color='#404784')
+        
         if mnest.param.get('corner_selected_params') is None:
             plt.savefig(prefix + 'Nest_posteriors.pdf', bbox_inches='tight')
         else:
             plt.savefig(prefix + 'Nest_selected_posteriors.pdf', bbox_inches='tight')
         plt.close(fig)
 
-        _plot_1d_posteriors(corner_samples, weights, corner_labels, corner_bounds,
-                             prefix + 'Nest_1D_posteriors.pdf', colors=['#404784'],
-                             truths=corner_truths)
+        if mnest.param.get('corner_selected_params') is None:
+            _plot_1d_posteriors(corner_samples, weights, corner_labels, corner_bounds,
+                                prefix + 'Nest_1D_posteriors.pdf', colors=['#404784'],
+                                truths=corner_truths)
+        else:
+            _plot_1d_posteriors(corner_samples, weights, corner_labels, corner_bounds,
+                                prefix + 'Nest_selected_1D_posteriors.pdf', colors=['#404784'],
+                                truths=corner_truths)
 
         # Restore modified files (if any)
         if mnest.param['rocky'] and mnest.param['mod_prior']:
@@ -2619,9 +2625,15 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
         else:
             plot_bounds = union_bounds
             plot_truths = truths
-        _plot_1d_posteriors(sample_sets, weight_sets, plot_labels, plot_bounds,
-                             prefix + 'Nest_1D_posteriors.pdf', colors=sel_colors,
-                             truths=plot_truths, legend_labels=legend_labels)
+        
+        if mnest.param.get('corner_selected_params') is None:
+            _plot_1d_posteriors(sample_sets, weight_sets, plot_labels, plot_bounds,
+                                prefix + 'Nest_1D_posteriors.pdf', colors=sel_colors,
+                                truths=plot_truths, legend_labels=legend_labels)
+        else:
+            _plot_1d_posteriors(sample_sets, weight_sets, plot_labels, plot_bounds,
+                                prefix + 'Nest_selected_1D_posteriors.pdf', colors=sel_colors,
+                                truths=plot_truths, legend_labels=legend_labels)
 
         # Restore modified files (if any)
         for modes in kept_modes:
