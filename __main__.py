@@ -109,7 +109,12 @@ class CREATE_SPECTRUM:
             print('g \t\t = \t' + str(self.param['gp']))
             print('Mp \t\t = \t' + str(self.param['Mp']))
             print('Rp \t\t = \t' + str(self.param['Rp']))
-            print('Tp \t\t = \t' + str(self.param['Tp']))
+            if self.param['PT_profile_type'] == 'isothermal':
+                print('Tp \t\t = \t' + str(self.param['Tp']))
+            elif self.param['PT_profile_type'] == 'parametric':
+                print('Parametric P-T profile')
+            else:
+                print('P-T profile loaded from file.')
             if self.param['surface_albedo_parameters'] == int(1):
                 print('Ag \t\t = \t' + str(self.param['Ag']))
             elif self.param['surface_albedo_parameters'] == int(3):

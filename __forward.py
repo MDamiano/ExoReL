@@ -51,15 +51,15 @@ class FORWARD_MODEL:
 
         self.outdir = self.c_code_directory + 'Result/Retrieval_' + str(self.process) + '/'
 
-        deltaP = 0.001 * self.__waterpressure(220)  # assume super saturation to be 0.1% at 220 K
+        deltaP = 0.001 * 2.65495471  # assume super saturation to be 0.1% at 220 K
 
         g = self.param['gp'] + 0.0
 
         # Set up pressure grid
         P = self.param['P'] + 0.0  # in Pascal
 
-        # Temperature profile (isothermal)
-        T = self.param['Tp'] * np.ones(len(P))
+        # Temperature profile
+        T = self.param['T'] + 0.0
 
         # Cloud density calculation
         cloudden = 1.0e-36 * np.ones(len(P))
@@ -317,31 +317,6 @@ class FORWARD_MODEL:
                     file.write("{:.6e}".format(geow[j, indi]) + '\t')
                 file.write('\n')
 
-    def __waterpressure(self, t):
-        # Saturation Vapor Pressure of Water
-        # t in K
-        # p in Pascal
-
-        try:
-            p = np.empty((len(t)))
-        except TypeError:
-            t = np.array([t])
-            p = np.empty(len(t))
-
-        for i in range(0, len(t)):
-            if t[i] < 273.16:
-                # Formulation from Murphy & Koop(2005)
-                p[i] = np.exp(9.550426 - (5723.265 / t[i]) + (3.53068 * np.log(t[i])) - (0.00728332 * t[i]))
-            elif t[i] < 373.15:
-                # Formulation] from Seinfeld & Pandis(2006)
-                a = 1 - (373.15 / t[i])
-                p[i] = 101325. * np.exp((13.3185 * a) - (1.97 * (a ** 2.)) - (0.6445 * (a ** 3.)) - (0.1229 * (a ** 4.)))
-            elif t[i] < 647.09:
-                p[i] = (10. ** (8.14019 - (1810.94 / (244.485 + t[i] - 273.15)))) * 133.322387415
-            else:
-                p[i] = np.nan
-        return p
-
     def __run_structure(self):
         os.chdir(self.matlab_code_directory)
         self.__atmospheric_structure()
@@ -365,8 +340,7 @@ class FORWARD_MODEL:
                       '#define THETAREF             1.0471\n',  # Slant Path Angle in radian
                       '#define PAB                  0.343\n',  # Planet Bond Albedo
                       '#define FADV                 0.25\n',  # Advection factor: 0.25=uniformly distributed, 0.6667=no Advection
-                      # '#define PSURFAB              ' + str(float(self.param['Ag'])) + '\n',  # Planet Surface Albedo
-                      '#define PSURFEM              0.0\n',  # Planet Surface Emissivity
+                      '#define PSURFEM              1.0\n',  # Planet Surface Emissivity
                       '#define DELADJUST            1\n',  # Whether use the delta adjustment in the 2-stream diffuse radiation
                       '#define TAUTHRESHOLD         0.1\n',  # Optical Depth Threshold for multi-layer diffuse radiation
                       '#define TAUMAX               1000.0\n',  # Maximum optical Depth in the diffuse radiation
@@ -380,19 +354,19 @@ class FORWARD_MODEL:
                       '#define NUVMULT              1.0E+1\n',  # Multiplying factor for NUV radiation 300 - 400 nm
                       #
                       # Planet Temperature-Pressure Preofile
-                      '#define TPMODE               1\n',  # 1: import data from a ZTP list
+                      # '#define TPMODE               1\n',  # 1: import data from a ZTP list
                       #                                      0: calculate TP profile from the parametized formula*/
-                      '#define TPLIST               "Data/TP1986.dat"\n',
-                      '#define PTOP                 1.0E-5\n',  # Pressure at the top of atmosphere in bar
-                      '#define TTOP				    ' + str(self.param['Tp']) + '\n',  # Temperature at the top of atmosphere
-                      '#define TSTR                 ' + str(self.param['Tp']) + '\n',  # Temperature at the top of stratosphere
-                      '#define TINV                 0\n',  # set to 1 if there is a temperature inversion
-                      '#define PSTR                 1.0E-1\n',  # Pressure at the top of stratosphere
-                      '#define PMIDDLE				0\n',  # Pressure at the bottom of stratosphere
-                      '#define TMIDDLE				' + str(self.param['Tp']) + '\n',  # Temperature at the bottom of stratosphere
-                      '#define PBOTTOM				1.0E+0\n',  # Pressure at the bottom of stratosphere
-                      '#define TBOTTOM				' + str(self.param['Tp']) + '\n',  # Temperature at the bottom of stratosphere
-                      '#define PPOFFSET			    0.0\n',  # Pressure offset in log [Pa]
+                      # '#define TPLIST               "Data/TP1986.dat"\n',
+                      # '#define PTOP                 1.0E-5\n',  # Pressure at the top of atmosphere in bar
+                      # '#define TTOP				    ' + str(self.param['Tp']) + '\n',  # Temperature at the top of atmosphere
+                      # '#define TSTR                 ' + str(self.param['Tp']) + '\n',  # Temperature at the top of stratosphere
+                      # '#define TINV                 0\n',  # set to 1 if there is a temperature inversion
+                      # '#define PSTR                 1.0E-1\n',  # Pressure at the top of stratosphere
+                      # '#define PMIDDLE				0\n',  # Pressure at the bottom of stratosphere
+                      # '#define TMIDDLE				' + str(self.param['Tp']) + '\n',  # Temperature at the bottom of stratosphere
+                      # '#define PBOTTOM				1.0E+0\n',  # Pressure at the bottom of stratosphere
+                      # '#define TBOTTOM				' + str(self.param['Tp']) + '\n',  # Temperature at the bottom of stratosphere
+                      # '#define PPOFFSET			    0.0\n',  # Pressure offset in log [Pa]
                       #
                       # Calculation Grids
                       # '#define zbin                 180\n',  # How many altitude bin?
@@ -480,7 +454,7 @@ class FORWARD_MODEL:
                       '#define CloudDen             1.0\n',  # Cloud density in the unit of g m-3
                       # Output Options
                       '#define OUT_DIR              "Result/Retrieval_' + str(self.process) + '/"\n',
-                      '#define TINTSET              20.0\n',  # Internal Heat Temperature
+                      '#define TINTSET              ' + str(self.param['Tint']) + '\n',  # Internal Heat Temperature
                       '\n',
                       '#define OUT_STD              "Result/Jupiter_1/ConcentrationSTD.dat"\n',
                       '#define OUT_FILE1            "Result/GJ1214_Figure/Conx.dat"\n',
@@ -1334,13 +1308,24 @@ class FORWARD_MODEL:
                        # Geometric Albedo 9-point Gauss Quadruture
                        '    double cmiu[9]={-0.9681602395076261,-0.8360311073266358,-0.6133714327005904,-0.3242534234038089,0.0,0.3242534234038089,0.6133714327005904,0.8360311073266358,0.9681602395076261};\n',
                        '    double wmiu[9]={0.0812743883615744,0.1806481606948574,0.2606106964029354,0.3123470770400029,0.3302393550012598,0.3123470770400029,0.2606106964029354,0.1806481606948574,0.0812743883615744};\n',
+                       '    int NUMPOINTS=9;\n',
+                       # 10-point Quadrature
+                       # '    double cmiu[10]={-0.9739065285171717, -0.8650633666889845, -0.6794095682990244, -0.4333953941292472, -0.1488743389816312, 0.1488743389816312, 0.4333953941292472, 0.6794095682990244, 0.8650633666889845, 0.9739065285171717};\n',
+                       # '    double wmiu[10]={0.0666713443086881, 0.1494513491505806, 0.2190863625159820, 0.2692667193099963, 0.2955242247147529, 0.2955242247147529, 0.2692667193099963, 0.2190863625159820, 0.1494513491505806, 0.0666713443086881};\n',
+                       # '    int NUMPOINTS=10;\n',
+                       # 11-point Quadrature
+                       # '    double cmiu[11]={-0.9782286581460570, -0.8870625997680953, -0.7301520055740494, -0.5190961292068118, -0.2695431559523450, 0.0, 0.2695431559523450, 0.5190961292068118, 0.7301520055740494, 0.8870625997680953, 0.9782286581460570};\n',
+                       # '    double wmiu[11]={0.0556685671161737, 0.1255803694649046, 0.1862902109277343, 0.2331937645919905, 0.2628045445102467, 0.2729250867779006, 0.2628045445102467, 0.2331937645919905, 0.1862902109277343, 0.1255803694649046, 0.0556685671161737};\n',
+                       # '    int NUMPOINTS=11;\n',
 
                        '    double phase;\n',
                        '    phase = ' + str(self.param['phi']) + ';\n',  # Phase Angle, 0 zero geometric albedo
                        '    double lonfactor1, lonfactor2;\n',
                        '    double latfactor1, latfactor2;\n',
-                       '    lonfactor1 = (PI-phase)*0.5;\n',
-                       '    lonfactor2 = phase*0.5;\n',
+                       # '    lonfactor1 = (PI-phase)*0.5;\n',
+                       # '    lonfactor2 = phase*0.5;\n',
+                       '    lonfactor1 = PI*0.5;\n'
+                       '    lonfactor2 = 0;\n'
                        '    latfactor1 = PI*0.5;\n',
                        '    latfactor2 = 0;\n',
 
@@ -1384,7 +1369,7 @@ class FORWARD_MODEL:
                        # printf("%f %f %f %f\n", lat[i], lon[j], gmiu0, gmiu);
                        '            Reflection(xx1, T, stdcross, qysum, cross, crosst, uvrfile, gmiu0, gmiu, phase, rout, ' + str(iniz) + ', ' + str(fine) + ');\n',
                        '            for (k=' + str(iniz) + '; k < ' + str(fine) + '; k++) {\n',
-                       '                gal[k] += wmiu[i] * wmiu[j] * rout[k] * gmiu0 * gmiu * cos(lat[i]) * latfactor1 * lonfactor1 / PI;\n',
+                       '                gal[k] += wmiu[i] * wmiu[j] * rout[k] * gmiu * cos(lat[i]) * latfactor1 * lonfactor1 / PI;\n',
                        '            }\n',
                        '        }\n',
                        '    }\n',
@@ -1932,7 +1917,14 @@ def forward(parameters_dictionary, evaluation=None, phi=None, n_obs=None, retrie
                 param['Ag_x2'] = evaluation['ag_x2']
 
         if param['fit_T']:
-            param['Tp'] = evaluation['Tp']
+            if param['PT_profile_type'] == 'isothermal':
+                param['Tp'] = evaluation['Tp']
+            elif param['PT_profile_type'] == 'parametric':
+                param['kappa_th'] = evaluation['kappa_th']
+                param['gamma'] = evaluation['gamma']
+                param['beta'] = evaluation['beta']
+                if param['fit_Tint']:
+                    param['Tint'] = evaluation['Tint']
         if param['fit_g'] and param['fit_Mp'] and not param['fit_Rp']:
             param['gp'] = (10. ** (evaluation['gp'] - 2.0))                                                                     # g is in m/s2 but it was defined in cgs
             param['Mp'] = evaluation['Mp']                                                                                      # Mp is in M_jup
@@ -1976,7 +1968,12 @@ def forward(parameters_dictionary, evaluation=None, phi=None, n_obs=None, retrie
 
     if param['gas_par_space'] == 'partial_pressure' and np.log10(param['P0']) < 0.0:
         param['P0'] = 1.1
-    param['P'] = 10. ** np.arange(0.0, np.log10(param['P0']) + 0.01, step=0.01)
+    if param['PT_profile_type'] == 'isothermal' or param['PT_profile_type'] == 'parametric':
+        param['P'] = 10. ** np.arange(0.0, np.log10(param['P0']) + 0.01, step=0.01)
+        param['T'] = temp_profile(param)
+    else:
+        param['P'] = param['Pp'] + 0.0
+        param['T'] = param['Tp'] + 0.0
     if param['fit_amm_cld']:
         param['vmr_NH3'] = cloud_pos(param, condensed_gas='NH3')
         param = adjust_VMR(param, all_gases=param['adjust_VMR_gases'], condensed_gas='NH3')

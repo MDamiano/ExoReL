@@ -58,9 +58,9 @@ def default_parameters():
     param['fit_Mp'] = False  # whether to fit the planetary mass during retrieval
     param['fit_Rp'] = False  # whether to fit the planetary radius during retrieval
     param['fit_T'] = False  # whether to fit the planetary temperature during retrieval
-    # Type of prior function for the planetary radius and mass. Possibilities: independent, M_R_prior, R_M_prior, random_error
-    param['Rp_prior_type'] = 'independent'
-    param['Mp_prior_type'] = 'independent'
+    param['PT_profile_type'] = 'isothermal'  # type of PT profile to use. Possibilities: isothermal, parametric
+    param['Rp_prior_type'] = 'independent'  # type of prior function for the planetary radius. Possibilities: independent, M_R_prior, R_M_prior, random_error
+    param['Mp_prior_type'] = 'independent'  # type of prior function for the planetary mass. Possibilities: independent, M_R_prior, R_M_prior, random_error
     param['fit_wtr_cld'] = False  # whether to include and fit water cloud position during retrieval
     param['fit_cld_frac'] = False  # whether to fit the cloud fraction during retrieval
     param['fit_amm_cld'] = False  # whether to include and fit ammonia cloud position during retrieval
@@ -341,11 +341,19 @@ def par_and_calc(param):
 
     # planet
     if not param['fit_T']:
-        try:
-            param['Tp'] += 0.0
-        except (KeyError, TypeError):
-            t1 = ((param['Rs'] * const.R_sun.value) / (2. * param['major-a'] * const.au.value)) ** 0.5
-            param['Tp'] = t1 * ((1 - 0.3) ** 0.25) * param['Ts']
+        if param['PT_profile_type'] == 'isothermal':
+            try:
+                param['Tp'] += 0.0
+            except (KeyError, TypeError):
+                t1 = ((param['Rs'] * const.R_sun.value) / (2. * param['major-a'] * const.au.value)) ** 0.5
+                param['Tp'] = t1 * ((1 - 0.3) ** 0.25) * param['Ts']
+        elif param['PT_profile_type'] == 'parametric':
+            param['kappa_th'] = 10. ** param['kappa_th']
+            param['gamma'] = 10. ** param['gamma']
+        else:
+            PT_prof = np.genfromtxt(param['PT_profile_type'])
+            param['Pp'] = PT_prof[:,0] + 0.0
+            param['Tp'] = PT_prof[:,1] + 0.0
 
     # Insolation variation
     if param['eccentricity'] != 0.0:
@@ -552,6 +560,55 @@ def particlesizef(g, T, P, M, MM, KE, deltaP):
 
 
 def cloud_pos(param, condensed_gas='H2O'):
+    def waterpressure(t):
+        # Saturation Vapor Pressure of Water
+        # t in K
+        # p in Pascal
+
+        try:
+            p = np.empty((len(t)))
+        except TypeError:
+            t = np.array([t])
+            p = np.empty(len(t))
+
+        for i in range(0, len(t)):
+            if t[i] < 273.16:
+                # Formulation from Murphy & Koop(2005)
+                p[i] = np.exp(9.550426 - (5723.265 / t[i]) + (3.53068 * np.log(t[i])) - (0.00728332 * t[i]))
+            elif t[i] < 373.15:
+                # Formulation from Seinfeld & Pandis(2006)
+                a = 1 - (373.15 / t[i])
+                p[i] = 101325. * np.exp((13.3185 * a) - (1.97 * (a ** 2.)) - (0.6445 * (a ** 3.)) - (0.1229 * (a ** 4.)))
+            elif t[i] < 647.09:
+                p[i] = (10. ** (8.14019 - (1810.94 / (244.485 + t[i] - 273.15)))) * 133.322387415
+            else:
+                p[i] = np.nan
+        return p
+
+    def ammoniapressure(t):
+        # Saturation Vapor Pressure of Ammonia
+        # tl in K
+        # psat in Pascal
+        # Lodders, K., Fegley Jr., B., 1998. The Planetary Scientist?s Companion. Oxford Univ. Press, 371 pp.
+        
+        tl_array = np.asarray(t, dtype=float)
+        tl_flat = tl_array.reshape(-1)
+        psat_flat = np.full_like(tl_flat, np.nan, dtype=float)
+
+        solid = tl_flat < 195.4
+        if solid.any():
+            psat_flat[solid] = 10.0 ** (6.9 - 1588.0 / tl_flat[solid]) * 1.0e5
+
+        liquid = (tl_flat >= 195.4) & (tl_flat < 300.0)
+        if liquid.any():
+            psat_flat[liquid] = 10.0 ** (5.201 - 1248.0 / tl_flat[liquid]) * 1.0e5
+
+        # Ackerman & Marley
+        # psat(i)=exp(10.53-2161/tl(i)-86596/tl(i)/tl(i))*1E+5;
+
+        psat = psat_flat.reshape(tl_array.shape)
+        return psat.item() if psat.shape == () else psat
+
     if condensed_gas == 'H2O':
         short_name = 'wtr'
         initial_letter = 'w'
@@ -560,43 +617,55 @@ def cloud_pos(param, condensed_gas='H2O'):
         initial_letter = 'a'
 
     if param['fit_' + short_name + '_cld']:
-        # if param['Pw_top'] > param['P'][-1]:
-        if param['P' + initial_letter + '_top'] > param['P'][-1] or (param['P' + initial_letter + '_top'] + param['cld' + initial_letter + '_depth']) > param['P'][-1]:
-            no_cloud = True
+        if param['PT_profile_type'] == 'parametric':
+            P = param['P']
+
+            if short_name == 'wtr':
+                psat = waterpressure(param['T'])
+            elif short_name == 'amm':
+                psat = ammoniapressure(param['T'])
+            mix = np.empty((len(P)))
+            # assuming water vmr is limited by saturation pressure:
+            mix[-1] = np.nanmin([psat[-1]/P[-1], param['vmr_' + condensed_gas]])
+            for i in range(len(P)-2, -1, -1):
+                mix[i] = np.nanmin([psat[i]/P[i], mix[i+1]])
         else:
-            no_cloud = False
-
-        if not no_cloud:
-            pos_cld = int(find_nearest(param['P_standard'], param['P' + initial_letter + '_top']))
-
-            if (param['cld' + initial_letter + '_depth'] + param['P_standard'][pos_cld]) > param['P_standard'][-1]:
-                param['cld' + initial_letter + '_depth'] = param['P_standard'][-1] - param['P_standard'][pos_cld]
-
-            pbot = int(find_nearest(param['P_standard'], (param['cld' + initial_letter + '_depth'] + param['P_standard'][pos_cld])))
-
-            depth_layers = pbot - pos_cld
-            if depth_layers == 0:
-                return np.ones((len(param['P']))) * param['vmr_' + condensed_gas]
+            # if param['Pw_top'] > param['P'][-1]:
+            if param['P' + initial_letter + '_top'] > param['P'][-1] or (param['P' + initial_letter + '_top'] + param['cld' + initial_letter + '_depth']) > param['P'][-1]:
+                no_cloud = True
             else:
-                pass
+                no_cloud = False
 
-            mix = np.ones((len(param['P_standard']))) * (param['CR_' + condensed_gas] * param['vmr_' + condensed_gas])
-            d = (np.log10(param['vmr_' + condensed_gas]) - np.log10(param['CR_' + condensed_gas] * param['vmr_' + condensed_gas])) / depth_layers
-            for i in range(0, len(mix)):
-                if i <= pos_cld:
+            if not no_cloud:
+                pos_cld = int(find_nearest(param['P_standard'], param['P' + initial_letter + '_top']))
+
+                if (param['cld' + initial_letter + '_depth'] + param['P_standard'][pos_cld]) > param['P_standard'][-1]:
+                    param['cld' + initial_letter + '_depth'] = param['P_standard'][-1] - param['P_standard'][pos_cld]
+
+                pbot = int(find_nearest(param['P_standard'], (param['cld' + initial_letter + '_depth'] + param['P_standard'][pos_cld])))
+
+                depth_layers = pbot - pos_cld
+                if depth_layers == 0:
+                    return np.ones((len(param['P']))) * param['vmr_' + condensed_gas]
+                else:
                     pass
-                elif pos_cld < i <= pos_cld + depth_layers:
-                    mix[i] = 10. ** (np.log10(mix[i - 1]) + d)
-                elif i > pos_cld + depth_layers:
-                    mix[i] = mix[i - 1]
-            mix = mix[:len(param['P'])]
-        else:
-            mix = np.ones((len(param['P']))) * param['vmr_' + condensed_gas]
+
+                mix = np.ones((len(param['P_standard']))) * (param['CR_' + condensed_gas] * param['vmr_' + condensed_gas])
+                d = (np.log10(param['vmr_' + condensed_gas]) - np.log10(param['CR_' + condensed_gas] * param['vmr_' + condensed_gas])) / depth_layers
+                for i in range(0, len(mix)):
+                    if i <= pos_cld:
+                        pass
+                    elif pos_cld < i <= pos_cld + depth_layers:
+                        mix[i] = 10. ** (np.log10(mix[i - 1]) + d)
+                    elif i > pos_cld + depth_layers:
+                        mix[i] = mix[i - 1]
+                mix = mix[:len(param['P'])]
+            else:
+                mix = np.ones((len(param['P']))) * param['vmr_' + condensed_gas]
     else:
         mix = np.ones((len(param['P']))) * param['vmr_' + condensed_gas]
 
     return mix
-    # return gaussian_filter1d(watermix, 1, mode='nearest')
 
 
 def adjust_VMR(param, all_gases=True, condensed_gas='H2O'):
@@ -657,6 +726,94 @@ def adjust_VMR(param, all_gases=True, condensed_gas='H2O'):
     return param
 
 
+def temp_profile(param):
+    """
+    Calculates temperature-pressure profile.
+    Can be isothermal or based on Guillot (2010). 
+    Paper ref DOI: 10.1051/0004-6361/200913396
+    Paper ref link: https://www.aanda.org/articles/aa/pdf/2010/12/aa13396-09.pdf
+
+    Parameters
+    ----------
+    param : dict
+        dictionary of settings. Must include pressure grid, PT_profile_type 
+        (isothermal, parametric, or a filepath), and (if parametric) the 
+        variables for parameterization
+
+    Returns
+    -------
+    T : np.array
+        temperature value at each point in pressure grid.
+    """
+    if not isinstance(param, dict):
+        raise TypeError("temp_profile expects 'param' to be a dictionary.")
+
+    if 'P' not in param:
+        raise KeyError("temp_profile requires the pressure grid under key 'P'.")
+
+    P = np.asarray(param['P'], dtype=float)
+    if P.ndim != 1:
+        raise ValueError("'P' must be a one-dimensional array.")
+    if P.size == 0:
+        raise ValueError("'P' must contain at least one pressure value.")
+
+    profile_type = param.get('PT_profile_type')
+    if profile_type not in ('isothermal', 'parametric'):
+        raise ValueError(f"Unsupported PT_profile_type '{profile_type}'.")
+
+    if profile_type == 'isothermal':
+        Tp = param.get('Tp')
+        if Tp is None:
+            raise ValueError("'Tp' must be provided for an isothermal PT profile.")
+        try:
+            Tp_val = float(Tp)
+        except (TypeError, ValueError) as exc:
+            raise TypeError("'Tp' must be a finite scalar.") from exc
+        T = np.full(P.shape, Tp_val, dtype=float)
+    else:
+        required = ('kappa_th', 'gamma', 'beta', 'Tint', 'Ts', 'Rs', 'major-a', 'gp')
+        missing = [key for key in required if param.get(key) is None]
+        if missing:
+            raise ValueError(
+                "Missing parameter(s) required for a parametric PT profile: "
+                + ", ".join(missing)
+            )
+
+        try:
+            kappa_th = float(param['kappa_th'])
+            gamma = float(param['gamma'])
+            beta = float(param['beta'])
+            Tint = float(param['Tint'])
+            Ts = float(param['Ts'])
+            Rs = float(param['Rs'])
+            major_a = float(param['major-a'])
+            gp = float(param['gp'])
+        except (TypeError, ValueError) as exc:
+            raise TypeError("Parametric PT profile parameters must be scalar numbers.") from exc
+
+        if kappa_th <= 0.0:
+            raise ValueError("'kappa_th' must be positive for a parametric PT profile.")
+        if gamma <= 0.0:
+            raise ValueError("'gamma' must be positive for a parametric PT profile.")
+        if gp <= 0.0:
+            raise ValueError("'gp' must be positive for a parametric PT profile.")
+        if major_a <= 0.0:
+            raise ValueError("'major-a' must be positive for a parametric PT profile.")
+        if Tint < 0.0:
+            raise ValueError("'Tint' must be non-negative for a parametric PT profile.")
+
+        tau = P * kappa_th / gp
+        E2 = sp.special.expn(2, gamma * tau)
+        m_gamma = (
+            1.0
+            + (1.0 / gamma) * (1 + (0.5 * gamma * tau - 1) * np.exp(-gamma * tau))
+            + gamma * (1 - 0.5 * tau**2) * E2
+        )
+        Teq = beta * Ts * np.sqrt(Rs * const.R_sun.value / (2 * major_a * const.au.value))
+        T = (0.75 * Tint**4 * (2 / 3 + tau) + 0.5 * Teq**4 * m_gamma) ** 0.25
+    return T
+
+
 def ozone_earth_mask(param):
     otop, obot = (10. ** 1.5), (10. ** 4.0)
     idxs_top = np.where(otop > param['P'])[0]
@@ -693,7 +850,14 @@ def ranges(param):
             param['ag_x2_range'] = [0.01, 0.5]
 
     if param['fit_T']:
-        param['tp_range'] = [0.0, 700.0]            # Atmospheric equilibrium temperature
+        if param['PT_profile_type'] == 'isothermal':
+            param['tp_range'] = [0.0, 700.0]            # Atmospheric equilibrium temperature
+        elif param['PT_profile_type'] == 'parametric':
+            param['kappa_th_range'] = [-10., 1.]         # thermal radiation opacity
+            param['gamma_range'] = [-10., 10.]            # ratio visible opacity : thermal opacity
+            param['beta_range'] = [0., 2.]             # scaling factor for equilibrium temperature (albedo)
+            if param['fit_Tint']:
+                param['Tint_range'] = [0., 300.]       # internal temperature
 
     if not param['rocky']:
         if param['fit_Rp']: 
@@ -736,12 +900,12 @@ def ranges(param):
     if param['fit_cld_frac']:
         param['cld_frac_range'] = [-3.0, 0.0]
 
-    if param['fit_wtr_cld']:
+    if param['fit_wtr_cld'] and param['PT_profile_type'] == 'isothermal':
         param['ptopw_range'] = [2.0, 7.0]       # Top pressure H2O
         param['dcldw_range'] = [2.0, 7.0]       # Depth H2O cloud
         param['crh2o_range'] = [-7.0, 0.0]      # Condensation Ratio H2O
 
-    if param['fit_amm_cld']:
+    if param['fit_amm_cld'] and param['PT_profile_type'] == 'isothermal':
         param['ptopa_range'] = [2.0, 8.0]       # Top pressure NH3
         param['dclda_range'] = [2.0, 8.5]       # Depth NH3 cloud
         param['crnh3_range'] = [-7.0, 0.0]      # Condensation Ratio NH3
@@ -1149,7 +1313,14 @@ def retrieval_par_and_npar(param):
             parameters.append("$\lambda_{surf, 1}$")
             parameters.append("$\lambda_{surf, 2}$")
     if param['fit_T']:
-        parameters.append("T$_p$")
+        if param['PT_profile_type'] == 'isothermal':
+            parameters.append("T$_p$")
+        elif param['PT_profile_type'] == 'parametric':
+            parameters.append("$\kappa_{th}$")
+            parameters.append("$\gamma$")
+            parameters.append("$\beta$")
+            if param['fit_Tint']:
+                parameters.append("T$_{int}$")
     if param['fit_cld_frac']:
         parameters.append("Log(cld frac)")
     if param['fit_g']:
