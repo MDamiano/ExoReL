@@ -538,6 +538,10 @@ class MULTINEST:
                 if self.param['fit_Tint']:
                     self.param['Tint'] = cube[par] # internal temperature
                     par += 1
+        else:
+            tp_val = self.param.get('Tp')
+            if tp_val is not None:
+                self.param['T'] = tp_val
 
         if self.param['fit_cld_frac']:
             self.param['cld_frac'] = (10.0 ** cube[par])  # Cloud fraction

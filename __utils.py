@@ -1646,3 +1646,19 @@ def clean_c_files(directory):
     if len(file_list) > 0:
         for i in file_list:
             os.system('rm -rf ' + i)
+
+
+def reso_range(start, finish, res, bins=False):
+    wl_low = [start]
+    res = 1. / res
+    wl_high = [start + (start * res)]
+    while wl_high[-1] < finish:
+        wl_low.append(wl_high[-1])
+        wl_high.append(wl_low[-1] + (wl_low[-1] * res))
+
+    bns = np.array([wl_low, wl_high]).T
+
+    if not bins:
+        return np.mean(bns, axis=1)
+    else:
+        return bns

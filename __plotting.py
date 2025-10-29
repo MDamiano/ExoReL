@@ -2,17 +2,14 @@ import os
 import sys
 import copy
 import math
-import json
 import numpy as np
-import pymultinest
 import matplotlib.pyplot as plt
 from matplotlib import ticker
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from astropy import constants as const
-from skbio.stats.composition import clr, clr_inv
 
-from .__utils import find_nearest, model_finalizzation, temp_profile
+from .__utils import find_nearest, model_finalizzation, temp_profile, reso_range
 from .__forward import FORWARD_MODEL, FORWARD_DATASET, FORWARD_AI
 
 
@@ -52,7 +49,7 @@ def plot_nest_spec(mnest, cube, solutions=None):
         if param['mol_custom_wl']:
             new_wl = np.loadtxt(param['pkg_dir'] + 'forward_mod/Data/wl_bins/bins_02_50_R500.dat')
         else:
-            new_wl = np.loadtxt(param['pkg_dir'] + 'forward_mod/Data/wl_bins/bins_02_20_R500.dat')
+            new_wl = reso_range(mnest.param['min_wl'] - 0.05, mnest.param['max_wl'] + 0.05, 500)
         return new_wl, np.mean(new_wl, axis=1)
 
     # Single observation
@@ -338,7 +335,7 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
             b[:, -locate_mp_rp] *= (const.M_jup.value / const.M_earth.value)
         if mnest.param['rocky'] and mnest.param['fit_Rp']:
             b[:, -(locate_mp_rp - 1)] *= (const.R_jup.value / const.R_earth.value)
-        if mnest.param['fit_gp']:
+        if mnest.param['fit_g']:
             b[:, -(locate_mp_rp - 2)] = 10. ** (b[:, -(locate_mp_rp - 2)] - 2.0)
 
         b[:, -1] = np.array(mmm) + 0.0
@@ -1152,7 +1149,7 @@ def plot_contribution(mnest, cube, solutions=None):
         os.mkdir(out_dir)
 
     # Load R=500 bins once
-    new_wl = np.loadtxt(mnest.param['pkg_dir'] + 'forward_mod/Data/wl_bins/bins_02_20_R500.dat')
+    new_wl = reso_range(mnest.param['min_wl'] - 0.05, mnest.param['max_wl'] + 0.05, 500)
     new_wl_central = np.mean(new_wl, axis=1)
 
     # Cache and temporarily override spectrum grid/bins

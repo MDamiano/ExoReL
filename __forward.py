@@ -59,7 +59,7 @@ class FORWARD_MODEL:
         P = self.param['P'] + 0.0  # in Pascal
 
         # Temperature profile
-        T = self.param['T'] + 0.0
+        T = self.param['T'] * np.ones(len(P)) # in K
 
         # Cloud density calculation
         cloudden = 1.0e-36 * np.ones(len(P))
