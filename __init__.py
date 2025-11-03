@@ -19,16 +19,23 @@ def _ensure_required_data():
     pkg_dir = os.path.dirname(os.path.abspath(__file__)) + os.sep
     required_dirs: Iterable[str] = ("forward_mod", "PHO_STELLAR_MODEL")
     forward_mod_path = os.path.join(pkg_dir, "forward_mod")
-    version_marker_path = os.path.join(forward_mod_path, __fmod_version__)
-    if os.path.isdir(forward_mod_path) and not os.path.isfile(version_marker_path):
-        shutil.rmtree(forward_mod_path, ignore_errors=True)
+    version_marker_path = os.path.join(forward_mod_path, "__fmod_version__")
+    version_match = False
+    if os.path.isdir(forward_mod_path):
+        try:
+            with open(version_marker_path, "r", encoding="utf-8") as marker:
+                version_match = marker.read().strip() == __fmod_version__
+        except OSError:
+            version_match = False
+        if not version_match:
+            shutil.rmtree(forward_mod_path, ignore_errors=True)
 
     missing = [d for d in required_dirs if not _is_nonempty_dir(os.path.join(pkg_dir, d))]
     if not missing:
         return
 
     # Attempt to download the full folder from Google Drive via gdown
-    drive_forward_mod = "1wc_yQKuwM1AqwzG-rfk3mEW_46BBNvXS"
+    drive_forward_mod = "1OfR--oxQqfwXURuCUjy8CCWjxOh9hMRS"
     drive_PHO_STELLAR_MODEL = "1ypxxofMwHYeHEx1eFKVWWWVEaaoNmdho"
     try:
         import gdown  # type: ignore
