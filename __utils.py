@@ -61,9 +61,12 @@ def default_parameters():
     param['PT_profile_type'] = 'isothermal'  # type of PT profile to use. Possibilities: isothermal, parametric
     param['Rp_prior_type'] = 'independent'  # type of prior function for the planetary radius. Possibilities: independent, M_R_prior, R_M_prior, random_error
     param['Mp_prior_type'] = 'independent'  # type of prior function for the planetary mass. Possibilities: independent, M_R_prior, R_M_prior, random_error
+
     param['fit_wtr_cld'] = False  # whether to include and fit water cloud position during retrieval
-    param['fit_cld_frac'] = False  # whether to fit the cloud fraction during retrieval
+    param['wtr_cld_type'] = 'liquid'  # type of water cloud to consider. Choose between 'liquid' and 'ice'
     param['fit_amm_cld'] = False  # whether to include and fit ammonia cloud position during retrieval
+    param['fit_cld_frac'] = False  # whether to fit the cloud fraction during retrieval
+
     param['fit_p_size'] = False  # whether to fit particle size during retrieval
     param['p_size_type'] = 'constant'  # type of particle size fitting. (choose between constant or factor)
     param['albedo_calc'] = False  # whether the model return the albedo spectrum as output
@@ -311,6 +314,9 @@ def setup_param_dict(param):
         if param['Rp'] is None and param['gp'] is None:
             if not param['Rp_provided']:
                 raise ValueError("If radius, mass, and gravity of the planet are not free parameters, please provide at least a combination of two in the parameter file.")
+
+    if param['PT_profile_type'] == 'parametric':
+        param['wtr_cld_type'] = 'mixed'
 
     if param['cld_frac'] > 1.0 or param['cld_frac'] < 0.0:
         raise ValueError("The cloud fraction should be defined between [0.0, 1.0]. Please check the 'cld_frac' value in the parameter file.")
@@ -1252,13 +1258,38 @@ def pre_load_variables(param):
             else:
                 pass
     #  Load Mie Calculation Results
-    data = np.loadtxt(param['pkg_dir'] + 'forward_mod/PlanetModel/CrossP/Cross_water_wavelength.dat')
-    param['H2OL_r'] = data[:, 0]  # zero-order radius, in micron
-    param['H2OL_c'] = data[:, 1:]  # cross-section per droplet, in cm2
-    data = np.loadtxt(param['pkg_dir'] + 'forward_mod/PlanetModel/CrossP/Albedo_water_wavelength.dat')
-    param['H2OL_a'] = data[:, 1:]
-    data = np.loadtxt(param['pkg_dir'] + 'forward_mod/PlanetModel/CrossP/Geo_water_wavelength.dat')
-    param['H2OL_g'] = data[:, 1:]
+    if param['wtr_cld_type'] == 'liquid':
+        data = np.loadtxt(param['pkg_dir'] + 'forward_mod/CrossPlnt/Cross_water_wavelength_250916.dat')
+        param['H2OL_r'] = data[:, 0]  # zero-order radius, in micron
+        param['H2OL_c'] = data[:, 1:]  # cross-section per droplet, in cm2
+        data = np.loadtxt(param['pkg_dir'] + 'forward_mod/CrossPlnt/Albedo_water_wavelength_250916.dat')
+        param['H2OL_a'] = data[:, 1:]
+        data = np.loadtxt(param['pkg_dir'] + 'forward_mod/CrossPlnt/Geo_water_wavelength_250916.dat')
+        param['H2OL_g'] = data[:, 1:]
+    elif param['wtr_cld_type'] == 'ice':
+        data = np.loadtxt(param['pkg_dir'] + 'forward_mod/CrossPlnt/Cross_ice_wavelength_250916.dat')
+        param['H2OL_r'] = data[:, 0]  # zero-order radius, in micron
+        param['H2OL_c'] = data[:, 1:]  # cross-section per droplet, in cm2
+        data = np.loadtxt(param['pkg_dir'] + 'forward_mod/CrossPlnt/Albedo_ice_wavelength_250916.dat')
+        param['H2OL_a'] = data[:, 1:]
+        data = np.loadtxt(param['pkg_dir'] + 'forward_mod/CrossPlnt/Geo_ice_wavelength_250916.dat')
+        param['H2OL_g'] = data[:, 1:]
+    elif param['wtr_cld_type'] == 'mixed' and param['PT_profile_type'] == 'parametric':
+        data = np.loadtxt(param['pkg_dir'] + 'forward_mod/CrossPlnt/Cross_water_wavelength_250916.dat')
+        param['H2OL_r'] = data[:, 0]  # zero-order radius, in micron
+        param['H2OL_c_liquid'] = data[:, 1:]  # cross-section per droplet, in cm2
+        data = np.loadtxt(param['pkg_dir'] + 'forward_mod/CrossPlnt/Cross_ice_wavelength_250916.dat')
+        param['H2OL_c_ice'] = data[:, 1:]  # cross-section per droplet, in cm2
+
+        data = np.loadtxt(param['pkg_dir'] + 'forward_mod/CrossPlnt/Albedo_water_wavelength_250916.dat')
+        param['H2OL_a_liquid'] = data[:, 1:]
+        data = np.loadtxt(param['pkg_dir'] + 'forward_mod/CrossPlnt/Albedo_ice_wavelength_250916.dat')
+        param['H2OL_a_ice'] = data[:, 1:]
+
+        data = np.loadtxt(param['pkg_dir'] + 'forward_mod/CrossPlnt/Geo_water_wavelength_250916.dat')
+        param['H2OL_g_liquid'] = data[:, 1:]
+        data = np.loadtxt(param['pkg_dir'] + 'forward_mod/CrossPlnt/Geo_ice_wavelength_250916.dat')
+        param['H2OL_g_ice'] = data[:, 1:]
 
     return param
 

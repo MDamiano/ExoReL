@@ -289,15 +289,40 @@ class FORWARD_MODEL:
                 pass
             else:
                 r0 = r2 * np.exp(-np.log(sig) ** 2.)
-                VP = 4. * math.pi / 3. * ((r2 * 1.0e-6 * np.exp(0.5 * np.log(sig) ** 2.)) ** 3.) * 1.0e+6 * 1.0  # g
-                for indi in range(0, 324):
-                    tck = interp1d(np.log10(self.param['H2OL_r']), np.log10(self.param['H2OL_c'][:, indi]))
-                    temporaneo = tck(np.log10(max(0.01, min(r0, 100))))
-                    crow[j, indi] = cloudden[j] / VP * 1.0e-3 * (10. ** temporaneo)  # cm-1
-                    tck = interp1d(np.log10(self.param['H2OL_r']), self.param['H2OL_a'][:, indi])
-                    albw[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
-                    tck = interp1d(np.log10(self.param['H2OL_r']), self.param['H2OL_g'][:, indi])
-                    geow[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
+                if self.param['wtr_cld_type'] == 'mixed' and self.param['PT_profile_type'] == 'parametric':
+                    if tl[j] < 273.15: # ice
+                        VP = 4. * math.pi / 3. * ((r2 * 1.0e-6 * np.exp(0.5 * np.log(sig) ** 2.)) ** 3.) * 1.0e+6 * 0.92  # g
+                        for indi in range(0, 324):
+                            tck = interp1d(np.log10(self.param['H2OL_r']), np.log10(self.param['H2OL_c_ice'][:, indi]))
+                            temporaneo = tck(np.log10(max(0.01, min(r0, 100))))
+                            crow[j, indi] = cloudden[j] / VP * 1.0e-3 * (10. ** temporaneo)  # cm-1
+                            tck = interp1d(np.log10(self.param['H2OL_r']), self.param['H2OL_a_ice'][:, indi])
+                            albw[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
+                            tck = interp1d(np.log10(self.param['H2OL_r']), self.param['H2OL_g_ice'][:, indi])
+                            geow[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
+                    else: # liquid
+                        VP = 4. * math.pi / 3. * ((r2 * 1.0e-6 * np.exp(0.5 * np.log(sig) ** 2.)) ** 3.) * 1.0e+6 * 1.0  # g
+                        for indi in range(0, 324):
+                            tck = interp1d(np.log10(self.param['H2OL_r']), np.log10(self.param['H2OL_c_liquid'][:, indi]))
+                            temporaneo = tck(np.log10(max(0.01, min(r0, 100))))
+                            crow[j, indi] = cloudden[j] / VP * 1.0e-3 * (10. ** temporaneo)  # cm-1
+                            tck = interp1d(np.log10(self.param['H2OL_r']), self.param['H2OL_a_liquid'][:, indi])
+                            albw[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
+                            tck = interp1d(np.log10(self.param['H2OL_r']), self.param['H2OL_g_liquid'][:, indi])
+                            geow[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
+                else:  # liquid or ice
+                    if self.param['wtr_cld_type'] == 'liquid':  # liquid
+                        VP = 4. * math.pi / 3. * ((r2 * 1.0e-6 * np.exp(0.5 * np.log(sig) ** 2.)) ** 3.) * 1.0e+6 * 1.0  # g
+                    else:  # ice
+                        VP = 4. * math.pi / 3. * ((r2 * 1.0e-6 * np.exp(0.5 * np.log(sig) ** 2.)) ** 3.) * 1.0e+6 * 0.92  # g
+                    for indi in range(0, 324):
+                        tck = interp1d(np.log10(self.param['H2OL_r']), np.log10(self.param['H2OL_c'][:, indi]))
+                        temporaneo = tck(np.log10(max(0.01, min(r0, 100))))
+                        crow[j, indi] = cloudden[j] / VP * 1.0e-3 * (10. ** temporaneo)  # cm-1
+                        tck = interp1d(np.log10(self.param['H2OL_r']), self.param['H2OL_a'][:, indi])
+                        albw[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
+                        tck = interp1d(np.log10(self.param['H2OL_r']), self.param['H2OL_g'][:, indi])
+                        geow[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
 
         with open(self.outdir + 'cross_H2O.dat', 'w') as file:
             for j in range(0, len(zl)):
