@@ -1914,11 +1914,11 @@ def forward(parameters_dictionary, evaluation=None, phi=None, n_obs=None, retrie
     if evaluation is not None:
         if param['fit_p0'] or param['gas_par_space'] == 'partial_pressure':
             param['P0'] = evaluation['P0']
-        if param['fit_wtr_cld']:
+        if param['fit_wtr_cld'] and param['PT_profile_type'] == 'isothermal':
             param['Pw_top'] = evaluation['pH2O']
             param['cldw_depth'] = evaluation['dH2O']
             param['CR_H2O'] = evaluation['crH2O']
-        if param['fit_amm_cld']:
+        if param['fit_amm_cld'] and param['PT_profile_type'] == 'isothermal':
             param['Pa_top'] = evaluation['pNH3']
             param['clda_depth'] = evaluation['dNH3']
             param['CR_NH3'] = evaluation['crNH3']
