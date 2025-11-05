@@ -76,8 +76,6 @@ def _ensure_required_data():
     except Exception as e:  # pragma: no cover - network dependent
         raise RuntimeError(
             "Failed to download required data folders from Google Drive. "
-            "Please check your internet connection or download them manually from: "
-            "https://drive.google.com/drive/folders/1CQutXQ8Ki59TB9Dndo61sktwS3uOM7qZ"
         ) from e
 
     # Validate again after download
