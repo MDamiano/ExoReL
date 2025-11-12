@@ -486,11 +486,11 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
                 par.append("Log(P$_0$ [Pa])")
             elif not mnest.param['fit_p0'] and mnest.param['gas_par_space'] == 'partial_pressure':
                 par.append("Log(P$_0$ [Pa]) (derived)")
-            if mnest.param['fit_wtr_cld']:
+            if mnest.param['fit_wtr_cld'] and mnest.param['PT_profile_type'] == 'isothermal':
                 par.append("Log(P$_{top, H_2O}$ [Pa])")
                 par.append("Log(D$_{H_2O}$ [Pa])")
                 par.append("Log(CR$_{H_2O}$)")
-            if mnest.param['fit_amm_cld']:
+            if mnest.param['fit_amm_cld'] and mnest.param['PT_profile_type'] == 'isothermal':
                 par.append("Log(P$_{top, NH_3}$ [Pa])")
                 par.append("Log(D$_{NH_3}$ [Pa])")
                 par.append("Log(CR$_{NH_3}$)")
@@ -1521,7 +1521,8 @@ def plot_PT_profile(mnest, mc_samples, bestfit_cube, solutions=None):
 
     def _central_quantiles(sigmas):
         sigmas = np.asarray(sigmas, dtype=float)
-        span = math.erf(sigmas / np.sqrt(2.0))
+        inv_sqrt2 = 1.0 / np.sqrt(2.0)
+        span = np.array([math.erf(val * inv_sqrt2) for val in sigmas])
         return 0.5 - 0.5 * span, 0.5 + 0.5 * span
 
     def _sigma_percentile(sigma):
@@ -1639,10 +1640,40 @@ def plot_PT_profile(mnest, mc_samples, bestfit_cube, solutions=None):
         Patch(fc=(color[0], color[1], color[2], 0.40), ec='none', label=r'2$\sigma$'),
         Patch(fc=(color[0], color[1], color[2], 0.25), ec='none', label=r'3$\sigma$'),
     ]
+    truth_legend_items = [
+        Patch(fc='none', ec='none', label='Truth:'),
+        Line2D([], [], linestyle='-', color='black', lw=1.0, label='P-T profile'),
+        Line2D([], [], marker='s', linestyle='', color='black', markerfacecolor='white', markeredgecolor='black', ms=5, label='Surface'),
+    ]
+    truth_legend_added = False
 
-    if mnest.param['truths'] is not None:
+    def _overlay_truth_profile(pressures, temperatures, surface_pressure=None, surface_temperature=None):
+        pressures = np.asarray(pressures, dtype=float)
+        temperatures = np.asarray(temperatures, dtype=float)
+        mask = np.isfinite(pressures) & np.isfinite(temperatures) & (pressures > 0.0)
+        if np.count_nonzero(mask) < 2:
+            return False
+        pressures = pressures[mask]
+        temperatures = temperatures[mask]
+        order = np.argsort(pressures)
+        pressures = pressures[order]
+        temperatures = temperatures[order]
+        if surface_pressure is None:
+            surface_pressure = pressures[-1]
+        if surface_temperature is None:
+            surface_temperature = temperatures[-1]
+        ax.plot(temperatures, pressures, linestyle='-', color='black', lw=1.0)
+        ax.scatter(surface_temperature, surface_pressure, marker='s', fc='white', ec='black', s=30, zorder=7)
+        inset_ax.scatter(surface_temperature, surface_pressure, marker='s', fc='white', ec='black', s=30, zorder=8)
+        axis_top_candidates.append(pressures[0])
+        axis_bottom_candidates.append(surface_pressure)
+        return True
+
+    truths = None
+    if mnest.param.get('truths') is not None:
         truths = np.genfromtxt(mnest.param['truths'])
-        idx_PT_vars = 1 + len(mnest.param['fit_molecules']) + mnest.param['fit_ag']
+    if truths is not None:
+        idx_PT_vars = 1 + len(mnest.param['fit_molecules']) + mnest.param['surface_albedo_parameters']
 
         tmp_param = {
             'PT_profile_type': 'parametric',
@@ -1678,18 +1709,37 @@ def plot_PT_profile(mnest, mc_samples, bestfit_cube, solutions=None):
         truth_pressure = tmp_param['P']
         truth_surface_pressure = 10 ** truths[0]
 
-        ax.plot(truth_profile, truth_pressure, linestyle='-', color='black', lw=1.0)
-        ax.scatter(truth_profile[-1], truth_surface_pressure, marker='s', fc='white', ec='black', s=30, zorder=7)
-        inset_ax.scatter(truth_profile[-1], truth_surface_pressure, marker='s', fc='white', ec='black', s=30, zorder=8)
+        plotted = _overlay_truth_profile(
+            truth_pressure,
+            truth_profile,
+            surface_pressure=truth_surface_pressure,
+            surface_temperature=truth_profile[-1],
+        )
+        if plotted and not truth_legend_added:
+            legend_elements.extend(truth_legend_items)
+            truth_legend_added = True
 
-        axis_top_candidates.append(truth_pressure[0])
-        axis_bottom_candidates.append(truth_surface_pressure)
-
-        legend_elements.extend([
-            Patch(fc='none', ec='none', label='Truth:'),
-            Line2D([], [], linestyle='-', color='black', lw=1.0, label='P-T profile'),
-            Line2D([], [], marker='s', linestyle='', color='black', markerfacecolor='white', markeredgecolor='black', ms=5, label='Surface'),
-        ])
+    truth_pt_path = mnest.param.get('truth_PT_profile')
+    if truth_pt_path:
+        expanded_path = os.path.expanduser(os.path.expandvars(truth_pt_path))
+        if not os.path.isabs(expanded_path):
+            candidate = os.path.join(mnest.param['wkg_dir'], expanded_path)
+            if os.path.isfile(candidate):
+                expanded_path = candidate
+        if not os.path.isfile(expanded_path):
+            raise FileNotFoundError(f'Truth PT profile file not found: {truth_pt_path}')
+        try:
+            truth_data = np.loadtxt(expanded_path, ndmin=2)
+        except Exception as exc:
+            raise RuntimeError(f'Failed to read truth PT profile from {expanded_path}') from exc
+        if truth_data.shape[1] < 2:
+            raise ValueError('Truth PT profile must contain at least two columns: pressure [Pa] and temperature [K].')
+        truth_pressures = truth_data[:, 0]
+        truth_temperatures = truth_data[:, 1]
+        plotted = _overlay_truth_profile(truth_pressures, truth_temperatures)
+        if plotted and not truth_legend_added:
+            legend_elements.extend(truth_legend_items)
+            truth_legend_added = True
 
     axis_top_candidates = [val for val in axis_top_candidates if np.isfinite(val) and val > 0.0]
     axis_bottom_candidates = [val for val in axis_bottom_candidates if np.isfinite(val) and val > 0.0]

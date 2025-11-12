@@ -501,14 +501,6 @@ class MULTINEST:
                 par += 1
 
         self.param['P'] = 10. ** np.arange(0.0, np.log10(self.param['P0']) + 0.01, step=0.01)
-        if self.param['fit_amm_cld']:
-            self.param['vmr_NH3'] = cloud_pos(self.param, condensed_gas='NH3')
-            self.param = adjust_VMR(self.param, all_gases=self.param['adjust_VMR_gases'], condensed_gas='NH3')
-        self.param['vmr_H2O'] = cloud_pos(self.param, condensed_gas='H2O')
-        self.param = adjust_VMR(self.param, all_gases=self.param['adjust_VMR_gases'], condensed_gas='H2O')
-        if self.param['O3_earth']:
-            self.param['vmr_O3'] = ozone_earth_mask(self.param)
-        self.param = calc_mean_mol_mass(self.param)
 
         if self.param['fit_ag']:
             if self.param['surface_albedo_parameters'] == int(1):
@@ -585,17 +577,27 @@ class MULTINEST:
         if self.param['fit_phi']:
             self.param['phi'] = cube[par + n_obs] * math.pi / 180.  # phi
 
+        if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
+            self.param['T'] = temp_profile(self.param)
+        if self.param['fit_amm_cld']:
+            self.param['vmr_NH3'] = cloud_pos(self.param, condensed_gas='NH3')
+            self.param = adjust_VMR(self.param, all_gases=self.param['adjust_VMR_gases'], condensed_gas='NH3')
+        self.param['vmr_H2O'] = cloud_pos(self.param, condensed_gas='H2O')
+        self.param = adjust_VMR(self.param, all_gases=self.param['adjust_VMR_gases'], condensed_gas='H2O')
+        if self.param['O3_earth']:
+            self.param['vmr_O3'] = ozone_earth_mask(self.param)
+        self.param = calc_mean_mol_mass(self.param)
+
         self.param['core_number'] = None
 
 
     def calc_spectra(self, mc_samples):
+        new_wl = reso_range(0.2, 20.0, res=500, bins=True)
         if self.param['mol_custom_wl']:
-            new_wl = np.loadtxt(self.param['pkg_dir'] + 'forward_mod/Data/wl_bins/bins_02_50_R500.dat')
             new_wl_central = np.mean(new_wl, axis=1)
             start = 0
             stop = len(new_wl_central) - 1
         else:
-            new_wl = np.loadtxt(self.param['pkg_dir'] + 'forward_mod/Data/wl_bins/bins_02_20_R500.dat')
             new_wl_central = np.mean(new_wl, axis=1)
             start = find_nearest(new_wl_central, min(self.param['spectrum']['wl']) - 0.05)
             stop = find_nearest(new_wl_central, max(self.param['spectrum']['wl']) + 0.05)

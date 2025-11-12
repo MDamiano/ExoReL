@@ -97,6 +97,7 @@ def default_parameters():
     param['plot_posterior'] = False  # whether to plot the marginalized posterior distribution functions
     param['corner_selected_params'] = None  # list of parameter indices to plot in the corner plot
     param['truths'] = None  # whether to also plot the truths value in the posterior plot
+    param['truth_PT_profile'] = None  # optional file with (pressure, temperature) truth points for PT plot overlays
     param['calc_likelihood_data'] = False
     param['n_likelihood_data'] = 10240
 
@@ -1298,11 +1299,11 @@ def retrieval_par_and_npar(param):
     parameters = []
     if param['fit_p0']:
         parameters.append("P$_0$")
-    if param['fit_wtr_cld']:
+    if param['fit_wtr_cld'] and param['PT_profile_type'] == 'isothermal':
         parameters.append("Log(P$_{top, H_2O}$)")
         parameters.append("Log(D$_{H_2O}$)")
         parameters.append("Log(CR$_{H_2O}$)")
-    if param['fit_amm_cld']:
+    if param['fit_amm_cld'] and param['PT_profile_type'] == 'isothermal':
         parameters.append("Log(P$_{top, NH_3}$)")
         parameters.append("Log(D$_{NH_3}$)")
         parameters.append("Log(CR$_{NH_3}$)")
