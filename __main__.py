@@ -60,11 +60,11 @@ class CREATE_SPECTRUM:
             print('The surface pressure level (P0) should be expressed')
             sys.exit()
 
-        if self.param['fit_wtr_cld']:
+        if self.param['fit_wtr_cld'] and self.param['PT_profile_type'] == 'isothermal':
             self.param['Pw_top'] = 10. ** self.param['pH2O']
             self.param['cldw_depth'] = 10. ** self.param['dH2O']
             self.param['CR_H2O'] = 10. ** self.param['crH2O']
-        if self.param['fit_amm_cld']:
+        if self.param['fit_amm_cld'] and self.param['PT_profile_type'] == 'isothermal':
             self.param['Pa_top'] = 10. ** self.param['pNH3']
             self.param['clda_depth'] = 10. ** self.param['dNH3']
             self.param['CR_NH3'] = 10. ** self.param['crNH3']
@@ -96,11 +96,11 @@ class CREATE_SPECTRUM:
             pass
 
         if self.param['verbose']:
-            if self.param['fit_wtr_cld']:
+            if self.param['fit_wtr_cld'] and self.param['PT_profile_type'] == 'isothermal':
                 print('Log(H2O_Ptop) \t = \t' + str(self.param['pH2O']))
                 print('Log(H2O_D) \t = \t' + str(self.param['dH2O']))
                 print('Log(H2O_CR) \t = \t' + str(self.param['crH2O']))
-            if self.param['fit_amm_cld']:
+            if self.param['fit_amm_cld'] and self.param['PT_profile_type'] == 'isothermal':
                 print('Log(NH3_Ptop) \t = \t' + str(self.param['pNH3']))
                 print('Log(NH3_D) \t = \t' + str(self.param['dNH3']))
                 print('Log(NH3_CR) \t = \t' + str(self.param['crNH3']))
