@@ -97,7 +97,6 @@ def default_parameters():
     param['plot_posterior'] = False  # whether to plot the marginalized posterior distribution functions
     param['corner_selected_params'] = None  # list of parameter indices to plot in the corner plot
     param['truths'] = None  # whether to also plot the truths value in the posterior plot
-    param['truth_PT_profile'] = None  # optional file with (pressure, temperature) truth points for PT plot overlays
     param['calc_likelihood_data'] = False
     param['n_likelihood_data'] = 10240
 

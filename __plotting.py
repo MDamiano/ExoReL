@@ -1719,28 +1719,6 @@ def plot_PT_profile(mnest, mc_samples, bestfit_cube, solutions=None):
             legend_elements.extend(truth_legend_items)
             truth_legend_added = True
 
-    truth_pt_path = mnest.param.get('truth_PT_profile')
-    if truth_pt_path:
-        expanded_path = os.path.expanduser(os.path.expandvars(truth_pt_path))
-        if not os.path.isabs(expanded_path):
-            candidate = os.path.join(mnest.param['wkg_dir'], expanded_path)
-            if os.path.isfile(candidate):
-                expanded_path = candidate
-        if not os.path.isfile(expanded_path):
-            raise FileNotFoundError(f'Truth PT profile file not found: {truth_pt_path}')
-        try:
-            truth_data = np.loadtxt(expanded_path, ndmin=2)
-        except Exception as exc:
-            raise RuntimeError(f'Failed to read truth PT profile from {expanded_path}') from exc
-        if truth_data.shape[1] < 2:
-            raise ValueError('Truth PT profile must contain at least two columns: pressure [Pa] and temperature [K].')
-        truth_pressures = truth_data[:, 0]
-        truth_temperatures = truth_data[:, 1]
-        plotted = _overlay_truth_profile(truth_pressures, truth_temperatures)
-        if plotted and not truth_legend_added:
-            legend_elements.extend(truth_legend_items)
-            truth_legend_added = True
-
     axis_top_candidates = [val for val in axis_top_candidates if np.isfinite(val) and val > 0.0]
     axis_bottom_candidates = [val for val in axis_bottom_candidates if np.isfinite(val) and val > 0.0]
     axis_top = min(axis_top_candidates)
