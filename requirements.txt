@@ -5,13 +5,10 @@ astropy
 scikit-bio
 matplotlib
 spectres
-
-# Optional: used for Google Drive auto-download of data folders
-# If not needed, you can remove/comment this.
+torch
+torchvision
 gdown
 
 # Optional (not installed by default):
 # pymultinest==2.11  # requires MultiNest system libraries
 # mpi4py             # for parallel retrievals
-# torch              # for neural network surrogate model
-# torchvision        # for neural network surrogate model
