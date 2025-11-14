@@ -121,10 +121,10 @@ def plot_nest_spec(mnest, cube, solutions=None):
         rs_path = mnest.param['out_dir'] + 'random_samples.dat'
         if os.path.isfile(rs_path):
             fl = np.loadtxt(rs_path)
-            q50 = np.quantile(fl[:, 1:], 0.5, axis=1)
-            q16, q84 = np.quantile(fl[:, 1:], [0.16, 0.84], axis=1)
-            q2, q98 = np.quantile(fl[:, 1:], [0.0225, 0.9775], axis=1)
-            q003, q997 = np.quantile(fl[:, 1:], [0.00135, 0.99865], axis=1)
+            q50 = np.nanquantile(fl[:, 1:], 0.5, axis=1)
+            q16, q84 = np.nanquantile(fl[:, 1:], [0.16, 0.84], axis=1)
+            q2, q98 = np.nanquantile(fl[:, 1:], [0.0225, 0.9775], axis=1)
+            q003, q997 = np.nanquantile(fl[:, 1:], [0.00135, 0.99865], axis=1)
 
             bands = [q16, q84, q2, q98, q003, q997]
             for qq in bands:

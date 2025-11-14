@@ -289,10 +289,14 @@ class MULTINEST:
             if self.param['obs_numb'] is None:
                 model = internal_model(cube)
 
-                if self.param['fit_wtr_cld'] and self.param['cld_frac'] != 1.0:
+                if (self.param['fit_wtr_cld'] or self.param['fit_amn_cld']) and self.param['cld_frac'] != 1.0:
                     self.param['fit_wtr_cld'] = False
+                    if self.param['double_cloud']:
+                        self.param['fit_amm_cld'] = False
                     model_no_cld = internal_model(cube, free_cld_calc=True)
                     self.param['fit_wtr_cld'] = True
+                    if self.param['double_cloud']:
+                        self.param['fit_amm_cld'] = True
                     model = (self.param['cld_frac'] * model) + ((1.0 - self.param['cld_frac']) * model_no_cld)
 
                 chi = (self.param['spectrum']['Fplanet'] - model) / self.param['spectrum']['error_p']
@@ -644,7 +648,6 @@ class MULTINEST:
             self.cube_to_param(cube)
             mod = FORWARD_MODEL(self.param, retrieval=False, canc_metadata=True)
             alb_wl, alb = mod.run_forward()
-            alb_wl *= 10. ** (-3.)
 
             if self.param['fit_wtr_cld'] and self.param['rocky'] and self.param['cld_frac'] != 1.0:
                 alb = self.adjust_for_cld_frac(alb, cube)
@@ -659,9 +662,9 @@ class MULTINEST:
 
             # Calculate likelihood per single datapoint
             chi = (self.param['spectrum']['Fplanet'] - model) / self.param['spectrum']['error_p']
-            loglikelihood = ((-1.) * np.log(self.param['spectrum']['error_p'] * np.sqrt(2.0 * math.pi))) - (0.5 * chi * chi)
+            loglike_data[i, :] = ((-1.) * np.log(self.param['spectrum']['error_p'] * np.sqrt(2.0 * math.pi))) - (0.5 * chi * chi)
 
-            # Calculate temperature profile #!!!
+            # Calculate temperature profile
             if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
                 T = temp_profile(self.param)
                 temp_samples[2:len(T)+2, i+1] = T
@@ -683,8 +686,12 @@ class MULTINEST:
 
     def adjust_for_cld_frac(self, albedo, mlnst_cube):
         self.param['fit_wtr_cld'] = False
+        if self.param['double_cloud']:
+            self.param['fit_amm_cld'] = False
         self.cube_to_param(mlnst_cube, free_cld_calc=True)
         mod = FORWARD_MODEL(self.param, retrieval=False, canc_metadata=True)
         _, alb_no_cld = mod.run_forward()
         self.param['fit_wtr_cld'] = True
+        if self.param['double_cloud']:
+            self.param['fit_amm_cld'] = True
         return (self.param['cld_frac'] * albedo) + ((1.0 - self.param['cld_frac']) * alb_no_cld)

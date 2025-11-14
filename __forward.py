@@ -78,6 +78,26 @@ class FORWARD_MODEL:
                 else:
                     particlesize[i] = r2 + 0.0
 
+        if self.param['fit_amm_cld']:
+            cloudden_nh3 = 1.0e-36 * np.ones(len(P))
+            for i in range(len(P) - 2, -1, -1):
+                cloudden_nh3[i] = max(abs(self.param['vmr_NH3'][i] - self.param['vmr_NH3'][i + 1]) * 0.017 * P[i] / const.R.value / T[i], 1e-25)  # kg/m^3, g/L
+            particlesize_nh3 = 1.0e-36 * np.ones(len(P))
+
+            if self.param['fit_p_size'] and self.param['p_size_type'] == 'constant':
+                particlesize_nh3 = self.param['p_size'] * np.ones(len(P))
+            else:
+                for i in range(len(P) - 2, -1, -1):
+                    deltaP_nh3 = P[i] * abs(self.param['vmr_NH3'][i] - self.param['vmr_NH3'][i + 1])
+                    r0, r1, r2, VP = particlesizef(g, T[i], P[i], self.param['mean_mol_weight'][i], self.param['mm']['NH3'], self.param['KE'], deltaP_nh3)
+                    if self.param['fit_p_size'] and self.param['p_size_type'] == 'factor':
+                        particlesize_nh3[i] = r2 * self.param['p_size']
+                    else:
+                        particlesize_nh3[i] = r2 + 0.0
+            
+            cloudden_nh3 = cloudden_nh3[::-1]
+            particlesize_nh3 = particlesize_nh3[::-1]
+
         # Calculate the height
         P = P[::-1]
         T = T[::-1]
@@ -146,6 +166,13 @@ class FORWARD_MODEL:
 
         tck = interp1d(Z, np.log(particlesize))
         particlesize = np.exp(tck(zl))
+
+        if self.param['fit_amm_cld']:
+            tck = interp1d(Z, np.log(cloudden_nh3))
+            cloudden_nh3 = np.exp(tck(zl))
+
+            tck = interp1d(Z, np.log(particlesize_nh3))
+            particlesize_nh3 = np.exp(tck(zl))
 
         #    Generate ConcentrationSTD.dat file
         NSP = 111
@@ -277,9 +304,14 @@ class FORWARD_MODEL:
                 file.write('\n')
 
         #    cloud output
-        crow = np.zeros((len(zl), 324))
-        albw = np.ones((len(zl), 324))
-        geow = np.zeros((len(zl), 324))
+        cro_h2o = np.zeros((len(zl), 324))
+        alb_h2o = np.ones((len(zl), 324))
+        geo_h2o = np.zeros((len(zl), 324))
+        
+        if self.param['fit_amm_cld']:
+            cro_nh3 = np.zeros((len(zl), 324))
+            alb_nh3 = np.ones((len(zl), 324))
+            geo_nh3 = np.zeros((len(zl), 324))
 
         #    opacity
         sig = 2
@@ -295,21 +327,21 @@ class FORWARD_MODEL:
                         for indi in range(0, 324):
                             tck = interp1d(np.log10(self.param['H2OL_r']), np.log10(self.param['H2OL_c_ice'][:, indi]))
                             temporaneo = tck(np.log10(max(0.01, min(r0, 100))))
-                            crow[j, indi] = cloudden[j] / VP * 1.0e-3 * (10. ** temporaneo)  # cm-1
+                            cro_h2o[j, indi] = cloudden[j] / VP * 1.0e-3 * (10. ** temporaneo)  # cm-1
                             tck = interp1d(np.log10(self.param['H2OL_r']), self.param['H2OL_a_ice'][:, indi])
-                            albw[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
+                            alb_h2o[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
                             tck = interp1d(np.log10(self.param['H2OL_r']), self.param['H2OL_g_ice'][:, indi])
-                            geow[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
+                            geo_h2o[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
                     else: # liquid
                         VP = 4. * math.pi / 3. * ((r2 * 1.0e-6 * np.exp(0.5 * np.log(sig) ** 2.)) ** 3.) * 1.0e+6 * 1.0  # g
                         for indi in range(0, 324):
                             tck = interp1d(np.log10(self.param['H2OL_r']), np.log10(self.param['H2OL_c_liquid'][:, indi]))
                             temporaneo = tck(np.log10(max(0.01, min(r0, 100))))
-                            crow[j, indi] = cloudden[j] / VP * 1.0e-3 * (10. ** temporaneo)  # cm-1
+                            cro_h2o[j, indi] = cloudden[j] / VP * 1.0e-3 * (10. ** temporaneo)  # cm-1
                             tck = interp1d(np.log10(self.param['H2OL_r']), self.param['H2OL_a_liquid'][:, indi])
-                            albw[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
+                            alb_h2o[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
                             tck = interp1d(np.log10(self.param['H2OL_r']), self.param['H2OL_g_liquid'][:, indi])
-                            geow[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
+                            geo_h2o[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
                 else:  # liquid or ice
                     if self.param['wtr_cld_type'] == 'liquid':  # liquid
                         VP = 4. * math.pi / 3. * ((r2 * 1.0e-6 * np.exp(0.5 * np.log(sig) ** 2.)) ** 3.) * 1.0e+6 * 1.0  # g
@@ -318,28 +350,63 @@ class FORWARD_MODEL:
                     for indi in range(0, 324):
                         tck = interp1d(np.log10(self.param['H2OL_r']), np.log10(self.param['H2OL_c'][:, indi]))
                         temporaneo = tck(np.log10(max(0.01, min(r0, 100))))
-                        crow[j, indi] = cloudden[j] / VP * 1.0e-3 * (10. ** temporaneo)  # cm-1
+                        cro_h2o[j, indi] = cloudden[j] / VP * 1.0e-3 * (10. ** temporaneo)  # cm-1
                         tck = interp1d(np.log10(self.param['H2OL_r']), self.param['H2OL_a'][:, indi])
-                        albw[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
+                        alb_h2o[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
                         tck = interp1d(np.log10(self.param['H2OL_r']), self.param['H2OL_g'][:, indi])
-                        geow[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
+                        geo_h2o[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
+            
+            if self.param['fit_amm_cld']:
+                r2 = particlesize_nh3[j]
+                if cloudden_nh3[j] < 1e-16:
+                    pass
+                else:
+                    r0 = r2 * np.exp(-np.log(sig) ** 2.)  # micron
+                    VP = 4. * math.pi / 3. * ((r2 * 1.0E-6 * np.exp(0.5 * (np.log(sig) ** 2.))) ** 3.) * 1.0E+6 * 0.87  # g
+                    for indi in range(0, 324):
+                        tck = interp1d(np.log10(self.param['NH3I_r']), np.log10(self.param['NH3I_c'][:, indi]))
+                        temporaneo = tck(np.log10(max(0.01, min(r0, 100))))
+                        cro_nh3[j, indi] = cloudden_nh3[j] / VP * 1.0e-3 * (10. ** temporaneo)  # cm-1
+                        tck = interp1d(np.log10(self.param['NH3I_r']), self.param['NH3I_a'][:, indi])
+                        alb_nh3[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
+                        tck = interp1d(np.log10(self.param['NH3I_r']), self.param['NH3I_g'][:, indi])
+                        geo_nh3[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
+
 
         with open(self.outdir + 'cross_H2O.dat', 'w') as file:
             for j in range(0, len(zl)):
                 for indi in range(0, 324):
-                    file.write("{:.6e}".format(crow[j, indi]) + '\t')
+                    file.write("{:.6e}".format(cro_h2o[j, indi]) + '\t')
                 file.write('\n')
 
         with open(self.outdir + 'albedo_H2O.dat', 'w') as file:
             for j in range(0, len(zl)):
                 for indi in range(0, 324):
-                    file.write("{:.6e}".format(albw[j, indi]) + '\t')
+                    file.write("{:.6e}".format(alb_h2o[j, indi]) + '\t')
                 file.write('\n')
 
         with open(self.outdir + 'geo_H2O.dat', 'w') as file:
             for j in range(0, len(zl)):
                 for indi in range(0, 324):
-                    file.write("{:.6e}".format(geow[j, indi]) + '\t')
+                    file.write("{:.6e}".format(geo_h2o[j, indi]) + '\t')
+                file.write('\n')
+        
+        with open(self.outdir + 'cross_NH3.dat', 'w') as file:
+            for j in range(0, len(zl)):
+                for indi in range(0, 324):
+                    file.write("{:.6e}".format(cro_nh3[j, indi]) + '\t')
+                file.write('\n')
+        
+        with open(self.outdir + 'albedo_NH3.dat', 'w') as file:
+            for j in range(0, len(zl)):
+                for indi in range(0, 324):
+                    file.write("{:.6e}".format(alb_nh3[j, indi]) + '\t')
+                file.write('\n')
+        
+        with open(self.outdir + 'geo_NH3.dat', 'w') as file:
+            for j in range(0, len(zl)):
+                for indi in range(0, 324):
+                    file.write("{:.6e}".format(geo_nh3[j, indi]) + '\t')
                 file.write('\n')
 
     def __run_structure(self):
@@ -1304,9 +1371,22 @@ class FORWARD_MODEL:
                        '            Interpolation( & wavelength[i], 1, & cH2O[j][i], lll, ccc, 324, 2);\n',
                        '        }\n',
                        '    }\n',
-                       '    fclose(fim);\n',
+                       '    fclose(fim);\n']
+        
+        if self.param['fit_amn_cld']:
+            c_core_file += ['    char outaer2[1024];\n',
+                            '    strcpy(outaer2, OUT_DIR);\n',
+                            '    strcat(outaer2, "cross_NH3.dat");\n',
+                            '    fim=fopen(outaer2,"r");\n',
+                            '    for (j=1; j<=zbin; j++) {\n',
+                            '        for (i=0; i < 324; i++) {fscanf(fim, "%le", ccc+i);}\n',
+                            '        for (i=' + str(iniz) + '; i<' + str(fine) + '; i++) {\n',
+                            '            Interpolation( & wavelength[i], 1, & cNH3[j][i], lll, ccc, 324, 2);\n',
+                            '        }\n',
+                            '    }\n',
+                            '    fclose(fim);\n']
 
-                       '    char outaer3[1024];\n',
+        c_core_file+= ['    char outaer3[1024];\n',
                        '    strcpy(outaer3, OUT_DIR);\n',
                        '    strcat(outaer3, "geo_H2O.dat");\n',
                        '    fim = fopen(outaer3, "r");\n',
@@ -1316,9 +1396,22 @@ class FORWARD_MODEL:
                        '            Interpolation( & wavelength[i], 1, & gH2O[j][i], lll, ccc, 324, 2);\n',
                        '        }\n',
                        '    }\n',
-                       '    fclose(fim);\n',
+                       '    fclose(fim);\n']
+        
+        if self.param['fit_amn_cld']:
+            c_core_file += ['    char outaer4[1024];\n',
+                            '    strcpy(outaer4, OUT_DIR);\n',
+                            '    strcat(outaer4, "geo_NH3.dat");\n',
+                            '    fim = fopen(outaer4, "r");\n',
+                            '    for (j=1; j<=zbin; j++) {\n',
+                            '        for (i=0; i < 324; i++) {fscanf(fim, "%lf", ccc+i);}\n',
+                            '        for (i=' + str(iniz) + '; i<' + str(fine) + '; i++) {\n',
+                            '            Interpolation( & wavelength[i], 1, & gNH3[j][i], lll, ccc, 324, 2);\n',
+                            '        }\n',
+                            '    }\n',
+                            '    fclose(fim);\n']
 
-                       '    char outaer5[1024];\n',
+        c_core_file+= ['    char outaer5[1024];\n',
                        '    strcpy(outaer5, OUT_DIR);\n',
                        '    strcat(outaer5, "albedo_H2O.dat");\n',
                        '    fim = fopen(outaer5, "r");\n',
@@ -1328,10 +1421,23 @@ class FORWARD_MODEL:
                        '            Interpolation( & wavelength[i], 1, & aH2O[j][i], lll, ccc, 324, 2);\n',
                        '        }\n',
                        '    }\n',
-                       '    fclose(fim);\n',
+                       '    fclose(fim);\n']
+        
+        if self.param['fit_amn_cld']:
+            c_core_file += ['    char outaer6[1024];\n',
+                            '    strcpy(outaer6, OUT_DIR);\n',
+                            '    strcat(outaer6, "albedo_NH3.dat");\n',
+                            '    fim = fopen(outaer6, "r");\n',
+                            '    for (j=1; j<=zbin; j++) {\n',
+                            '        for (i=0; i < 324; i++) {fscanf(fim, "%lf", ccc+i);}\n',
+                            '        for (i=' + str(iniz) + '; i<' + str(fine) + '; i++) {\n',
+                            '            Interpolation( & wavelength[i], 1, & aNH3[j][i], lll, ccc, 324, 2);\n',
+                            '        }\n',
+                            '    }\n',
+                            '    fclose(fim);\n']
 
                        # Geometric Albedo 9-point Gauss Quadruture
-                       '    double cmiu[9]={-0.9681602395076261,-0.8360311073266358,-0.6133714327005904,-0.3242534234038089,0.0,0.3242534234038089,0.6133714327005904,0.8360311073266358,0.9681602395076261};\n',
+        c_core_file+= ['    double cmiu[9]={-0.9681602395076261,-0.8360311073266358,-0.6133714327005904,-0.3242534234038089,0.0,0.3242534234038089,0.6133714327005904,0.8360311073266358,0.9681602395076261};\n',
                        '    double wmiu[9]={0.0812743883615744,0.1806481606948574,0.2606106964029354,0.3123470770400029,0.3302393550012598,0.3123470770400029,0.2606106964029354,0.1806481606948574,0.0812743883615744};\n',
                        '    int NUMPOINTS=9;\n',
                        # 10-point Quadrature

@@ -210,10 +210,10 @@ __marimo__/
 PHO_STELLAR_MODEL/
 plotting_routine/
 forward_mod/
-examples/
 debug/
 tests/
 *.pyc
 .DS_Store
 .idea
 .vscode
+AGENTS.md

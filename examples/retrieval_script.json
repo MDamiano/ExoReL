@@ -1,0 +1,73 @@
+{
+    "Rs": 1.0,
+    "Ms": 1.0,
+    "Ts": 5760.0,
+    
+    "name_p": "Earth",
+    "major-a": 1.0,
+    "eccentricity": 0.0,
+    "inclination": 90.0,
+    "Mp": 0.0031463518655061432,
+    
+    "spectrum": "spectra/input_spectrum.dat",
+    "phi": 60.0,
+    "output_directory": "Retrieval/",
+    "use_adaptive_grid": true,
+    "n_layer": 100,
+    
+    "fit_p0": false,
+    "fit_ag": true,
+    "surface_albedo_parameters": 1,
+    
+    "fit_T": false,
+    "PT_profile_type": "isothermal",
+    "fit_Tint": false,
+
+    "gas_par_space": "partial_pressure",
+    "fit_H2O": true,
+    "fit_NH3": false,
+    "fit_CH4": false,
+    "fit_SO2": false,
+    "fit_H2S": false,
+    "fit_N2": true,
+    "fit_CO2": true,
+    "fit_CO": false,
+    "fit_O2": false,
+    "fit_O3": false,
+    
+    "fit_g": false,
+    "fit_Mp": false,
+    "fit_Rp": true,
+    "Rp_prior_type": "independent",
+    
+    "fit_wtr_cld": true,
+    "fit_cld_frac": false,
+    "cld_frac": 0.5,
+    "adjust_VMR_gases": true,
+    
+    "fit_p_size": false,
+    "_p_size_type": "constant",
+    "albedo_calc": false,
+    "fp_over_fs": true,
+    
+    "optimizer": "multinest",
+    "nlive_p": 1000,
+    "ev_tolerance": 1.0,
+    "multinest_resume": true,
+    "multinest_verbose": true,
+    
+    "plot_models": true,
+    "calc_likelihood_data": true,
+    "plot_contribution": true,
+    "plot_posterior": true,
+    "truths": "truths/file_with_true_values.dat",
+    "_corner_selected_params": [
+        "Log(H$_2$O)",
+        "Log(O$_2$)",
+        "Log(O$_3$)",
+        "Log(N$_2$)",
+        "R$_p$ [R$_\\oplus$]",
+        "$\\mu$ (derived)"
+    ]
+}
+
