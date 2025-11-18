@@ -35,7 +35,7 @@ def _ensure_required_data():
         return
 
     # Attempt to download the full folder from Google Drive via gdown
-    drive_forward_mod = "1i708CX1Mcvc-agJdo_8zdKUJz6-F7wT5"
+    drive_forward_mod = "1QdFk_8BPjgGA8V8ZtjHUkFInt6qCa-mb"
     drive_PHO_STELLAR_MODEL = "1ypxxofMwHYeHEx1eFKVWWWVEaaoNmdho"
     try:
         import gdown  # type: ignore
