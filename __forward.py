@@ -391,23 +391,24 @@ class FORWARD_MODEL:
                     file.write("{:.6e}".format(geo_h2o[j, indi]) + '\t')
                 file.write('\n')
         
-        with open(self.outdir + 'cross_NH3.dat', 'w') as file:
-            for j in range(0, len(zl)):
-                for indi in range(0, 324):
-                    file.write("{:.6e}".format(cro_nh3[j, indi]) + '\t')
-                file.write('\n')
-        
-        with open(self.outdir + 'albedo_NH3.dat', 'w') as file:
-            for j in range(0, len(zl)):
-                for indi in range(0, 324):
-                    file.write("{:.6e}".format(alb_nh3[j, indi]) + '\t')
-                file.write('\n')
-        
-        with open(self.outdir + 'geo_NH3.dat', 'w') as file:
-            for j in range(0, len(zl)):
-                for indi in range(0, 324):
-                    file.write("{:.6e}".format(geo_nh3[j, indi]) + '\t')
-                file.write('\n')
+        if self.param['fit_amm_cld']:
+            with open(self.outdir + 'cross_NH3.dat', 'w') as file:
+                for j in range(0, len(zl)):
+                    for indi in range(0, 324):
+                        file.write("{:.6e}".format(cro_nh3[j, indi]) + '\t')
+                    file.write('\n')
+            
+            with open(self.outdir + 'albedo_NH3.dat', 'w') as file:
+                for j in range(0, len(zl)):
+                    for indi in range(0, 324):
+                        file.write("{:.6e}".format(alb_nh3[j, indi]) + '\t')
+                    file.write('\n')
+            
+            with open(self.outdir + 'geo_NH3.dat', 'w') as file:
+                for j in range(0, len(zl)):
+                    for indi in range(0, 324):
+                        file.write("{:.6e}".format(geo_nh3[j, indi]) + '\t')
+                    file.write('\n')
 
     def __run_structure(self):
         os.chdir(self.matlab_code_directory)
@@ -1373,7 +1374,7 @@ class FORWARD_MODEL:
                        '    }\n',
                        '    fclose(fim);\n']
         
-        if self.param['fit_amn_cld']:
+        if self.param['fit_amm_cld']:
             c_core_file += ['    char outaer2[1024];\n',
                             '    strcpy(outaer2, OUT_DIR);\n',
                             '    strcat(outaer2, "cross_NH3.dat");\n',
@@ -1398,7 +1399,7 @@ class FORWARD_MODEL:
                        '    }\n',
                        '    fclose(fim);\n']
         
-        if self.param['fit_amn_cld']:
+        if self.param['fit_amm_cld']:
             c_core_file += ['    char outaer4[1024];\n',
                             '    strcpy(outaer4, OUT_DIR);\n',
                             '    strcat(outaer4, "geo_NH3.dat");\n',
@@ -1423,7 +1424,7 @@ class FORWARD_MODEL:
                        '    }\n',
                        '    fclose(fim);\n']
         
-        if self.param['fit_amn_cld']:
+        if self.param['fit_amm_cld']:
             c_core_file += ['    char outaer6[1024];\n',
                             '    strcpy(outaer6, OUT_DIR);\n',
                             '    strcat(outaer6, "albedo_NH3.dat");\n',
