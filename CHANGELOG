@@ -1,4 +1,4 @@
-## [2.7.0] - 
+## [2.7.0] - 11/19/25
 - Water-cloud scattering now honors `wtr_cld_type` (`liquid`, `ice`, `mixed`), loading the matching Mie tables and, when mixed is selected with parametric P–T fits, switching between ice and liquid optical properties layer-by-layer using the retrieved temperature column.
 - Ammonia-cloud enabled with updated Mie tables.
 - Added parametric P–T retrieval (Guillot 2010) via `PT_profile_type`, sampling k_th/gamma/beta/Tint in MultiNest, generating temperatures with `temp_profile`, and updating parameter labels/ranges.

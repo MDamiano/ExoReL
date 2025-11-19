@@ -63,9 +63,9 @@ def default_parameters():
     param['Mp_prior_type'] = 'independent'  # type of prior function for the planetary mass. Possibilities: independent, M_R_prior, R_M_prior, random_error
 
     param['fit_wtr_cld'] = False  # whether to include and fit water cloud position during retrieval
-    param['wtr_cld_type'] = 'liquid'  # type of water cloud to consider. Choose between 'liquid' and 'ice'
+    param['wtr_cld_type'] = 'liquid'  # type of water cloud to consider. Choose between 'liquid', 'ice', and 'mixed'
     param['fit_amm_cld'] = False  # whether to include and fit ammonia cloud position during retrieval
-    param['fit_cld_frac'] = False  # whether to fit the cloud fraction during retrieval
+    param['fit_cld_frac'] = False  # whether to fit the cloud fraction during retrieval. The cloud fraction is applied to all clouds present in the model
 
     param['fit_p_size'] = False  # whether to fit particle size during retrieval
     param['p_size_type'] = 'constant'  # type of particle size fitting. (choose between constant or factor)

@@ -90,15 +90,6 @@ def _ensure_required_data():
         print("Success: ExoReL is ready!")
 
 
-def ensure_required_data() -> None:
-    """Public helper to ensure data folders exist (and download if needed).
-
-    This mirrors the internal behavior but provides a stable public API
-    callers can invoke explicitly.
-    """
-    _ensure_required_data()
-
-
 _ensure_required_data()
 
 from .__main__ import *
