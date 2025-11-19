@@ -289,7 +289,7 @@ class MULTINEST:
             if self.param['obs_numb'] is None:
                 model = internal_model(cube)
 
-                if (self.param['fit_wtr_cld'] or self.param['fit_amn_cld']) and self.param['cld_frac'] != 1.0:
+                if (self.param['fit_wtr_cld'] or self.param['fit_amm_cld']) and self.param['cld_frac'] != 1.0:
                     self.param['fit_wtr_cld'] = False
                     if self.param['double_cloud']:
                         self.param['fit_amm_cld'] = False

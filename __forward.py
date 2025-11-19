@@ -364,12 +364,12 @@ class FORWARD_MODEL:
                     r0 = r2 * np.exp(-np.log(sig) ** 2.)  # micron
                     VP = 4. * math.pi / 3. * ((r2 * 1.0E-6 * np.exp(0.5 * (np.log(sig) ** 2.))) ** 3.) * 1.0E+6 * 0.87  # g
                     for indi in range(0, 324):
-                        tck = interp1d(np.log10(self.param['NH3I_r']), np.log10(self.param['NH3I_c'][:, indi]))
+                        tck = interp1d(np.log10(self.param['NH3_r']), np.log10(self.param['NH3_c'][:, indi]))
                         temporaneo = tck(np.log10(max(0.01, min(r0, 100))))
                         cro_nh3[j, indi] = cloudden_nh3[j] / VP * 1.0e-3 * (10. ** temporaneo)  # cm-1
-                        tck = interp1d(np.log10(self.param['NH3I_r']), self.param['NH3I_a'][:, indi])
+                        tck = interp1d(np.log10(self.param['NH3_r']), self.param['NH3_a'][:, indi])
                         alb_nh3[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
-                        tck = interp1d(np.log10(self.param['NH3I_r']), self.param['NH3I_g'][:, indi])
+                        tck = interp1d(np.log10(self.param['NH3_r']), self.param['NH3_g'][:, indi])
                         geo_nh3[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
 
 
