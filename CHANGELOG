@@ -1,3 +1,11 @@
+## [2.7.0] - 11/19/25
+- Water-cloud scattering now honors `wtr_cld_type` (`liquid`, `ice`, `mixed`), loading the matching Mie tables and, when mixed is selected with parametric P–T fits, switching between ice and liquid optical properties layer-by-layer using the retrieved temperature column.
+- Ammonia-cloud enabled with updated Mie tables.
+- Added parametric P–T retrieval (Guillot 2010) via `PT_profile_type`, sampling k_th/gamma/beta/Tint in MultiNest, generating temperatures with `temp_profile`, and updating parameter labels/ranges.
+- For parametric profiles, derive H2O/NH3 cloud vapor ceilings from the retrieved temperature column while limiting manual cloud-top priors to isothermal runs.
+- MultiNest post-processing now streams `random_temp_samples.dat`, includes a `plot_PT_profile` diagnostic, and CLI output highlights the active P–T mode.
+- Forward radiative-transfer setup now consumes arbitrary temperature arrays, removes the embedded saturation helper, enforces unit surface emissivity, and refines disk integration weights.
+
 ## [2.6.6] - 10/23/25
 - `plot_posteriors` now honors `corner_selected_params`, trims corner overlays accordingly, and emits `Nest_selected_posteriors.pdf` plus a companion `Nest_1D_posteriors.pdf` for quick 1D diagnostics.
 - Corner plotting adds KDE-backed 1D density helper with histogram fallback, saner grid sizing, and per-solution legends so multimodal runs compare cleanly.

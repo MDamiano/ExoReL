@@ -38,9 +38,11 @@ class CREATE_SPECTRUM:
         self.param['verbose'] = verbose
 
     def run_forward(self, parfile):
+        if parfile.endswith('.dat'):
+            raise RuntimeError("Please, convert your '.dat' partfile to a JSON file. '.dat' files have been phased out.")
         if self.param['verbose']:
             print(f"Running ExoReL – version {__version__}")
-        self.param = read_parfile(self.param, parfile)
+        self.param = read_parfile(self.param, parfile, json_format=True)
         self.param = setup_param_dict(self.param)
         self.param = par_and_calc(self.param)
         self.param = load_input_spectrum(self.param)
@@ -60,11 +62,11 @@ class CREATE_SPECTRUM:
             print('The surface pressure level (P0) should be expressed')
             sys.exit()
 
-        if self.param['fit_wtr_cld']:
+        if self.param['fit_wtr_cld'] and self.param['PT_profile_type'] == 'isothermal':
             self.param['Pw_top'] = 10. ** self.param['pH2O']
             self.param['cldw_depth'] = 10. ** self.param['dH2O']
             self.param['CR_H2O'] = 10. ** self.param['crH2O']
-        if self.param['fit_amm_cld']:
+        if self.param['fit_amm_cld'] and self.param['PT_profile_type'] == 'isothermal':
             self.param['Pa_top'] = 10. ** self.param['pNH3']
             self.param['clda_depth'] = 10. ** self.param['dNH3']
             self.param['CR_NH3'] = 10. ** self.param['crNH3']
@@ -96,11 +98,11 @@ class CREATE_SPECTRUM:
             pass
 
         if self.param['verbose']:
-            if self.param['fit_wtr_cld']:
+            if self.param['fit_wtr_cld'] and self.param['PT_profile_type'] == 'isothermal':
                 print('Log(H2O_Ptop) \t = \t' + str(self.param['pH2O']))
                 print('Log(H2O_D) \t = \t' + str(self.param['dH2O']))
                 print('Log(H2O_CR) \t = \t' + str(self.param['crH2O']))
-            if self.param['fit_amm_cld']:
+            if self.param['fit_amm_cld'] and self.param['PT_profile_type'] == 'isothermal':
                 print('Log(NH3_Ptop) \t = \t' + str(self.param['pNH3']))
                 print('Log(NH3_D) \t = \t' + str(self.param['dNH3']))
                 print('Log(NH3_CR) \t = \t' + str(self.param['crNH3']))
@@ -109,7 +111,15 @@ class CREATE_SPECTRUM:
             print('g \t\t = \t' + str(self.param['gp']))
             print('Mp \t\t = \t' + str(self.param['Mp']))
             print('Rp \t\t = \t' + str(self.param['Rp']))
-            print('Tp \t\t = \t' + str(self.param['Tp']))
+            if self.param['PT_profile_type'] == 'isothermal':
+                print('Tp \t\t = \t' + str(self.param['Tp']))
+            elif self.param['PT_profile_type'] == 'parametric':
+                print('Log(k_th) \t = \t' + str(np.log10(self.param['kappa_th'])))
+                print('Log(gamma) \t = \t' + str(np.log10(self.param['gamma'])))
+                print('beta \t\t = \t' + str(self.param['beta']))
+                print('Tint \t\t = \t' + str(self.param['Tint']))
+            else:
+                print('P-T profile loaded from file.')
             if self.param['surface_albedo_parameters'] == int(1):
                 print('Ag \t\t = \t' + str(self.param['Ag']))
             elif self.param['surface_albedo_parameters'] == int(3):

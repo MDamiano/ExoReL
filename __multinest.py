@@ -85,17 +85,17 @@ class MULTINEST:
                 evaluation['P0'] = (10.0 ** cube[par])  # P0, surface pressure
                 par += 1
 
-            if self.param['fit_wtr_cld'] and not free_cld_calc:
+            if self.param['fit_wtr_cld'] and not free_cld_calc and self.param['PT_profile_type'] == 'isothermal':
                 evaluation['pH2O'], evaluation['dH2O'], evaluation['crH2O'] = (10.0 ** cube[par]), (10.0 ** cube[par + 1]), (10.0 ** cube[par + 2])  # pH2O, dH2O, crH2O
                 par += 3
-            elif not self.param['fit_wtr_cld'] and free_cld_calc:
+            elif not self.param['fit_wtr_cld'] and free_cld_calc and self.param['PT_profile_type'] == 'isothermal':
                 par += 3
 
             if self.param['double_cloud']:
-                if self.param['fit_amm_cld'] and not free_cld_calc:
+                if self.param['fit_amm_cld'] and not free_cld_calc and self.param['PT_profile_type'] == 'isothermal':
                     evaluation['pNH3'], evaluation['dNH3'], evaluation['crNH3'] = (10.0 ** cube[par]), (10.0 ** cube[par + 1]), (10.0 ** cube[par + 2])  # pNH3, dNH3, crNH3
                     par += 3
-                elif not self.param['fit_amm_cld'] and free_cld_calc:
+                elif not self.param['fit_amm_cld'] and free_cld_calc and self.param['PT_profile_type'] == 'isothermal':
                     par += 3
 
             if self.param['gas_par_space'] == 'centered_log_ratio' or self.param['gas_par_space'] == 'clr':
@@ -138,8 +138,18 @@ class MULTINEST:
                     par += 5
 
             if self.param['fit_T']:
-                evaluation['Tp'] = cube[par] + 0.0  # Planetary temperature
-                par += 1
+                if self.param['PT_profile_type'] == 'isothermal':
+                    evaluation['Tp'] = cube[par] + 0.0  # Planetary temperature
+                    par += 1
+                elif self.param['PT_profile_type'] == 'parametric':
+                    evaluation['kappa_th'] = 10.0 ** cube[par]
+                    evaluation['gamma'] = 10.0 ** cube[par + 1]
+                    evaluation['beta'] = cube[par + 2] + 0.0
+                    par += 3
+                    if self.param['fit_Tint']:
+                        evaluation['Tint'] = cube[par] + 0.0
+                        par += 1
+
 
             if self.param['fit_cld_frac']:
                 self.param['cld_frac'] = (10.0 ** cube[par])  # cloud fraction
@@ -181,13 +191,13 @@ class MULTINEST:
             if self.param['fit_p0'] and self.param['gas_par_space'] != 'partial_pressure':
                 cube[par] = (cube[par] * (self.param['p0_range'][1] - self.param['p0_range'][0])) + self.param['p0_range'][0]  # uniform prior between   3  :  11    -> P0, surface pressure
                 par += 1
-            if self.param['fit_wtr_cld']:
+            if self.param['fit_wtr_cld'] and self.param['PT_profile_type'] == 'isothermal':
                 cube[par] = (cube[par] * (self.param['ptopw_range'][1] - self.param['ptopw_range'][0])) + self.param['ptopw_range'][0]  # uniform prior between   0  :  8     -> P H2O cloud top [Pa]
                 cube[par + 1] = (cube[par + 1] * (self.param['dcldw_range'][1] - self.param['dcldw_range'][0])) + self.param['dcldw_range'][0]  # uniform prior between   0  :  8.5   -> D H2O cloud [Pa]
                 cube[par + 2] = (cube[par + 2] * (self.param['crh2o_range'][1] - self.param['crh2o_range'][0])) + self.param['crh2o_range'][0]  # uniform prior between -12  :  0     -> CR H2O
                 par += 3
 
-            if self.param['fit_amm_cld']:
+            if self.param['fit_amm_cld'] and self.param['PT_profile_type'] == 'isothermal':
                 cube[par] = cube[par] * (self.param['ptopa_range'][1] - self.param['ptopa_range'][0]) + self.param['ptopa_range'][0]  # uniform prior between   0  :  8     -> P NH3 cloud top [Pa]
                 cube[par + 1] = cube[par + 1] * (self.param['dclda_range'][1] - self.param['dclda_range'][0]) + self.param['dclda_range'][0]  # uniform prior between   0  :  8.5   -> D H2O cloud [Pa]
                 cube[par + 2] = cube[par + 2] * (self.param['crnh3_range'][1] - self.param['crnh3_range'][0]) + self.param['crnh3_range'][0]  # uniform prior between -12  :  0     -> CR NH3
@@ -220,16 +230,26 @@ class MULTINEST:
                     cube[par + surf_alb] = (cube[par + surf_alb] * (self.param['ag_x1_range'][1] - self.param['ag_x1_range'][0])) + self.param['ag_x1_range'][0]
                     cube[par + surf_alb + 1] = cube[par + surf_alb] + (cube[par + surf_alb + 1] * (self.param['ag_x2_range'][1] - self.param['ag_x2_range'][0])) + self.param['ag_x2_range'][0]
                     par += 5
-                if self.param['fit_T']:
+
+            if self.param['fit_T']:
+                if self.param['PT_profile_type'] == 'isothermal':
                     cube[par] = (cube[par] * (self.param['tp_range'][1] - self.param['tp_range'][0])) + self.param['tp_range'][0]  # uniform prior between   0  :  700   -> Tp, planetary temperature
                     par += 1
+                elif self.param['PT_profile_type'] == 'parametric':
+                    cube[par] = (cube[par] * (self.param['kappa_th_range'][1] - self.param['kappa_th_range'][0])) + self.param['kappa_th_range'][0]  # log uniform prior between 1e-10 : 1e0 -> kappa_th, thermal radiation opacity
+                    cube[par + 1] = (cube[par + 1] * (self.param['gamma_range'][1] - self.param['gamma_range'][0])) + self.param['gamma_range'][0]  # log uniform prior between   1e-10 : 1e10   -> gamma, ratio visible opacity : kappa_th
+                    cube[par + 2] = (cube[par + 2] * (self.param['beta_range'][1] - self.param['beta_range'][0])) + self.param['beta_range'][0]  # uniform prior between   0 : 2   -> beta, scaling factor for T_equilibrium
+                    par += 3
+                    if self.param['fit_Tint']:
+                        cube[par] = (cube[par] * (self.param['Tint_range'][1] - self.param['Tint_range'][0])) + self.param['Tint_range'][0]  # uniform prior between   0 : 300   -> Tint, internal temperature
+                        par += 1
 
             if self.param['fit_cld_frac']:
                 cube[par] = (cube[par] * (self.param['cld_frac_range'][1] - self.param['cld_frac_range'][0])) + self.param['cld_frac_range'][0]  # uniform prior between   -3.0  :  0.0     -> Log(clf_frac), cloud fraction
                 par += 1
 
             if self.param['fit_g']:
-                cube[par] = (cube[par] * (self.param['gp_range'][1] - self.param['gp_range'][0])) + self.param['gp_range'][0]  # uniform prior between   0.5  :  6   -> g [m/s2]
+                cube[par] = (cube[par] * (self.param['gp_range'][1] - self.param['gp_range'][0])) + self.param['gp_range'][0]  # uniform prior between   1.0  :  6   -> g [cm/s2]
                 par += 1
 
             if self.param['fit_Mp'] and self.param['fit_Rp']:
@@ -269,10 +289,14 @@ class MULTINEST:
             if self.param['obs_numb'] is None:
                 model = internal_model(cube)
 
-                if self.param['fit_wtr_cld'] and self.param['cld_frac'] != 1.0:
+                if (self.param['fit_wtr_cld'] or self.param['fit_amm_cld']) and self.param['cld_frac'] != 1.0:
                     self.param['fit_wtr_cld'] = False
+                    if self.param['double_cloud']:
+                        self.param['fit_amm_cld'] = False
                     model_no_cld = internal_model(cube, free_cld_calc=True)
                     self.param['fit_wtr_cld'] = True
+                    if self.param['double_cloud']:
+                        self.param['fit_amm_cld'] = True
                     model = (self.param['cld_frac'] * model) + ((1.0 - self.param['cld_frac']) * model_no_cld)
 
                 chi = (self.param['spectrum']['Fplanet'] - model) / self.param['spectrum']['error_p']
@@ -328,13 +352,20 @@ class MULTINEST:
                     time.sleep(600)
                 rank_0 = np.loadtxt(self.param['out_dir'] + 'loglikelihood_per_datapoint/loglike_0.dat')
                 rank_0_spec = np.loadtxt(self.param['out_dir'] + 'loglikelihood_per_datapoint/samples_0.dat')
+                if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
+                    rank_0_temp = np.loadtxt(self.param['out_dir'] + 'loglikelihood_per_datapoint/temp_samples_0.dat')
                 for i in range(1, MPIsize):
                     rank_n = np.loadtxt(self.param['out_dir'] + 'loglikelihood_per_datapoint/loglike_' + str(i) + '.dat')
                     rank_n_spec = np.loadtxt(self.param['out_dir'] + 'loglikelihood_per_datapoint/samples_' + str(i) + '.dat')
                     rank_0 = np.concatenate((rank_0, rank_n), axis=0)
                     rank_0_spec = np.concatenate((rank_0_spec, rank_n_spec[:, 1:]), axis=1)
+                    if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
+                        rank_n_temp = np.loadtxt(self.param['out_dir'] + 'loglikelihood_per_datapoint/temp_samples_' + str(i) + '.dat')
+                        rank_0_temp = np.concatenate((rank_0_temp, rank_n_temp[:, 1:]), axis=1)
                 np.savetxt(self.param['out_dir'] + 'loglike_per_datapoint.dat', rank_0)
                 np.savetxt(self.param['out_dir'] + 'random_samples.dat', rank_0_spec)
+                if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
+                    np.savetxt(self.param['out_dir'] + 'random_temp_samples.dat', rank_0_temp)
                 os.system('rm -rf ' + self.param['out_dir'] + 'loglikelihood_per_datapoint/')
 
                 self.param['spec_sample'] = rank_0_spec + 0.0
@@ -366,6 +397,8 @@ class MULTINEST:
                     plot_chemistry(self.param, solutions=None)
                     if self.param['surface_albedo_parameters'] > 1:
                         plot_surface_albedo(self.param, solutions=None)
+                    if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
+                        plot_PT_profile(self, mc_samp, cube[:, 0])
                     if self.param['plot_contribution'] and self.param['obs_numb'] is None:
                         plot_contribution(self, cube[:, 0], solutions=None)
                 else:
@@ -377,6 +410,8 @@ class MULTINEST:
                         plot_chemistry(self.param, solutions=i + 1)
                         if self.param['surface_albedo_parameters'] > 1:
                             plot_surface_albedo(self.param, solutions=i + 1)
+                        if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
+                            plot_PT_profile(self, mc_samp, cube[:, i])
                         if self.param['plot_contribution'] and self.param['obs_numb'] is None:
                             plot_contribution(self, cube[:, i], solutions=i + 1)
 
@@ -431,23 +466,24 @@ class MULTINEST:
         if self.param['fit_p0'] and self.param['gas_par_space'] != 'partial_pressure':
             self.param['P0'] = 10. ** cube[par]
             par += 1
-
-        if self.param['fit_wtr_cld'] and not free_cld_calc:
-            self.param['Pw_top'] = 10. ** cube[par]
-            self.param['cldw_depth'] = 10. ** cube[par + 1]
-            self.param['CR_H2O'] = 10. ** cube[par + 2]
-            par += 3
-        elif not self.param['fit_wtr_cld'] and free_cld_calc:
-            par += 3
-
-        if self.param['double_cloud']:
-            if self.param['fit_amm_cld'] and not free_cld_calc:
-                self.param['Pa_top'] = 10. ** cube[par]
-                self.param['clda_depth'] = 10. ** cube[par + 1]
-                self.param['CR_NH3'] = 10. ** cube[par + 2]
+        
+        if self.param['PT_profile_type'] == 'isothermal':
+            if self.param['fit_wtr_cld'] and not free_cld_calc:
+                self.param['Pw_top'] = 10. ** cube[par]
+                self.param['cldw_depth'] = 10. ** cube[par + 1]
+                self.param['CR_H2O'] = 10. ** cube[par + 2]
                 par += 3
-            elif not self.param['fit_amm_cld'] and free_cld_calc:
+            elif not self.param['fit_wtr_cld'] and free_cld_calc:
                 par += 3
+
+            if self.param['double_cloud']:
+                if self.param['fit_amm_cld'] and not free_cld_calc:
+                    self.param['Pa_top'] = 10. ** cube[par]
+                    self.param['clda_depth'] = 10. ** cube[par + 1]
+                    self.param['CR_NH3'] = 10. ** cube[par + 2]
+                    par += 3
+                elif not self.param['fit_amm_cld'] and free_cld_calc:
+                    par += 3
 
         if self.param['gas_par_space'] == 'centered_log_ratio' or self.param['gas_par_space'] == 'clr':
             clr = {}
@@ -469,14 +505,6 @@ class MULTINEST:
                 par += 1
 
         self.param['P'] = 10. ** np.arange(0.0, np.log10(self.param['P0']) + 0.01, step=0.01)
-        if self.param['fit_amm_cld']:
-            self.param['vmr_NH3'] = cloud_pos(self.param, condensed_gas='NH3')
-            self.param = adjust_VMR(self.param, all_gases=self.param['adjust_VMR_gases'], condensed_gas='NH3')
-        self.param['vmr_H2O'] = cloud_pos(self.param, condensed_gas='H2O')
-        self.param = adjust_VMR(self.param, all_gases=self.param['adjust_VMR_gases'], condensed_gas='H2O')
-        if self.param['O3_earth']:
-            self.param['vmr_O3'] = ozone_earth_mask(self.param)
-        self.param = calc_mean_mol_mass(self.param)
 
         if self.param['fit_ag']:
             if self.param['surface_albedo_parameters'] == int(1):
@@ -495,8 +523,21 @@ class MULTINEST:
                 par += 5
 
         if self.param['fit_T']:
-            self.param['Tp'] = cube[par] + 0.0  # Planetary temperature
-            par += 1
+            if self.param['PT_profile_type'] == 'isothermal':
+                self.param['Tp'] = cube[par] + 0.0  # Planetary temperature
+                par += 1
+            elif self.param['PT_profile_type'] == 'parametric':
+                self.param['kappa_th'] = 10 ** cube[par] # thermal radiation opacity
+                self.param['gamma'] = 10 ** cube[par + 1]  # ratio optical to thermal opacity
+                self.param['beta'] = cube[par + 2]         # scale factor for equilibrium temperature
+                par += 3
+                if self.param['fit_Tint']:
+                    self.param['Tint'] = cube[par] # internal temperature
+                    par += 1
+        else:
+            tp_val = self.param.get('Tp')
+            if tp_val is not None:
+                self.param['T'] = tp_val
 
         if self.param['fit_cld_frac']:
             self.param['cld_frac'] = (10.0 ** cube[par])  # Cloud fraction
@@ -540,17 +581,27 @@ class MULTINEST:
         if self.param['fit_phi']:
             self.param['phi'] = cube[par + n_obs] * math.pi / 180.  # phi
 
+        if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
+            self.param['T'] = temp_profile(self.param)
+        if self.param['fit_amm_cld']:
+            self.param['vmr_NH3'] = cloud_pos(self.param, condensed_gas='NH3')
+            self.param = adjust_VMR(self.param, all_gases=self.param['adjust_VMR_gases'], condensed_gas='NH3')
+        self.param['vmr_H2O'] = cloud_pos(self.param, condensed_gas='H2O')
+        self.param = adjust_VMR(self.param, all_gases=self.param['adjust_VMR_gases'], condensed_gas='H2O')
+        if self.param['O3_earth']:
+            self.param['vmr_O3'] = ozone_earth_mask(self.param)
+        self.param = calc_mean_mol_mass(self.param)
+
         self.param['core_number'] = None
 
 
     def calc_spectra(self, mc_samples):
+        new_wl = reso_range(0.2, 20.0, res=500, bins=True)
         if self.param['mol_custom_wl']:
-            new_wl = np.loadtxt(self.param['pkg_dir'] + 'forward_mod/Data/wl_bins/bins_02_50_R500.dat')
             new_wl_central = np.mean(new_wl, axis=1)
             start = 0
             stop = len(new_wl_central) - 1
         else:
-            new_wl = np.loadtxt(self.param['pkg_dir'] + 'forward_mod/Data/wl_bins/bins_02_20_R500.dat')
             new_wl_central = np.mean(new_wl, axis=1)
             start = find_nearest(new_wl_central, min(self.param['spectrum']['wl']) - 0.05)
             stop = find_nearest(new_wl_central, max(self.param['spectrum']['wl']) + 0.05)
@@ -579,6 +630,10 @@ class MULTINEST:
         samples[:, 0] = self.param['spectrum']['wl']
         loglike_data = np.zeros((int(self.param['n_likelihood_data'] / MPIsize), wl_len))
 
+        if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
+            temp_samples = np.full((len(self.param['P_standard']) + 2, int(self.param['n_likelihood_data'] / MPIsize) + 1), np.nan)
+            temp_samples[2:, 0] = self.param['P_standard']
+
         if MPIrank == 0:
             print('\nCalculating the likelihood per data point')
             try:
@@ -593,7 +648,6 @@ class MULTINEST:
             self.cube_to_param(cube)
             mod = FORWARD_MODEL(self.param, retrieval=False, canc_metadata=True)
             alb_wl, alb = mod.run_forward()
-            alb_wl *= 10. ** (-3.)
 
             if self.param['fit_wtr_cld'] and self.param['rocky'] and self.param['cld_frac'] != 1.0:
                 alb = self.adjust_for_cld_frac(alb, cube)
@@ -608,10 +662,19 @@ class MULTINEST:
 
             # Calculate likelihood per single datapoint
             chi = (self.param['spectrum']['Fplanet'] - model) / self.param['spectrum']['error_p']
-            loglikelihood = ((-1.) * np.log(self.param['spectrum']['error_p'] * np.sqrt(2.0 * math.pi))) - (0.5 * chi * chi)
+            loglike_data[i, :] = ((-1.) * np.log(self.param['spectrum']['error_p'] * np.sqrt(2.0 * math.pi))) - (0.5 * chi * chi)
+
+            # Calculate temperature profile
+            if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
+                T = temp_profile(self.param)
+                temp_samples[2:len(T)+2, i+1] = T
+                temp_samples[0, i+1] = self.param['P'][-1]
+                temp_samples[1, i+1] = T[-1]
 
         np.savetxt(self.param['out_dir'] + 'loglikelihood_per_datapoint/loglike_' + str(MPIrank) + '.dat', loglike_data)
         np.savetxt(self.param['out_dir'] + 'loglikelihood_per_datapoint/samples_' + str(MPIrank) + '.dat', samples)
+        if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
+            np.savetxt(self.param['out_dir'] + 'loglikelihood_per_datapoint/temp_samples_' + str(MPIrank) + '.dat', temp_samples)
 
         if self.param['spectrum']['bins']:
             self.param['spectrum']['wl'] = temp[:, 2] + 0.0
@@ -623,8 +686,12 @@ class MULTINEST:
 
     def adjust_for_cld_frac(self, albedo, mlnst_cube):
         self.param['fit_wtr_cld'] = False
+        if self.param['double_cloud']:
+            self.param['fit_amm_cld'] = False
         self.cube_to_param(mlnst_cube, free_cld_calc=True)
         mod = FORWARD_MODEL(self.param, retrieval=False, canc_metadata=True)
         _, alb_no_cld = mod.run_forward()
         self.param['fit_wtr_cld'] = True
+        if self.param['double_cloud']:
+            self.param['fit_amm_cld'] = True
         return (self.param['cld_frac'] * albedo) + ((1.0 - self.param['cld_frac']) * alb_no_cld)

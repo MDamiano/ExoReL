@@ -1,6 +1,8 @@
-__version__ = '2.6.6'
+__version__ = '2.7.0'
+__fmod_version__ = '2.7'
 
 import os
+import shutil
 from typing import Iterable
 
 
@@ -16,13 +18,24 @@ def _is_nonempty_dir(path: str) -> bool:
 def _ensure_required_data():
     pkg_dir = os.path.dirname(os.path.abspath(__file__)) + os.sep
     required_dirs: Iterable[str] = ("forward_mod", "PHO_STELLAR_MODEL")
+    forward_mod_path = os.path.join(pkg_dir, "forward_mod")
+    version_marker_path = os.path.join(forward_mod_path, "__fmod_version__")
+    version_match = False
+    if os.path.isdir(forward_mod_path):
+        try:
+            with open(version_marker_path, "r", encoding="utf-8") as marker:
+                version_match = marker.read().strip() == __fmod_version__
+        except OSError:
+            version_match = False
+        if not version_match:
+            shutil.rmtree(forward_mod_path, ignore_errors=True)
 
     missing = [d for d in required_dirs if not _is_nonempty_dir(os.path.join(pkg_dir, d))]
     if not missing:
         return
 
     # Attempt to download the full folder from Google Drive via gdown
-    drive_forward_mod = "1NB_u8N2w2_kcuMSKTm6Wh-F9JvfxDt6I"
+    drive_forward_mod = "1QdFk_8BPjgGA8V8ZtjHUkFInt6qCa-mb"
     drive_PHO_STELLAR_MODEL = "1ypxxofMwHYeHEx1eFKVWWWVEaaoNmdho"
     try:
         import gdown  # type: ignore
@@ -63,8 +76,6 @@ def _ensure_required_data():
     except Exception as e:  # pragma: no cover - network dependent
         raise RuntimeError(
             "Failed to download required data folders from Google Drive. "
-            "Please check your internet connection or download them manually from: "
-            "https://drive.google.com/drive/folders/1CQutXQ8Ki59TB9Dndo61sktwS3uOM7qZ"
         ) from e
 
     # Validate again after download
@@ -77,15 +88,6 @@ def _ensure_required_data():
         )
     else:
         print("Success: ExoReL is ready!")
-
-
-def ensure_required_data() -> None:
-    """Public helper to ensure data folders exist (and download if needed).
-
-    This mirrors the internal behavior but provides a stable public API
-    callers can invoke explicitly.
-    """
-    _ensure_required_data()
 
 
 _ensure_required_data()

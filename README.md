@@ -3,14 +3,14 @@
 # ExoReL<sup>R</sup>
 
 Includes:
-* A routine to generate single reflected light spectra with and without noise and errorbars;
-* A routine to generate datasets of reflected light spectra using Sobol or random sequencing;
+* A routine to generate single reflection and emission spectrum with and without noise and errorbars;
+* A routine to generate datasets of reflection/emission spectra using Sobol or random sequencing;
 * A retrieval routine based on nested sampling (i.e. MultiNest).
 * The retrieval routine can use the radiative transfer calculations or interpolation of existing generated datasets as physics forward model.
 
 ## Authors
 * [Mario Damiano](https://mdamiano.github.io/) (Jet Propulsion Laboratory, California Institute of Technology)
-* [Renyu Hu](https://renyuplanet.github.io/) (Jet Propulsion Laboratory, California Institute of Technology)
+* [Renyu Hu](https://renyuplanet.github.io/) (Penn State University)
 
 ## Collaborators
 * Armen Tokadjian (Jet Propulsion Laboratory, California Institute of Technology)
@@ -50,7 +50,7 @@ You can run a retrieval by typing in a python instance or script.py file the fol
 
 `ret = ExoReL.RETRIEVAL()`
 
-`ret.run_retrieval('retrieval_example.dat')`
+`ret.run_retrieval('retrieval_example.json')`
 
 To run the retrieval mode you need to have the MultiNest libraries installed in your system as well as `pymultinest (v2.11)`.
 
