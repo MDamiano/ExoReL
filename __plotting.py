@@ -1173,7 +1173,7 @@ def plot_contribution(mnest, cube, solutions=None):
 
     # Toggle contribution mode and compute each molecule contribution on the same grid
     mnest.param['contribution'] = True
-    for mol in mnest.param['fit_molecules']:
+    for mol in mnest.param['fit_molecules'] + [mnest.param['gas_fill']]:
         print('Plotting the contribution of ' + str(mol) + ' : VMR -> ' + str(mnest.param['vmr_' + mol][-1]))
         mnest.param['mol_contr'] = mol
         mod = _instantiate_forward_model(mnest.param)
