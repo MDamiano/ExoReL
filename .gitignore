@@ -210,7 +210,6 @@ __marimo__/
 PHO_STELLAR_MODEL/
 plotting_routine/
 forward_mod/
-forward_models/
 debug/
 tests/
 *.pyc
