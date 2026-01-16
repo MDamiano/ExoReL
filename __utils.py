@@ -99,6 +99,8 @@ def default_parameters():
     param['truths'] = None  # whether to also plot the truths value in the posterior plot
     param['calc_likelihood_data'] = False
     param['n_likelihood_data'] = 10240
+    param['plot_elpd_stats'] = False  # whether to calculate and plot the expected log pointwise predictive density statistics
+    param['elpd_reference'] = None # path to the reference dataset for elpd calculation
 
     #### [Create_spectrum_PAR] ####
     param['add_noise'] = False

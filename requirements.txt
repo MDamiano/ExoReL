@@ -5,10 +5,10 @@ astropy
 scikit-bio
 matplotlib
 spectres
-torch
-torchvision
 gdown
 
 # Optional (not installed by default):
 # pymultinest==2.11  # requires MultiNest system libraries
 # mpi4py             # for parallel retrievals
+# torch              # for Deep Learning emulator forward modeling and retrievals
+# torchvision        # for Deep Learning emulator forward modeling and retrievals

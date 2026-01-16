@@ -352,24 +352,28 @@ class MULTINEST:
                     time.sleep(600)
                 rank_0 = np.loadtxt(self.param['out_dir'] + 'loglikelihood_per_datapoint/loglike_0.dat')
                 rank_0_spec = np.loadtxt(self.param['out_dir'] + 'loglikelihood_per_datapoint/samples_0.dat')
+                rank_0_par = np.loadtxt(self.param['out_dir'] + 'loglikelihood_per_datapoint/samples_par_0.dat')
                 if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
                     rank_0_temp = np.loadtxt(self.param['out_dir'] + 'loglikelihood_per_datapoint/temp_samples_0.dat')
                 for i in range(1, MPIsize):
                     rank_n = np.loadtxt(self.param['out_dir'] + 'loglikelihood_per_datapoint/loglike_' + str(i) + '.dat')
                     rank_n_spec = np.loadtxt(self.param['out_dir'] + 'loglikelihood_per_datapoint/samples_' + str(i) + '.dat')
+                    rank_n_par = np.loadtxt(self.param['out_dir'] + 'loglikelihood_per_datapoint/samples_par_' + str(i) + '.dat')
                     rank_0 = np.concatenate((rank_0, rank_n), axis=0)
                     rank_0_spec = np.concatenate((rank_0_spec, rank_n_spec[:, 1:]), axis=1)
+                    rank_0_par = np.concatenate((rank_0_par, rank_n_par), axis=0)
                     if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
                         rank_n_temp = np.loadtxt(self.param['out_dir'] + 'loglikelihood_per_datapoint/temp_samples_' + str(i) + '.dat')
                         rank_0_temp = np.concatenate((rank_0_temp, rank_n_temp[:, 1:]), axis=1)
                 np.savetxt(self.param['out_dir'] + 'loglike_per_datapoint.dat', rank_0)
                 np.savetxt(self.param['out_dir'] + 'random_samples.dat', rank_0_spec)
+                np.savetxt(self.param['out_dir'] + 'parameters_samples.dat', rank_0_par)
                 if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
                     np.savetxt(self.param['out_dir'] + 'random_temp_samples.dat', rank_0_temp)
                 os.system('rm -rf ' + self.param['out_dir'] + 'loglikelihood_per_datapoint/')
 
                 self.param['spec_sample'] = rank_0_spec + 0.0
-                del rank_0_spec, rank_0
+                del rank_0, rank_0_spec, rank_0_par, rank_0_temp
 
         if MPIimport and MPIrank == 0:  # Plot Nest_spectrum
             if self.param['filter_multi_solutions']:
@@ -381,14 +385,6 @@ class MULTINEST:
 
             if self.param['plot_models']:
                 if mds < 2:
-                    # s = multinest_results.get_best_fit()
-                    # cube = s['parameters']
-                    # cube = np.array([cube, np.ones(len(s['parameters']))]).T
-
-                    # cube = []
-                    # for p, m in zip(parameters, s['marginals']):
-                    #     cube.append(m['median'])
-                    # cube = np.array([cube, np.ones(len(parameters))]).T
 
                     cube = np.ones((len(s['modes'][0]['maximum a posterior']), mds))
                     cube[:, 0] = list(s['modes'][0]['maximum a posterior'])
@@ -401,6 +397,10 @@ class MULTINEST:
                         plot_PT_profile(self, mc_samp, cube[:, 0])
                     if self.param['plot_contribution'] and self.param['obs_numb'] is None:
                         plot_contribution(self, cube[:, 0], solutions=None)
+                    if os.path.exists(self.param['out_dir'] + 'loglike_per_datapoint.dat') and os.path.exists(self.param['out_dir'] + 'parameters_samples.dat') and self.param['plot_elpd_stats']:
+                        elpd_loo_stats(self, parameters, solutions=None)
+                    elif not os.path.exists(self.param['out_dir'] + 'loglike_per_datapoint.dat') or not os.path.exists(self.param['out_dir'] + 'parameters_samples.dat'):
+                        print('\nTo plot elpd statistics, the calculation of the likelihood per data point must be enabled (calc_likelihood_data = True).')
                 else:
                     cube = np.ones((len(s['modes'][0]['maximum a posterior']), mds))
                     for i in range(0, mds):
@@ -414,6 +414,11 @@ class MULTINEST:
                             plot_PT_profile(self, mc_samp, cube[:, i])
                         if self.param['plot_contribution'] and self.param['obs_numb'] is None:
                             plot_contribution(self, cube[:, i], solutions=i + 1)
+                        if os.path.exists(self.param['out_dir'] + 'loglike_per_datapoint.dat') and os.path.exists(self.param['out_dir'] + 'parameters_samples.dat') and self.param['plot_elpd_stats']:
+                            elpd_loo_stats(self, parameters, solutions=i + 1)
+                        elif not os.path.exists(self.param['out_dir'] + 'loglike_per_datapoint.dat') or not os.path.exists(self.param['out_dir'] + 'parameters_samples.dat'):
+                            if i == 0:
+                                print('\nTo plot elpd statistics, the calculation of the likelihood per data point must be enabled (calc_likelihood_data = True).') 
 
                 if self.param['spectrum']['bins']:
                     data_spec = np.array([self.param['spectrum']['wl_low'], self.param['spectrum']['wl_high'], self.param['spectrum']['wl'], self.param['spectrum']['Fplanet'], self.param['spectrum']['error_p']]).T
@@ -625,7 +630,8 @@ class MULTINEST:
             self.param['n_likelihood_data'] = mc_samples.shape[0] - MPIsize
         else:
             pass
-
+        
+        sample_par = np.zeros((1, self.param['model_n_par']))
         samples = np.zeros((len(self.param['spectrum']['wl']), int(self.param['n_likelihood_data'] / MPIsize) + 1))
         samples[:, 0] = self.param['spectrum']['wl']
         loglike_data = np.zeros((int(self.param['n_likelihood_data'] / MPIsize), wl_len))
@@ -646,6 +652,7 @@ class MULTINEST:
         for i in range(int(self.param['n_likelihood_data'] / MPIsize)):
             cube = mc_samples[idx[i], :]
             self.cube_to_param(cube)
+            sample_par = np.concatenate((sample_par, np.array(cube).reshape(1, self.param['model_n_par'])), axis=0)
             mod = FORWARD_MODEL(self.param, retrieval=False, canc_metadata=True)
             alb_wl, alb = mod.run_forward()
 
@@ -673,6 +680,7 @@ class MULTINEST:
 
         np.savetxt(self.param['out_dir'] + 'loglikelihood_per_datapoint/loglike_' + str(MPIrank) + '.dat', loglike_data)
         np.savetxt(self.param['out_dir'] + 'loglikelihood_per_datapoint/samples_' + str(MPIrank) + '.dat', samples)
+        np.savetxt(self.param['out_dir'] + 'loglikelihood_per_datapoint/samples_par_' + str(MPIrank) + '.dat', sample_par[1:, :])
         if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
             np.savetxt(self.param['out_dir'] + 'loglikelihood_per_datapoint/temp_samples_' + str(MPIrank) + '.dat', temp_samples)
 

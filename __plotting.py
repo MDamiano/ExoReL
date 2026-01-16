@@ -2,12 +2,14 @@ import os
 import sys
 import copy
 import math
+import json
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import ticker
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from astropy import constants as const
+import arviz as az
 
 from .__utils import find_nearest, model_finalizzation, temp_profile, reso_range
 from .__forward import FORWARD_MODEL, FORWARD_DATASET, FORWARD_AI
@@ -1739,3 +1741,156 @@ def plot_PT_profile(mnest, mc_samples, bestfit_cube, solutions=None):
         fig.savefig(mnest.param['out_dir'] + f'PT_profile (solution {solutions}).pdf')
 
     plt.close(fig)
+
+
+def elpd_loo_stats(mnest, parameters, solutions=None):
+    print('\n#### EXECUTING CROSS VALIDATION LEAVE-ONE-OUT STATISTICS ####')
+    try:
+        plt.style.use('seaborn-v0_8-whitegrid')
+    except Exception:
+        pass
+
+    loglike_samples = np.loadtxt(mnest.param['out_dir'] + 'loglike_per_datapoint.dat')
+    par_samples = np.loadtxt(mnest.param['out_dir'] + 'parameters_samples.dat')
+
+    n_samples, n_obs = loglike_samples.shape
+    n_chains = 1
+
+    if n_samples < 10000:
+        print('WARNING - The number of sampled pointwise log-likelihood is lower than 10000 (' + str(n_samples) + '). elpd_loo statistics might be unreliable.')
+
+    loglike_samples = loglike_samples.reshape(n_chains, n_samples, n_obs)
+
+    spectrum = mnest.param['spectrum']
+    sorted_idx = mnest.param['sorted_data_idx']
+    wl_sorted = spectrum['wl'][sorted_idx]
+    tdepth_sorted = spectrum['T_depth'][sorted_idx]
+    tdepth_err_sorted = spectrum['error_T'][sorted_idx]
+
+    observed_data = {"data": tdepth_sorted}
+
+    posterior_samples = {
+        parameters[i]: par_samples[:, i].reshape(n_chains, n_samples)
+        for i in range(mnest.param['model_n_par'])
+    }
+
+    idata = az.from_dict(
+        posterior=posterior_samples,
+        observed_data=observed_data,
+        log_likelihood={"data": loglike_samples}
+    )
+
+    loo_result = az.loo(idata, pointwise=True)
+    pareto_k = np.asarray(loo_result.pareto_k)
+
+    bad_mask = pareto_k > 0.7
+    good_mask = pareto_k < 0.7
+
+    fig, ax = plt.subplots(figsize=(8.2, 5.0), dpi=150)
+    ax.scatter(wl_sorted[good_mask], pareto_k[good_mask], s=36, color='#1f77b4',
+               edgecolor='white', linewidth=0.5, label='k < 0.7', zorder=3)
+    ax.scatter(wl_sorted[bad_mask], pareto_k[bad_mask], s=40, color='#d62728',
+               edgecolor='white', linewidth=0.5, label='k > 0.7', zorder=4)
+    ax.axhline(0.5, color='#2ca02c', linestyle='--', linewidth=1.0)
+    ax.axhline(0.7, color='#d62728', linestyle='--', linewidth=1.0, label='k = 0.7 threshold')
+    ax.set_xlabel('Wavelength [$\\mu$m]')
+    ax.set_ylabel('Pareto $k$')
+    ax.set_ylim(bottom=0.0)
+    ax.legend(frameon=False, fontsize=9)
+    fig.tight_layout()
+    if solutions is None:
+        fig.savefig(mnest.param['out_dir'] + 'pareto_k.pdf')
+    else:
+        fig.savefig(mnest.param['out_dir'] + 'pareto_k_(solution ' + str(solutions) + ').pdf')
+    plt.close(fig)
+
+    bad_count = int(np.sum(bad_mask))
+    if bad_count != 0:
+        print(str(bad_count) + ' pareto k values above 0.7 detected. Please review.')
+    else:
+        print('No pareto k values above 0.7 detected.')
+
+    total_elpd_loo = loo_result.elpd_loo
+    elpd_loo_se = loo_result.se
+    elpd_loo_pointwise = np.asarray(loo_result.loo_i)
+
+    fig, ax = plt.subplots(figsize=(7.2, 5.0), dpi=150)
+    ax.scatter(pareto_k[good_mask], elpd_loo_pointwise[good_mask], s=36, color='#1f77b4',
+               edgecolor='white', linewidth=0.5, label='k < 0.7')
+    ax.scatter(pareto_k[bad_mask], elpd_loo_pointwise[bad_mask], s=40, color='#d62728',
+               edgecolor='white', linewidth=0.5, label='k > 0.7')
+    ax.axvline(0.7, color='#d62728', linestyle='--', linewidth=1.0, label='k = 0.7 threshold')
+    ax.axvline(0.5, color='#2ca02c', linestyle='--', linewidth=1.0)
+    ax.set_xlabel('Pareto $k$')
+    ax.set_ylabel('Pointwise elpd$_{\\mathrm{loo}}$')
+    ax.legend(frameon=False, fontsize=9)
+    fig.tight_layout()
+    if solutions is None:
+        fig.savefig(mnest.param['out_dir'] + 'pareto_k_vs_elpd_loo.pdf')
+    else:
+        fig.savefig(mnest.param['out_dir'] + 'pareto_k_vs_elpd_loo_(solution ' + str(solutions) + ').pdf')
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(8.2, 5.0), dpi=150)
+    ax.errorbar(wl_sorted, tdepth_sorted * 1e6, yerr=tdepth_err_sorted * 1e6,
+                linestyle='none', linewidth=0.7, color='#444444', capsize=2.0, zorder=1)
+    sc = ax.scatter(wl_sorted, tdepth_sorted * 1e6, c=elpd_loo_pointwise, cmap='viridis',
+                    s=40, edgecolor='white', linewidth=0.5, zorder=2)
+    cbar = fig.colorbar(sc, ax=ax, pad=0.02)
+    cbar.set_label('elpd$_{i,Reference}$')
+    ax.set_xlabel('Wavelength [$\\mu$m]')
+    ax.set_ylabel('Transit depth (R$_p$/R$_{\\star}$)$^2$ [ppm]')
+    fig.tight_layout()
+    if solutions is None:
+        fig.savefig(mnest.param['out_dir'] + 'elpd_loo.pdf')
+    else:
+        fig.savefig(mnest.param['out_dir'] + 'elpd_loo_(solution ' + str(solutions) + ').pdf')
+    plt.close(fig)
+
+    elpd_stats = {
+        'pareto_k': pareto_k.tolist(),
+        'total_elpd_loo': float(total_elpd_loo),
+        'elpd_loo_se': float(elpd_loo_se),
+        'elpd_loo_pointwise': elpd_loo_pointwise.tolist()
+    }
+    with open(mnest.param['out_dir'] + 'elpd_loo_statistics.json', 'w') as stats_file:
+        json.dump(elpd_stats, stats_file)
+
+    if mnest.param['elpd_reference'] is not None:
+        with open(mnest.param['elpd_reference']) as ref_file:
+            ref_elpd = json.load(ref_file)
+        delta_elpd = np.array(ref_elpd['elpd_loo_pointwise']) - elpd_stats['elpd_loo_pointwise']
+        delta_elpd_err = np.sqrt(len(delta_elpd) * np.var(delta_elpd, ddof=0))
+
+        vmax = float(np.max(np.abs(delta_elpd))) if len(delta_elpd) else 1.0
+        fig, ax = plt.subplots(figsize=(8.2, 5.0), dpi=150)
+        ax.errorbar(wl_sorted, tdepth_sorted * 1e6, yerr=tdepth_err_sorted * 1e6,
+                    linestyle='none', linewidth=0.7, color='#444444', capsize=2.0, zorder=1)
+        sc = ax.scatter(wl_sorted, tdepth_sorted * 1e6, c=delta_elpd, cmap='coolwarm',
+                        vmin=-vmax, vmax=vmax, s=40, edgecolor='white', linewidth=0.5, zorder=2)
+        cbar = fig.colorbar(sc, ax=ax, pad=0.02)
+        cbar.set_label('elpd$_{i,Reference}$ - elpd$_{i}$')
+        ax.set_xlabel('Wavelength [$\\mu$m]')
+        ax.set_ylabel('Transit depth (R$_p$/R$_{\\star}$)$^2$ [ppm]')
+        fig.tight_layout()
+        if solutions is None:
+            fig.savefig(mnest.param['out_dir'] + 'elpd_loo_comparison.pdf')
+        else:
+            fig.savefig(mnest.param['out_dir'] + 'elpd_loo_comparison_(solution ' + str(solutions) + ').pdf')
+        plt.close(fig)
+
+        fig, ax = plt.subplots(figsize=(4.2, 4.2), dpi=150)
+        ax.bar(['Model parameter'], [np.sum(delta_elpd) / delta_elpd_err], color='#d62728')
+        ax.axhline(0.0, linestyle='--', color='#333333', linewidth=1.0)
+        ax.text(0.15, 1.4, 'Increased\\n predictive\\n performance', fontsize=8)
+        ax.text(0.15, -2.6, 'Decreased\\n predictive\\n performance', fontsize=8)
+        ax.set_ylim([-5, 5])
+        ax.set_xlim([-0.6, 0.6])
+        ax.set_ylabel('$\\Delta$elpd/SE')
+        ax.set_xlabel('Adding Model Component')
+        fig.tight_layout()
+        if solutions is None:
+            fig.savefig(mnest.param['out_dir'] + 'elpd_loo_SE_comparison.pdf')
+        else:
+            fig.savefig(mnest.param['out_dir'] + 'elpd_loo_SE_comparison_(solution ' + str(solutions) + ').pdf')
+        plt.close(fig)

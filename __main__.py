@@ -2,7 +2,7 @@ from .__basics import *
 from .__utils import *
 from .__forward import *
 from . import __version__
-from .network_routines.train import run_training
+from .forward_models.network_routines.train import run_training
 
 path = os.path.abspath(__file__)
 pkg_dir = os.path.dirname(path) + '/'
