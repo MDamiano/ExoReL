@@ -12,17 +12,18 @@ from astropy import constants as const
 import arviz as az
 
 from .__utils import find_nearest, model_finalizzation, temp_profile, reso_range
-from .__forward import FORWARD_MODEL, FORWARD_DATASET, FORWARD_AI
+# from .__forward import FORWARD_MODEL, FORWARD_DATASET, FORWARD_AI
+from .__forward import FORWARD_MODEL
 
 
 def _instantiate_forward_model(param):
     model_type = param.get('physics_model')
     if model_type == 'radiative_transfer':
         return FORWARD_MODEL(param, retrieval=False, canc_metadata=True)
-    if model_type == 'dataset':
-        return FORWARD_DATASET(param, dataset_dir=param['dataset_dir'])
-    if model_type == 'AI_model':
-        return FORWARD_AI(param)
+    # if model_type == 'dataset':
+    #     return FORWARD_DATASET(param, dataset_dir=param['dataset_dir'])
+    # if model_type == 'AI_model':
+    #     return FORWARD_AI(param)
     raise ValueError('Unknown physics_model: ' + str(model_type))
 
 
