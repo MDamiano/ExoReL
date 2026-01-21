@@ -2,25 +2,28 @@ import os
 import sys
 import copy
 import math
+import json
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import ticker
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from astropy import constants as const
+import arviz as az
 
 from .__utils import find_nearest, model_finalizzation, temp_profile, reso_range
-from .__forward import FORWARD_MODEL, FORWARD_DATASET, FORWARD_AI
+# from .__forward import FORWARD_MODEL, FORWARD_DATASET, FORWARD_AI
+from .__forward import FORWARD_MODEL
 
 
 def _instantiate_forward_model(param):
     model_type = param.get('physics_model')
     if model_type == 'radiative_transfer':
         return FORWARD_MODEL(param, retrieval=False, canc_metadata=True)
-    if model_type == 'dataset':
-        return FORWARD_DATASET(param, dataset_dir=param['dataset_dir'])
-    if model_type == 'AI_model':
-        return FORWARD_AI(param)
+    # if model_type == 'dataset':
+    #     return FORWARD_DATASET(param, dataset_dir=param['dataset_dir'])
+    # if model_type == 'AI_model':
+    #     return FORWARD_AI(param)
     raise ValueError('Unknown physics_model: ' + str(model_type))
 
 
@@ -393,88 +396,6 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
         plt.savefig(out_path, bbox_inches='tight')
         plt.close(fig)
 
-    def _corner(samples, weights, labels, bounds, truths=None, color='#404784', fig=None):
-        npar = samples.shape[1]
-        if fig is None:
-            fig, axes = plt.subplots(npar, npar, figsize=(2.2 * npar, 2.2 * npar), dpi=130)
-        else:
-            axes = fig.axes
-            axes = np.asarray(axes).reshape(npar, npar)
-
-        for j in range(npar):
-            for i in range(npar):
-                ax = axes[j, i]
-                if j < i:
-                    ax.axis('off')
-                    continue
-                if j == i:
-                    lo, hi = bounds[i]
-                    mask = (samples[:, i] >= lo) & (samples[:, i] <= hi)
-                    grid = np.linspace(lo, hi, 300)
-                    try:
-                        kde = gaussian_kde(samples[mask, i], weights=weights[mask])
-                        dens = kde(grid)
-                        ax.plot(grid, dens, color=color, lw=1.6)
-                        # quantiles
-                        qvals = _weighted_quantiles(samples[:, i], [0.16, 0.5, 0.84], w=weights)
-                        for q in qvals:
-                            ax.axvline(q, color=color, alpha=0.5, ls='--', lw=1.0)
-                        ax.set_yticks([])
-                    except Exception:
-                        ax.hist(samples[:, i], bins=40, weights=weights, color=color, alpha=0.6)
-                        ax.set_yticks([])
-                    ax.set_xlim(lo, hi)
-                    ax.set_xlabel(labels[i])
-                    if truths is not None and truths[i] is not None:
-                        try:
-                            for t in truths[i]:
-                                ax.axvline(t, color='red', lw=1.2)
-                        except Exception:
-                            ax.axvline(truths[i], color='red', lw=1.2)
-                else:
-                    # j > i : 2D
-                    xlo, xhi = bounds[i]
-                    ylo, yhi = bounds[j]
-                    xi = samples[:, i]
-                    yi = samples[:, j]
-                    m = (xi >= xlo) & (xi <= xhi) & (yi >= ylo) & (yi <= yhi)
-                    xi, yi, wi = xi[m], yi[m], weights[m]
-                    if len(xi) > 10:
-                        xx = np.linspace(xlo, xhi, 120)
-                        yy = np.linspace(ylo, yhi, 120)
-                        xv, yv = np.meshgrid(xx, yy)
-                        try:
-                            kde = gaussian_kde(np.vstack([xi, yi]), weights=wi)
-                            dens = kde(np.vstack([xv.ravel(), yv.ravel()])).reshape(xv.shape)
-                            dens = norm_kde(dens, sigma=1.0)
-                            cs = ax.contourf(xx, yy, dens, levels=10, cmap='Blues', alpha=0.85)
-                            ax.contour(xx, yy, dens, levels=5, colors=[color], linewidths=0.8)
-                        except Exception:
-                            ax.hist2d(xi, yi, bins=40, weights=wi, cmap='Blues')
-                    else:
-                        ax.scatter(xi, yi, s=2, color=color, alpha=0.6)
-                    ax.set_xlim(xlo, xhi)
-                    ax.set_ylim(ylo, yhi)
-                    if j == npar - 1:
-                        ax.set_xlabel(labels[i])
-                    if i == 0:
-                        ax.set_ylabel(labels[j])
-                    if truths is not None:
-                        if truths[i] is not None:
-                            try:
-                                for t in truths[i]:
-                                    ax.axvline(t, color='red', lw=0.8)
-                            except Exception:
-                                ax.axvline(truths[i], color='red', lw=0.8)
-                        if truths[j] is not None:
-                            try:
-                                for t in truths[j]:
-                                    ax.axhline(t, color='red', lw=0.8)
-                            except Exception:
-                                ax.axhline(truths[j], color='red', lw=0.8)
-        fig.tight_layout()
-        return fig
-
     def _corner_parameters():
             if os.path.isfile(prefix + 'params_original.json'):
                 pass
@@ -668,7 +589,7 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
                     np.savetxt(prefix + 'solution' + str(i) + '.txt', fl)
 
             return NEST_out
-    # Enhance corner: show median and 1-sigma above 1D plots
+
     def _annotate_1d_stats(ax, data, weights, fmt='{:g} [−{:g}, +{:g}]'):
         q16, q50, q84 = _weighted_quantiles(data, [0.16, 0.5, 0.84], w=weights)
         lo = q50 - q16
@@ -676,9 +597,30 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
         txt = fmt.format(np.round(q50, 4), np.round(lo, 4), np.round(hi, 4))
         ax.text(0.5, 1.02, txt, transform=ax.transAxes, ha='center', va='bottom', fontsize=8)
 
-    # 2D contours use sigma-credible regions at 0.5, 1.0, 2.0, 3.0σ
-    # Patch _corner to add stats text and keep speed
-    def _corner(samples, weights, labels, bounds, truths=None, color='#404784', fig=None):
+    def _corner(samples, weights, labels, bounds, truths=None, color='#404784', fig=None, multimodal=False):
+        # 2D contours use sigma-credible regions at 0.5, 1.0, 2.0, 3.0σ
+        # Patch _corner to add stats text and keep speed
+
+        # ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f']
+        if color == '#1f77b4':
+            colormap = 'Blues'
+        elif color == '#ff7f0e':
+            colormap = 'Oranges'
+        elif color == '#2ca02c':
+            colormap = 'Greens'
+        elif color == '#d62728':
+            colormap = 'Reds'
+        elif color == '#9467bd':
+            colormap = 'Purples'
+        elif color == '#8c564b':
+            colormap = 'YlOrBr'
+        elif color == '#e377c2':
+            colormap = 'RdPu'
+        elif color == '#7f7f7f':
+            colormap = 'Greys'
+        else:
+            colormap = 'Blues'
+
         npar = samples.shape[1]
         if fig is None:
             fig, axes = plt.subplots(npar, npar, figsize=(2.2 * npar, 2.2 * npar), dpi=130)
@@ -711,7 +653,8 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
                         ax.set_yticks([])
                     ax.set_xlim(lo, hi)
                     ax.set_xlabel(labels[i])
-                    _annotate_1d_stats(ax, samples[:, i], weights)
+                    if not multimodal:
+                        _annotate_1d_stats(ax, samples[:, i], weights)
                     if truths is not None and truths[i] is not None:
                         try:
                             for t in truths[i]:
@@ -743,11 +686,12 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
                             cdf /= (cdf[-1] + 1e-300)
                             thr = np.interp(probs, cdf, flat[order])
                             # Draw a light filled background for readability
-                            ax.contourf(xx, yy, dens, levels=12, cmap='Blues', alpha=0.75)
+                            if not multimodal:
+                                ax.contourf(xx, yy, dens, levels=12, cmap=colormap, alpha=0.75)
                             # Overlay sigma-level contour lines (HPD)
                             ax.contour(xx, yy, dens, levels=np.sort(thr), colors=[color], linewidths=1.0)
                         except Exception:
-                            ax.hist2d(xi, yi, bins=40, weights=wi, cmap='Blues')
+                            ax.hist2d(xi, yi, bins=40, weights=wi, cmap=colormap)
                     else:
                         ax.scatter(xi, yi, s=2, color=color, alpha=0.6)
                     ax.set_xlim(xlo, xhi)
@@ -772,7 +716,7 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
         fig.tight_layout()
         return fig
     
-    def _plot_1d_posteriors(sample_sets, weight_sets, labels, bounds, outfile, colors, truths=None, legend_labels=None):
+    def _plot_1d_posteriors(sample_sets, weight_sets, labels, bounds, outfile, colors, truths=None, legend_labels=None, max_idx=0):
         """Create grid of 1D posterior PDFs (matching the corner diagonal panels)."""
         from matplotlib.lines import Line2D
         sample_sets = sample_sets if isinstance(sample_sets, (list, tuple)) else [sample_sets]
@@ -834,12 +778,14 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
             ax.set_yticks([])
             if ymax > 0.0:
                 ax.set_ylim(0.0, ymax * 1.05)
-            _annotate_1d_stats(ax, sample_sets[0][:, idx], weight_sets[0])
+            _annotate_1d_stats(ax, sample_sets[max_idx][:, idx], weight_sets[max_idx])
 
         if legend_labels and len(sample_sets) > 1:
+            right = max(0.5, 1 - (0.85 / fig.get_figwidth()))
+            fig.tight_layout(rect=[0, 0, right, 1])
             handles = [Line2D([0], [0], color=colors[i % len(colors)], lw=1.6, label=legend_labels[i])
                        for i in range(len(sample_sets))]
-            fig.legend(handles=handles, loc='upper right', fontsize=8, frameon=False)
+            fig.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, 1.05), ncol=2, fontsize=8, frameon=True)
 
         fig.tight_layout()
         fig.savefig(outfile, bbox_inches='tight')
@@ -1047,7 +993,10 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
                 corner_truths = truths
             fig = _corner(corner_samples, result[str(k)]['weights'], corner_labels, corner_bounds,
                           truths=corner_truths, color=colors[k])
-            outp = prefix + ('Nest_posteriors (solution' + str(midx + 1) + ').pdf' if len(to_plot) > 1 else 'Nest_posteriors.pdf')
+            if mnest.param.get('corner_selected_params') is None:
+                outp = prefix + ('Nest_posteriors (solution' + str(midx + 1) + ').pdf' if len(to_plot) > 1 else 'Nest_posteriors.pdf')
+            else:
+                outp = prefix + ('Nest_selected_posteriors (solution' + str(midx + 1) + ').pdf' if len(to_plot) > 1 else 'Nest_selected_posteriors.pdf')
             plt.savefig(outp, bbox_inches='tight')
             plt.close(fig)
 
@@ -1081,7 +1030,7 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
         for k in range(to_add):
             overlay_samples = result[str(k)]['samples'][:, selected_idx] if selected_idx else result[str(k)]['samples']
             fig = _corner(overlay_samples, result[str(k)]['weights'], overlay_labels,
-                          overlay_bounds, truths=overlay_truths, color=colors[k], fig=fig)
+                          overlay_bounds, truths=overlay_truths, color=colors[k], fig=fig, multimodal=True)
 
         if mnest.param.get('corner_selected_params') is None:
             plt.savefig(prefix + 'Nest_posteriors.pdf', bbox_inches='tight')
@@ -1105,11 +1054,11 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
         if mnest.param.get('corner_selected_params') is None:
             _plot_1d_posteriors(sample_sets, weight_sets, plot_labels, plot_bounds,
                                 prefix + 'Nest_1D_posteriors.pdf', colors=sel_colors,
-                                truths=plot_truths, legend_labels=legend_labels)
+                                truths=plot_truths, legend_labels=legend_labels, max_idx=max_idx)
         else:
             _plot_1d_posteriors(sample_sets, weight_sets, plot_labels, plot_bounds,
                                 prefix + 'Nest_selected_1D_posteriors.pdf', colors=sel_colors,
-                                truths=plot_truths, legend_labels=legend_labels)
+                                truths=plot_truths, legend_labels=legend_labels, max_idx=max_idx)
 
         # Restore modified files (if any)
         for modes in kept_modes:
@@ -1173,7 +1122,11 @@ def plot_contribution(mnest, cube, solutions=None):
 
     # Toggle contribution mode and compute each molecule contribution on the same grid
     mnest.param['contribution'] = True
-    for mol in mnest.param['fit_molecules'] + [mnest.param['gas_fill']]:
+    if mnest.param['gas_par_space'] == 'partial_pressure':
+        gas_to_loop = mnest.param['fit_molecules']
+    else:
+        gas_to_loop = mnest.param['fit_molecules'] + [mnest.param['gas_fill']]
+    for mol in gas_to_loop:
         print('Plotting the contribution of ' + str(mol) + ' : VMR -> ' + str(mnest.param['vmr_' + mol][-1]))
         mnest.param['mol_contr'] = mol
         mod = _instantiate_forward_model(mnest.param)
@@ -1739,3 +1692,155 @@ def plot_PT_profile(mnest, mc_samples, bestfit_cube, solutions=None):
         fig.savefig(mnest.param['out_dir'] + f'PT_profile (solution {solutions}).pdf')
 
     plt.close(fig)
+
+
+def elpd_loo_stats(mnest, parameters, solutions=None):
+    print('\n#### EXECUTING CROSS VALIDATION LEAVE-ONE-OUT STATISTICS ####')
+    try:
+        plt.style.use('seaborn-v0_8-whitegrid')
+    except Exception:
+        pass
+
+    loglike_samples = np.loadtxt(mnest.param['out_dir'] + 'loglike_per_datapoint.dat')
+    par_samples = np.loadtxt(mnest.param['out_dir'] + 'parameters_samples.dat')
+
+    n_samples, n_obs = loglike_samples.shape
+    n_chains = 1
+
+    if n_samples < 10000:
+        print('WARNING - The number of sampled pointwise log-likelihood is lower than 10000 (' + str(n_samples) + '). elpd_loo statistics might be unreliable.')
+
+    loglike_samples = loglike_samples.reshape(n_chains, n_samples, n_obs)
+
+    spectrum = mnest.param['spectrum']
+    wl_sorted = spectrum['wl']
+    tdepth_sorted = spectrum['Fplanet']
+    tdepth_err_sorted = spectrum['error_p']
+
+    observed_data = {"data": tdepth_sorted}
+
+    posterior_samples = {
+        parameters[i]: par_samples[:, i].reshape(n_chains, n_samples)
+        for i in range(mnest.param['model_n_par'])
+    }
+
+    idata = az.from_dict(
+        posterior=posterior_samples,
+        observed_data=observed_data,
+        log_likelihood={"data": loglike_samples}
+    )
+
+    loo_result = az.loo(idata, pointwise=True)
+    pareto_k = np.asarray(loo_result.pareto_k)
+
+    bad_mask = pareto_k > 0.7
+    good_mask = pareto_k < 0.7
+
+    fig, ax = plt.subplots(figsize=(8.2, 5.0), dpi=150)
+    ax.scatter(wl_sorted[good_mask], pareto_k[good_mask], s=36, color='#1f77b4',
+               edgecolor='white', linewidth=0.5, label='k < 0.7', zorder=3)
+    ax.scatter(wl_sorted[bad_mask], pareto_k[bad_mask], s=40, color='#d62728',
+               edgecolor='white', linewidth=0.5, label='k > 0.7', zorder=4)
+    ax.axhline(0.5, color='#2ca02c', linestyle='--', linewidth=1.0)
+    ax.axhline(0.7, color='#d62728', linestyle='--', linewidth=1.0, label='k = 0.7 threshold')
+    ax.set_xlabel('Wavelength [$\\mu$m]')
+    ax.set_ylabel('Pareto $k$')
+    ax.set_ylim(bottom=0.0)
+    ax.legend(frameon=False, fontsize=9)
+    fig.tight_layout()
+    if solutions is None:
+        fig.savefig(mnest.param['out_dir'] + 'pareto_k.pdf')
+    else:
+        fig.savefig(mnest.param['out_dir'] + 'pareto_k_(solution ' + str(solutions) + ').pdf')
+    plt.close(fig)
+
+    bad_count = int(np.sum(bad_mask))
+    if bad_count != 0:
+        print(str(bad_count) + ' pareto k values above 0.7 detected. Please review.')
+    else:
+        print('No pareto k values above 0.7 detected.')
+
+    total_elpd_loo = loo_result.elpd_loo
+    elpd_loo_se = loo_result.se
+    elpd_loo_pointwise = np.asarray(loo_result.loo_i)
+
+    fig, ax = plt.subplots(figsize=(7.2, 5.0), dpi=150)
+    ax.scatter(pareto_k[good_mask], elpd_loo_pointwise[good_mask], s=36, color='#1f77b4',
+               edgecolor='white', linewidth=0.5, label='k < 0.7')
+    ax.scatter(pareto_k[bad_mask], elpd_loo_pointwise[bad_mask], s=40, color='#d62728',
+               edgecolor='white', linewidth=0.5, label='k > 0.7')
+    ax.axvline(0.7, color='#d62728', linestyle='--', linewidth=1.0, label='k = 0.7 threshold')
+    ax.axvline(0.5, color='#2ca02c', linestyle='--', linewidth=1.0)
+    ax.set_xlabel('Pareto $k$')
+    ax.set_ylabel('Pointwise elpd$_{\\mathrm{loo}}$')
+    ax.legend(frameon=False, fontsize=9)
+    fig.tight_layout()
+    if solutions is None:
+        fig.savefig(mnest.param['out_dir'] + 'pareto_k_vs_elpd_loo.pdf')
+    else:
+        fig.savefig(mnest.param['out_dir'] + 'pareto_k_vs_elpd_loo_(solution ' + str(solutions) + ').pdf')
+    plt.close(fig)
+
+    fig, ax = plt.subplots(figsize=(8.2, 5.0), dpi=150)
+    ax.errorbar(wl_sorted, tdepth_sorted, yerr=tdepth_err_sorted,
+                linestyle='none', linewidth=0.7, color='#444444', capsize=2.0, zorder=1)
+    sc = ax.scatter(wl_sorted, tdepth_sorted, c=elpd_loo_pointwise, cmap='viridis',
+                    s=40, edgecolor='white', linewidth=0.5, zorder=2)
+    cbar = fig.colorbar(sc, ax=ax, pad=0.02)
+    cbar.set_label('elpd$_{i,Reference}$')
+    ax.set_xlabel('Wavelength [$\\mu$m]')
+    ax.set_ylabel('Contrast Ratio (F$_p$/F$_{\star}$)')
+    fig.tight_layout()
+    if solutions is None:
+        fig.savefig(mnest.param['out_dir'] + 'elpd_loo.pdf')
+    else:
+        fig.savefig(mnest.param['out_dir'] + 'elpd_loo_(solution ' + str(solutions) + ').pdf')
+    plt.close(fig)
+
+    elpd_stats = {
+        'pareto_k': pareto_k.tolist(),
+        'total_elpd_loo': float(total_elpd_loo),
+        'elpd_loo_se': float(elpd_loo_se),
+        'elpd_loo_pointwise': elpd_loo_pointwise.tolist()
+    }
+    with open(mnest.param['out_dir'] + 'elpd_loo_statistics.json', 'w') as stats_file:
+        json.dump(elpd_stats, stats_file)
+
+    if mnest.param['elpd_reference'] is not None:
+        with open(mnest.param['elpd_reference']) as ref_file:
+            ref_elpd = json.load(ref_file)
+        delta_elpd = np.array(ref_elpd['elpd_loo_pointwise']) - elpd_stats['elpd_loo_pointwise']
+        delta_elpd_err = np.sqrt(len(delta_elpd) * np.var(delta_elpd, ddof=0))
+
+        vmax = float(np.max(np.abs(delta_elpd))) if len(delta_elpd) else 1.0
+        fig, ax = plt.subplots(figsize=(8.2, 5.0), dpi=150)
+        ax.errorbar(wl_sorted, tdepth_sorted, yerr=tdepth_err_sorted,
+                    linestyle='none', linewidth=0.7, color='#444444', capsize=2.0, zorder=1)
+        sc = ax.scatter(wl_sorted, tdepth_sorted, c=delta_elpd, cmap='coolwarm',
+                        vmin=-vmax, vmax=vmax, s=40, edgecolor='white', linewidth=0.5, zorder=2)
+        cbar = fig.colorbar(sc, ax=ax, pad=0.02)
+        cbar.set_label('elpd$_{i,Reference}$ - elpd$_{i}$')
+        ax.set_xlabel('Wavelength [$\\mu$m]')
+        ax.set_ylabel('Contrast Ratio (F$_p$/F$_{\star}$)')
+        fig.tight_layout()
+        if solutions is None:
+            fig.savefig(mnest.param['out_dir'] + 'elpd_loo_comparison.pdf')
+        else:
+            fig.savefig(mnest.param['out_dir'] + 'elpd_loo_comparison_(solution ' + str(solutions) + ').pdf')
+        plt.close(fig)
+
+        fig, ax = plt.subplots(figsize=(4.2, 4.2), dpi=150)
+        ax.bar(['Model parameter'], [np.sum(delta_elpd) / delta_elpd_err], color='#d62728')
+        ax.axhline(0.0, linestyle='--', color='#333333', linewidth=1.0)
+        ax.text(0.15, 1.4, 'Increased\npredictive\nperformance', fontsize=8)
+        ax.text(0.15, -2.6, 'Decreased\npredictive\nperformance', fontsize=8)
+        ax.set_ylim([-5, 5])
+        ax.set_xlim([-0.6, 0.6])
+        ax.set_ylabel('$\\Delta$elpd/SE')
+        ax.set_xlabel('Adding Model Component')
+        fig.tight_layout()
+        if solutions is None:
+            fig.savefig(mnest.param['out_dir'] + 'elpd_loo_SE_comparison.pdf')
+        else:
+            fig.savefig(mnest.param['out_dir'] + 'elpd_loo_SE_comparison_(solution ' + str(solutions) + ').pdf')
+        plt.close(fig)

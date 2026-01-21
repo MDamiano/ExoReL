@@ -2,7 +2,7 @@ from .__basics import *
 from .__utils import *
 from .__forward import *
 from . import __version__
-from .network_routines.train import run_training
+# from .forward_models.network_routines.train import run_training
 
 path = os.path.abspath(__file__)
 pkg_dir = os.path.dirname(path) + '/'
@@ -214,38 +214,38 @@ class CREATE_DATASET:
         ob.run()
 
 
-class TRAIN_NN:
-    def __init__(self):
-        param = default_parameters()
-        param['pkg_dir'] = pkg_dir
-        self.param = copy.deepcopy(param)
+# class TRAIN_NN:
+#     def __init__(self):
+#         param = default_parameters()
+#         param['pkg_dir'] = pkg_dir
+#         self.param = copy.deepcopy(param)
 
-    def run_training(self, parfile):
-        config = read_parfile(self.param, parfile, json_format=True)
-        network_cfg = config.get('network_training')
-        if not isinstance(network_cfg, dict):
-            raise RuntimeError('Parfile must contain a "network_training" section with configuration values.')
+#     def run_training(self, parfile):
+#         config = read_parfile(self.param, parfile, json_format=True)
+#         network_cfg = config.get('network_training')
+#         if not isinstance(network_cfg, dict):
+#             raise RuntimeError('Parfile must contain a "network_training" section with configuration values.')
 
-        dataset_dir = network_cfg.get('dataset_dir') or config.get('dataset_dir')
-        output_dir = (
-            network_cfg.get('output_directory')
-            or network_cfg.get('output_dir')
-            or config.get('output_directory')
-            or config.get('out_dir')
-        )
-        if dataset_dir is None or output_dir is None:
-            raise RuntimeError('Training configuration must provide dataset_dir and output_directory.')
+#         dataset_dir = network_cfg.get('dataset_dir') or config.get('dataset_dir')
+#         output_dir = (
+#             network_cfg.get('output_directory')
+#             or network_cfg.get('output_dir')
+#             or config.get('output_directory')
+#             or config.get('out_dir')
+#         )
+#         if dataset_dir is None or output_dir is None:
+#             raise RuntimeError('Training configuration must provide dataset_dir and output_directory.')
 
-        cleaned_network_cfg = {
-            key: value
-            for key, value in network_cfg.items()
-            if key not in {'dataset_dir', 'output_dir', 'output_directory'}
-        }
+#         cleaned_network_cfg = {
+#             key: value
+#             for key, value in network_cfg.items()
+#             if key not in {'dataset_dir', 'output_dir', 'output_directory'}
+#         }
 
-        payload = {
-            'dataset_dir': dataset_dir,
-            'output_directory': output_dir,
-            "out_net_name": config.get("out_net_name"),
-            'network_training': cleaned_network_cfg,
-        }
-        run_training(payload)
+#         payload = {
+#             'dataset_dir': dataset_dir,
+#             'output_directory': output_dir,
+#             "out_net_name": config.get("out_net_name"),
+#             'network_training': cleaned_network_cfg,
+#         }
+#         run_training(payload)
