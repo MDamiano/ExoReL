@@ -1,3 +1,9 @@
+## [2.71] - 01/21/26
+- Skip likelihood-per-datapoint recalculation when `loglike_per_datapoint.dat` already exists, with a clear console notice.
+- Corner/posterior plotting updates: per-solution colormap matching, multimodal overlays omit 1D stats and fills, and selected-parameter outputs use `Nest_selected_*` filenames consistently.
+- Contribution plots bugfix when using `partial_pressure` parameter space and no gas fill.
+- Introduction of the ELPD-LOO statistics. To use this, set `calc_likelihood_data=True` in the input retrieval parameter.
+
 ## [2.7.0] - 11/19/25
 - Water-cloud scattering now honors `wtr_cld_type` (`liquid`, `ice`, `mixed`), loading the matching Mie tables and, when mixed is selected with parametric P–T fits, switching between ice and liquid optical properties layer-by-layer using the retrieved temperature column.
 - Ammonia-cloud enabled with updated Mie tables.

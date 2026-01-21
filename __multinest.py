@@ -341,7 +341,7 @@ class MULTINEST:
         multinest_results = pymultinest.Analyzer(n_params=self.param['model_n_par'], outputfiles_basename=prefix, verbose=False)
         mc_samp = multinest_results.get_equal_weighted_posterior()[:, :-1]
 
-        if self.param['calc_likelihood_data']:
+        if self.param['calc_likelihood_data'] and not os.path.exists(self.param['out_dir'] + 'loglike_per_datapoint.dat'):
             self.calc_spectra(mc_samp)
 
             if MPIimport:
@@ -370,10 +370,13 @@ class MULTINEST:
                 np.savetxt(self.param['out_dir'] + 'parameters_samples.dat', rank_0_par)
                 if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
                     np.savetxt(self.param['out_dir'] + 'random_temp_samples.dat', rank_0_temp)
+                    del rank_0_temp
                 os.system('rm -rf ' + self.param['out_dir'] + 'loglikelihood_per_datapoint/')
 
                 self.param['spec_sample'] = rank_0_spec + 0.0
-                del rank_0, rank_0_spec, rank_0_par, rank_0_temp
+                del rank_0, rank_0_spec, rank_0_par
+        else:
+            print('\n"loglike_per_datapoint.dat" file already exists. Skipping likelihood per data point calculation.')
 
         if MPIimport and MPIrank == 0:  # Plot Nest_spectrum
             if self.param['filter_multi_solutions']:
