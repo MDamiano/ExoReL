@@ -6,6 +6,7 @@ scikit-bio
 matplotlib
 spectres
 gdown
+arviz
 
 # Optional (not installed by default):
 # pymultinest==2.11  # requires MultiNest system libraries
