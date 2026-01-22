@@ -6,7 +6,6 @@ Includes:
 * A routine to generate single reflection and emission spectrum with and without noise and errorbars;
 * A routine to generate datasets of reflection/emission spectra using Sobol or random sequencing;
 * A retrieval routine based on nested sampling (i.e. MultiNest).
-* The retrieval routine can use the radiative transfer calculations or interpolation of existing generated datasets as physics forward model.
 
 ## Authors
 * [Mario Damiano](https://mdamiano.github.io/) (Jet Propulsion Laboratory, California Institute of Technology)
@@ -59,13 +58,14 @@ To run the retrieval mode you need to have the MultiNest libraries installed in 
 `mpirun -np 10 python exorel_retrieval.py`
 
 ## Plotting the results
-The plotting of the retrieval results is automatic and will produce the following graphs:
+The plotting of the retrieval results can be automatic when chosen in the input parameter file and will produce the following graphs:
 * Chemistry of the atmosphere versus the atmospheric pressure;
 * Mean molecular mass versus the atmospheric pressure;
 * The input spectral data and the best fit model calculated by the Bayesian sampling;
 * The spectral contribution plot;
 * The traces of the fitted free parameters;
-* The posterior distribution corner plot.
+* The posterior distribution corner plot;
+* Expected log-pointwise probability (elpd) statistics abd leave-one-out (loo) analysis.
 
 In case `pymultinest` finds multiple solutions, ExoReL will automatically plot the aforementioned graphs for each of the solutions.
 
@@ -85,7 +85,7 @@ The research was carried out at the Jet Propulsion Laboratory, California Instit
 The High Performance Computing resources used in this investigation were provided by funding from the JPL Information and Technology Solutions Directorate.
 
 ## License
-Copyright © 2025, by the California Institute of Technology. ALL RIGHTS RESERVED. United States Government Sponsorship acknowledged. Any commercial use must be negotiated with the Office of Technology Transfer at the California Institute of Technology.
+Copyright © 2026, by the California Institute of Technology. ALL RIGHTS RESERVED. United States Government Sponsorship acknowledged. Any commercial use must be negotiated with the Office of Technology Transfer at the California Institute of Technology.
 
 This software may be subject to U.S. export control laws. By accepting this software, the user agrees to comply with all applicable U.S. export laws and regulations. User has the responsibility to obtain export licenses, or other export authority as may be required before exporting such information to foreign countries or providing access to foreign persons.
 
