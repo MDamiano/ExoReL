@@ -1,4 +1,4 @@
-## [2.71] - 01/21/26
+## [2.7.1] - 01/21/26
 - Skip likelihood-per-datapoint recalculation when `loglike_per_datapoint.dat` already exists, with a clear console notice.
 - Corner/posterior plotting updates: per-solution colormap matching, multimodal overlays omit 1D stats and fills, and selected-parameter outputs use `Nest_selected_*` filenames consistently.
 - Contribution plots bugfix when using `partial_pressure` parameter space and no gas fill.
