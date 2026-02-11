@@ -37,7 +37,7 @@ class CREATE_SPECTRUM:
         self.canc_metadata = canc_metadata
         self.param['verbose'] = verbose
 
-    def run_forward(self, parfile):
+    def run_forward(self, parfile, return_data=False):
         if parfile.endswith('.dat'):
             raise RuntimeError("Please, convert your '.dat' partfile to a JSON file. '.dat' files have been phased out.")
         if self.param['verbose']:
@@ -142,7 +142,7 @@ class CREATE_SPECTRUM:
                     print('VMR N2 \t\t = \t' + str(self.param['vmr_N2']))
                 elif mol == 'N2' and self.param['gas_fill'] == 'N2':
                     pass
-                elif mol == 'O2' or mol == 'O3' or mol == 'CO':
+                elif mol == 'O2' or mol == 'O3' or mol == 'CO' or mol == 'H2':
                     print('VMR ' + mol + ' \t\t = \t' + str(self.param['vmr_' + mol]))
                 else:
                     print('VMR ' + mol + ' \t = \t' + str(self.param['vmr_' + mol]))
@@ -185,15 +185,13 @@ class CREATE_SPECTRUM:
             data = np.concatenate((np.array([self.param['spectrum']['wl_high']]).T, data), axis=1)
             data = np.concatenate((np.array([self.param['spectrum']['wl_low']]).T, data), axis=1)
 
-        try:
-            if not os.path.exists(self.param['out_dir']):
-                os.mkdir(self.param['out_dir'])
-            np.savetxt(self.param['out_dir'] + str(self.param['file_output_name']) + '.dat', data)
-        except IOError or KeyError:
-            if not os.path.exists(self.param['pkg_dir'] + 'Output/'):
-                os.mkdir(self.param['pkg_dir'] + 'Output/')
-
-            np.savetxt(self.param['pkg_dir'] + 'Output/spectrum.dat', data)
+        if return_data:
+            return data
+        else:
+            if self.param['file_output_name'] is not None:
+                np.savetxt(self.param['out_dir'] + str(self.param['file_output_name']) + '.dat', data)
+            else:
+                np.savetxt(self.param['out_dir'] + 'spectrum.dat', data)
 
 
 class CREATE_DATASET:

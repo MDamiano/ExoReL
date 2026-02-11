@@ -1,4 +1,5 @@
 from .__basics import *
+import shutil
 
 
 def default_parameters():
@@ -76,6 +77,8 @@ def default_parameters():
     param['hazes'] = False  # whether to include and fit hazes during the retrieval
 
     #### [MISC_PAR] ####
+    param['output_directory'] = None  # name of the output directory where all the results will be stored. If None, the output will be stored in the working directory
+    param['file_output_name'] = None  # name of the output file for the spectrum and posterior distribution. If None, the output file will be named "spectrum.dat"
     param['obs_numb'] = None  # Number of observations to be taken into account during retrieval
     param['optimizer'] = None  # Which optimizer to use during retrieval. 'multinest' is the only possibility currently
     param['gen_dataset_mode'] = False
@@ -106,6 +109,7 @@ def default_parameters():
     param['add_noise'] = False
     param['gaussian_noise'] = False
     param['noise_model'] = 0
+    param['save_snr_array'] = False
     param['snr'] = 20
     param['return_bins'] = False
 
@@ -222,14 +226,18 @@ def read_parfile(param, parfile=None, json_format=False):
                                     param[paramline[0]] = str(paramline[1])
 
     param['wkg_dir'] = cwd + '/'
-    param['out_dir'] = param['wkg_dir'] + param['output_directory']
-    try:
-        os.mkdir(param['out_dir'])
-    except OSError:
-        pass
-    del param['output_directory']
+    if param['output_directory'] is not None:
+        param['out_dir'] = param['wkg_dir'] + param['output_directory']
+        if not os.path.isdir(param['out_dir']):
+            os.mkdir(param['out_dir'])
+        del param['output_directory']
+    else:
+        param['out_dir'] = param['wkg_dir']
 
-    os.system('cp ' + cwd + '/' + parfile + ' ' + param['out_dir'])
+    src = os.path.join(cwd, parfile)
+    dst = os.path.join(param['out_dir'], os.path.basename(parfile))
+    if not os.path.exists(dst):
+        shutil.copy2(src, dst)
 
     return param
 
@@ -1574,7 +1582,8 @@ def add_noise(param, data, noise_model=0):
             if param['spectrum']['bins']:
                 SNR = np.concatenate((np.array([param['spectrum']['wl_high']]).T, SNR), axis=1)
                 SNR = np.concatenate((np.array([param['spectrum']['wl_low']]).T, SNR), axis=1)
-            np.savetxt(param['out_dir'] + 'snr_vs_wavelength.dat', SNR)
+            if param['save_snr_array']:
+                np.savetxt(param['out_dir'] + 'snr_vs_wavelength.dat', SNR)
         except KeyError:
             pass
 
