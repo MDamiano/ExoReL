@@ -863,7 +863,7 @@ def ranges(param):
             for surf_alb in [1, 2, 3]:
                 param['ag' + str(surf_alb) + '_range'] = [0.0, 1.0]  # Surface albedo
             param['ag_x1_range'] = [0.4, 0.8]  # wavelength cut-off albedo
-            param['ag_x2_range'] = [0.01, 0.5]
+            param['ag_x2_range'] = [0.01, 1.0]
 
     if param['fit_T']:
         if param['PT_profile_type'] == 'isothermal':
