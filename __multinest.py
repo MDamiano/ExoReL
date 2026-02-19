@@ -397,7 +397,7 @@ class MULTINEST:
 
                     self.param['spec_sample'] = rank_0_spec + 0.0
                     del rank_0, rank_0_spec, rank_0_par
-        else:
+        elif self.param['calc_likelihood_data'] and check_files:
             if MPIrank == 0:
                 print('\n"loglike_per_datapoint" files already exist. Skipping likelihood per data point calculation.')
 
@@ -415,11 +415,10 @@ class MULTINEST:
                         plot_PT_profile(self, cube[:, i], solutions=i)
                     if self.param['plot_contribution'] and self.param['obs_numb'] is None:
                         plot_contribution(self, cube[:, i], solutions=i)
-                    if os.path.exists(self.param['out_dir'] + 'loglike_per_datapoint.dat') and os.path.exists(self.param['out_dir'] + 'parameters_samples.dat') and self.param['plot_elpd_stats']:
+                    if os.path.exists(self.param['out_dir'] + f'loglike_per_datapoint_sol{i}.dat') and os.path.exists(self.param['out_dir'] + f'parameters_samples_sol{i}.dat') and self.param['plot_elpd_stats']:
                         elpd_loo_stats(self, parameters, solutions=i)
-                    elif not os.path.exists(self.param['out_dir'] + 'loglike_per_datapoint.dat') or not os.path.exists(self.param['out_dir'] + 'parameters_samples.dat'):
-                        if i == 0:
-                            print('\nTo plot elpd statistics, the calculation of the likelihood per data point must be enabled (calc_likelihood_data = True).') 
+                    else:
+                        print('\nTo plot elpd statistics, the calculation of the likelihood per data point must be enabled (calc_likelihood_data = True).') 
 
                 if self.param['spectrum']['bins']:
                     data_spec = np.array([self.param['spectrum']['wl_low'], self.param['spectrum']['wl_high'], self.param['spectrum']['wl'], self.param['spectrum']['Fplanet'], self.param['spectrum']['error_p']]).T

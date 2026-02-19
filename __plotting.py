@@ -3,6 +3,8 @@ import sys
 import copy
 import math
 import json
+import contextlib
+import functools
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import ticker
@@ -34,6 +36,20 @@ def _apply_plot_style():
     except Exception:
         pass
     plt.rcParams.update(_COMMON_PLOT_RCPARAMS)
+
+
+def _isolate_posterior_plot_style(plot_fn):
+    """Run posterior plotting with local style, isolated from global rcParams."""
+    @functools.wraps(plot_fn)
+    def wrapped(*args, **kwargs):
+        style_name = 'seaborn-v0_8-white'
+        if style_name in plt.style.available:
+            style_ctx = plt.style.context(style_name)
+        else:
+            style_ctx = contextlib.nullcontext()
+        with plt.rc_context(rc=plt.rcParamsDefault), style_ctx:
+            return plot_fn(*args, **kwargs)
+    return wrapped
 
 
 def _instantiate_forward_model(param):
@@ -255,6 +271,7 @@ def plot_nest_spec(mnest, cube, solutions=0):
     plt.close()
 
 
+@_isolate_posterior_plot_style
 def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
     """Plot posterior traces and corner plots (single or multi-mode).
 
@@ -275,12 +292,6 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
     from skbio.stats.composition import clr_inv
     from astropy import constants as const
 
-    # Light visual polish
-    try:
-        plt.style.use('seaborn-v0_8-white')
-    except Exception:
-        pass
-    
     def _posteriors_gas_to_vmr(loc_prefix, modes=None):
         """Convert gas posteriors to VMR space and append mean molecular mass.
         Mirrors previous logic to preserve outputs.
