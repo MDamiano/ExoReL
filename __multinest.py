@@ -403,24 +403,6 @@ class MULTINEST:
 
         if MPIimport and MPIrank == 0:
             if self.param['plot_models']:
-                # if mds < 2:
-
-                #     cube = np.ones((len(s['modes'][0]['maximum a posterior']), mds))
-                #     cube[:, 0] = list(s['modes'][0]['maximum a posterior'])
-
-                #     plot_nest_spec(self, cube[:, 0], solutions=None)
-                #     plot_chemistry(self.param, solutions=None)
-                #     if self.param['surface_albedo_parameters'] > 1:
-                #         plot_surface_albedo(self.param, solutions=None)
-                #     if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
-                #         plot_PT_profile(self, cube[:, 0])
-                #     if self.param['plot_contribution'] and self.param['obs_numb'] is None:
-                #         plot_contribution(self, cube[:, 0], solutions=None)
-                #     if os.path.exists(self.param['out_dir'] + 'loglike_per_datapoint.dat') and os.path.exists(self.param['out_dir'] + 'parameters_samples.dat') and self.param['plot_elpd_stats']:
-                #         elpd_loo_stats(self, parameters, solutions=None)
-                #     elif not os.path.exists(self.param['out_dir'] + 'loglike_per_datapoint.dat') or not os.path.exists(self.param['out_dir'] + 'parameters_samples.dat'):
-                #         print('\nTo plot elpd statistics, the calculation of the likelihood per data point must be enabled (calc_likelihood_data = True).')
-                # else:
                 cube = np.ones((len(s['modes'][0]['maximum a posterior']), mds))
                 for i in range(0, mds):
                     cube[:, i] = list(s['modes'][i]['maximum a posterior'])
