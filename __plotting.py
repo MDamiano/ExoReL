@@ -1786,7 +1786,7 @@ def elpd_loo_stats(mnest, parameters, solutions=0):
         'elpd_loo_se': float(elpd_loo_se),
         'elpd_loo_pointwise': elpd_loo_pointwise.tolist()
     }
-    with open(mnest.param['out_dir'] + 'elpd_loo_statistics.json', 'w') as stats_file:
+    with open(mnest.param['out_dir'] + f'elpd_loo_statistics_sol{solutions}.json', 'w') as stats_file:
         json.dump(elpd_stats, stats_file)
 
     if mnest.param['elpd_reference'] is not None:
