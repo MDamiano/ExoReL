@@ -1,3 +1,12 @@
+## [2.7.2] - 02/19/26
+- Added multimodal-aware likelihood-per-datapoint post-processing: per-solution temporary directories are now merged into `*_sol{n}.dat` artifacts (`loglike_per_datapoint`, `random_samples`, `parameters_samples`, and `random_temp_samples`), with MPI-balanced sample allocation and weighted posterior resampling for LOO diagnostics.
+- Added explicit MultiNest solution export/parsing helpers so multimodal chains can be reused consistently across post-processing steps.
+- Updated plotting/output naming to solution-indexed files across retrieval diagnostics (`Nest_spectrum_sol{n}.pdf`, `Best_fit_sol{n}.dat`, `Nest_chemistry_sol{n}.pdf`, `Nest_MMM_sol{n}.pdf`, `Nest_surface_albedo_sol{n}.pdf`, `PT_profile_sol{n}.pdf`, contribution products, and ELPD figures), and unified plotting style setup through a shared helper.
+- Improved contribution and validation diagnostics: molecular contribution plots now include cloud-referenced filled regions, and ELPD-LOO outputs now track/highlight high-Pareto-k points (`bad_point_indices`) and exclude flagged points when computing comparison `\Delta`elpd/SE.
+- Enhanced `CREATE_SPECTRUM.run_forward` with `return_data=True` support to return spectra directly without writing files, and improved output handling to honor `file_output_name` with a `spectrum.dat` fallback.
+- Extended default/runtime parameter handling with `output_directory`, `file_output_name`, and `save_snr_array`; parfile copying now uses safe file operations and avoids duplicate copies.
+- Updated retrieval range defaults for 5-parameter surface albedo runs by changing `ag_x2_range` from `[0.01, 0.5]` to `[0.1, 1.0]`.
+
 ## [2.7.1] - 01/21/26
 - Skip likelihood-per-datapoint recalculation when `loglike_per_datapoint.dat` already exists, with a clear console notice.
 - Corner/posterior plotting updates: per-solution colormap matching, multimodal overlays omit 1D stats and fills, and selected-parameter outputs use `Nest_selected_*` filenames consistently.

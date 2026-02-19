@@ -15,6 +15,26 @@ from .__utils import find_nearest, model_finalizzation, temp_profile, reso_range
 # from .__forward import FORWARD_MODEL, FORWARD_DATASET, FORWARD_AI
 from .__forward import FORWARD_MODEL
 
+_COMMON_PLOT_STYLE = 'seaborn-v0_8-white'
+_COMMON_PLOT_RCPARAMS = {
+    'font.size': 15,
+    'axes.labelsize': 15,
+    'axes.titlesize': 15,
+    'legend.fontsize': 15,
+    'xtick.labelsize': 15,
+    'ytick.labelsize': 15,
+    'axes.labelweight': 'bold',
+    'axes.titleweight': 'bold',
+}
+
+
+def _apply_plot_style():
+    try:
+        plt.style.use(_COMMON_PLOT_STYLE)
+    except Exception:
+        pass
+    plt.rcParams.update(_COMMON_PLOT_RCPARAMS)
+
 
 def _instantiate_forward_model(param):
     model_type = param.get('physics_model')
@@ -27,7 +47,7 @@ def _instantiate_forward_model(param):
     raise ValueError('Unknown physics_model: ' + str(model_type))
 
 
-def plot_nest_spec(mnest, cube, solutions=None):
+def plot_nest_spec(mnest, cube, solutions=0):
     """Plot retrieved spectrum and confidence bands.
 
     Parameters
@@ -39,25 +59,26 @@ def plot_nest_spec(mnest, cube, solutions=None):
     - Preserves all original behaviors/outputs while improving visuals and avoiding
       repeated I/O where possible.
     """
-    # Lightweight aesthetic improvements
-    try:
-        plt.style.use('seaborn-v0_8-white')
-    except Exception:
-        pass
+    _apply_plot_style()
 
     mnest.cube_to_param(cube)
 
     # Helper: load target R=500 wavelength bins once
-    def _load_target_bins(param):
-        if param['mol_custom_wl']:
-            new_wl = np.loadtxt(param['pkg_dir'] + 'forward_mod/Data/wl_bins/bins_02_50_R500.dat')
+    def _load_target_bins():
+        new_wl = reso_range(0.2, 20.0, res=500, bins=True)
+        if mnest.param['mol_custom_wl']:
+            new_wl_central = np.mean(new_wl, axis=1)
+            start = 0
+            stop = len(new_wl_central) - 1
         else:
-            new_wl = reso_range(mnest.param['min_wl'] - 0.05, mnest.param['max_wl'] + 0.05, 500, bins=True)
-        return new_wl, np.mean(new_wl, axis=1)
+            new_wl_central = np.mean(new_wl, axis=1)
+            start = find_nearest(new_wl_central, min(mnest.param['spectrum']['wl']) - 0.05)
+            stop = find_nearest(new_wl_central, max(mnest.param['spectrum']['wl']) + 0.05)
+        return new_wl[start:stop], new_wl_central[start:stop]
 
     # Single observation
     if mnest.param['obs_numb'] is None:
-        fig = plt.figure(figsize=(8.5, 5.0), dpi=130)
+        fig = plt.figure(figsize=(10.0, 4.0), dpi=150)
 
         # Data
         plt.errorbar(
@@ -69,26 +90,21 @@ def plot_nest_spec(mnest, cube, solutions=None):
             capsize=2.0, label='Data')
 
         # Model on native grid
-        mod = _instantiate_forward_model(mnest.param)
-        alb_wl, alb = mod.run_forward()
-        if mnest.param['fit_wtr_cld'] and mnest.param['cld_frac'] != 1.0:
-            alb = mnest.adjust_for_cld_frac(alb, cube)
-            mnest.cube_to_param(cube)
-        _, model_native = model_finalizzation(mnest.param, alb_wl, alb,
-                                              planet_albedo=mnest.param['albedo_calc'],
-                                              fp_over_fs=mnest.param['fp_over_fs'])
-        plt.plot(
-            mnest.param['spectrum']['wl'], model_native, linestyle='', color='#1f77b4',
-            marker='D', markerfacecolor='#4c78a8', markeredgecolor='#1f77b4', markersize=4.0,
-            label='MAP (data native)')
+        # mod = _instantiate_forward_model(mnest.param)
+        # alb_wl, alb = mod.run_forward()
+        # if mnest.param['fit_wtr_cld'] and mnest.param['cld_frac'] != 1.0:
+        #     alb = mnest.adjust_for_cld_frac(alb, cube)
+        #     mnest.cube_to_param(cube)
+        # _, model_native = model_finalizzation(mnest.param, alb_wl, alb,
+        #                                       planet_albedo=mnest.param['albedo_calc'],
+        #                                       fp_over_fs=mnest.param['fp_over_fs'])
+        # plt.plot(
+        #     mnest.param['spectrum']['wl'], model_native, linestyle='', color='#1f77b4',
+        #     marker='D', markerfacecolor='#4c78a8', markeredgecolor='#1f77b4', markersize=4.0,
+        #     label='MAP (data native)')
 
         # Prepare R=500 grid once
-        new_wl, new_wl_central = _load_target_bins(mnest.param)
-        if mnest.param['mol_custom_wl']:
-            start, stop = 0, len(new_wl_central) - 1
-        else:
-            start = find_nearest(new_wl_central, min(mnest.param['spectrum']['wl']) - 0.05)
-            stop = find_nearest(new_wl_central, max(mnest.param['spectrum']['wl']) + 0.05)
+        new_wl, new_wl_central = _load_target_bins()
 
         # Temporarily swap spectrum grid to R=500 for plotting a smooth curve
         if mnest.param['spectrum']['bins']:
@@ -97,9 +113,9 @@ def plot_nest_spec(mnest, cube, solutions=None):
                                   mnest.param['spectrum']['wl']]).T
         else:
             temp_spec = mnest.param['spectrum']['wl'] + 0.0
-        mnest.param['spectrum']['wl'] = new_wl_central[start:stop]
-        mnest.param['spectrum']['wl_low'] = new_wl[start:stop, 0]
-        mnest.param['spectrum']['wl_high'] = new_wl[start:stop, 1]
+        mnest.param['spectrum']['wl'] = new_wl_central + 0.0
+        mnest.param['spectrum']['wl_low'] = new_wl[:, 0]
+        mnest.param['spectrum']['wl_high'] = new_wl[:, 1]
 
         temp_min, temp_max = mnest.param['min_wl'] + 0.0, mnest.param['max_wl'] + 0.0
         mnest.param['min_wl'] = float(np.min(mnest.param['spectrum']['wl']))
@@ -116,12 +132,12 @@ def plot_nest_spec(mnest, cube, solutions=None):
         wl, model = model_finalizzation(mnest.param, alb_wl, alb,
                                         planet_albedo=mnest.param['albedo_calc'],
                                         fp_over_fs=mnest.param['fp_over_fs'])
-        plt.plot(wl, model, color='#404784', linewidth=1.2, label='MAP (R=500)')
+        plt.plot(wl, model, color='#404784', linewidth=1.2, label='Best fit')
 
         best_fit = np.array([wl, model]).T
 
         # Optional credible intervals from random samples
-        rs_path = mnest.param['out_dir'] + 'random_samples.dat'
+        rs_path = mnest.param['out_dir'] + f'random_samples_sol{solutions}.dat'
         if os.path.isfile(rs_path):
             fl = np.loadtxt(rs_path)
             q50 = np.nanquantile(fl[:, 1:], 0.5, axis=1)
@@ -129,13 +145,16 @@ def plot_nest_spec(mnest, cube, solutions=None):
             q2, q98 = np.nanquantile(fl[:, 1:], [0.0225, 0.9775], axis=1)
             q003, q997 = np.nanquantile(fl[:, 1:], [0.00135, 0.99865], axis=1)
 
-            bands = [q16, q84, q2, q98, q003, q997]
-            for qq in bands:
-                qq[qq < 0.0] = 0.0
-
             p16, p84 = best_fit[:, 1] + (q16 - q50), best_fit[:, 1] + (q84 - q50)
             p2, p98 = best_fit[:, 1] + (q2 - q50), best_fit[:, 1] + (q98 - q50)
             p003, p997 = best_fit[:, 1] + (q003 - q50), best_fit[:, 1] + (q997 - q50)
+
+            np.maximum(p16, 0.0, out=p16)
+            np.maximum(p84, 0.0, out=p84)
+            np.maximum(p2, 0.0, out=p2)
+            np.maximum(p98, 0.0, out=p98)
+            np.maximum(p003, 0.0, out=p003)
+            np.maximum(p997, 0.0, out=p997)
 
             best_fit = np.column_stack([best_fit, p84, p16, p98, p2, p997, p003])
 
@@ -144,10 +163,7 @@ def plot_nest_spec(mnest, cube, solutions=None):
             plt.fill_between(fl[:, 0], p16, p84, ec=(0, 0, 0, 0), fc=(64/255, 71/255, 132/255, 0.50), label='1σ')
 
         # Save best fit table
-        if solutions is None:
-            np.savetxt(mnest.param['out_dir'] + 'Best_fit.dat', best_fit)
-        else:
-            np.savetxt(mnest.param['out_dir'] + f'Best_fit_{solutions}.dat', best_fit)
+        np.savetxt(mnest.param['out_dir'] + f'Best_fit_sol{solutions}.dat', best_fit)
 
         # Restore spectrum grid and bounds
         if mnest.param['spectrum']['bins']:
@@ -162,7 +178,7 @@ def plot_nest_spec(mnest, cube, solutions=None):
         mnest.param['stop_c_wl_grid'] = find_nearest(mnest.param['wl_C_grid'], mnest.param['max_wl']) + 35
 
         # Labels and cosmetics
-        plt.legend(frameon=False)
+        plt.legend(frameon=False, ncol=1, loc='center left', bbox_to_anchor=(1.02, 0.5))
         plt.xlabel('Wavelength [$\mu$m]')
         if mnest.param['albedo_calc']:
             plt.ylabel('Albedo')
@@ -175,7 +191,7 @@ def plot_nest_spec(mnest, cube, solutions=None):
     # Multiple observations stacked
     else:
         fig, axs = plt.subplots(2, sharex=True, gridspec_kw={'hspace': 0}, figsize=(8.5, 6.0), dpi=130)
-        new_wl, new_wl_central = _load_target_bins(mnest.param)
+        new_wl, new_wl_central = _load_target_bins()
         mnest.param['spectrum']['bins'] = False
 
         for obs in range(0, mnest.param['obs_numb']):
@@ -235,10 +251,7 @@ def plot_nest_spec(mnest, cube, solutions=None):
         fig.text(0.5, 0.04, 'Wavelength [$\\mu$m]', ha='center')
 
     # Save figure
-    if solutions is None:
-        plt.savefig(mnest.param['out_dir'] + 'Nest_spectrum.pdf')
-    else:
-        plt.savefig(mnest.param['out_dir'] + f'Nest_spectrum (solution {solutions}).pdf')
+    plt.savefig(mnest.param['out_dir'] + f'Nest_spectrum_sol{solutions}.pdf')
     plt.close()
 
 
@@ -508,7 +521,6 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
     
     def _store_nest_solutions():
             NEST_out = {'solutions': {}}
-            data = np.loadtxt(prefix + '.txt')
             NEST_stats = multinest_results.get_stats()
             NEST_out['NEST_stats'] = NEST_stats
             NEST_out['global_logE'] = (NEST_out['NEST_stats']['global evidence'], NEST_out['NEST_stats']['global evidence error'])
@@ -520,42 +532,33 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
             chains_weights = []
             chains_loglike = []
 
-            if mnest.param['multimodal'] and mds_orig > 1:
-                # separate modes. get individual samples for each mode
-                # get parameter values and sample probability (=weight) for each mode
-                with open(prefix + 'post_separate.dat') as f:
-                    lines = f.readlines()
-                    for idx, line in enumerate(lines):
-                        if idx > 2:  # skip the first two lines
-                            if lines[idx - 1] == '\n' and lines[idx - 2] == '\n':
-                                modes.append(chains)
-                                modes_weights.append(chains_weights)
-                                modes_loglike.append(chains_loglike)
-                                chains = []
-                                chains_weights = []
-                                chains_loglike = []
-                        chain = [float(x) for x in line.split()[2:]]
-                        if len(chain) > 0:
-                            chains.append(chain)
-                            chains_weights.append(float(line.split()[0]))
-                            chains_loglike.append(float(line.split()[1]))
-                    modes.append(chains)
-                    modes_weights.append(chains_weights)
-                    modes_loglike.append(chains_loglike)
-                modes_array = []
-                for mode in modes:
-                    mode_array = np.zeros((len(mode), len(mode[0])))
-                    for idx, line in enumerate(mode):
-                        mode_array[idx, :] = line
-                    modes_array.append(mode_array)
-            else:
-                # not running in multimode. Get chains directly from file prefix.txt
-                modes_array = [data[:, 2:]]
-                chains_weights = [data[:, 0]]
-                modes_weights.append(chains_weights[0])
-                chains_loglike = [data[:, 1]]
-                modes_loglike.append(chains_loglike[0])
-                modes = [0]
+            # separate modes. get individual samples for each mode
+            # get parameter values and sample probability (=weight) for each mode
+            with open(prefix + 'post_separate.dat') as f:
+                lines = f.readlines()
+                for idx, line in enumerate(lines):
+                    if idx > 2:  # skip the first two lines
+                        if lines[idx - 1] == '\n' and lines[idx - 2] == '\n':
+                            modes.append(chains)
+                            modes_weights.append(chains_weights)
+                            modes_loglike.append(chains_loglike)
+                            chains = []
+                            chains_weights = []
+                            chains_loglike = []
+                    chain = [float(x) for x in line.split()[2:]]
+                    if len(chain) > 0:
+                        chains.append(chain)
+                        chains_weights.append(float(line.split()[0]))
+                        chains_loglike.append(float(line.split()[1]))
+                modes.append(chains)
+                modes_weights.append(chains_weights)
+                modes_loglike.append(chains_loglike)
+            modes_array = []
+            for mode in modes:
+                mode_array = np.zeros((len(mode), len(mode[0])))
+                for idx, line in enumerate(mode):
+                    mode_array[idx, :] = line
+                modes_array.append(mode_array)
 
             for nmode in range(len(modes)):
                 mydict = {'type': 'nest',
@@ -579,14 +582,6 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
                     }
 
                 NEST_out['solutions']['solution{}'.format(nmode)] = mydict
-
-            if len(NEST_out['solutions']) > 1:
-                for i in range(len(NEST_out['solutions'])):
-                    fl = np.ones((len(NEST_out['solutions']['solution' + str(i)]['weights']), len(NEST_out['solutions']['solution' + str(i)]['tracedata'][0, :]) + 2))
-                    fl[:, 0] = NEST_out['solutions']['solution' + str(i)]['weights']
-                    fl[:, 1] = NEST_out['solutions']['solution' + str(i)]['loglike']
-                    fl[:, 2:] = NEST_out['solutions']['solution' + str(i)]['tracedata']
-                    np.savetxt(prefix + 'solution' + str(i) + '.txt', fl)
 
             return NEST_out
 
@@ -971,7 +966,7 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
         # Individual traces and corner plots
         for k, midx in enumerate(to_plot):
             _traceplot(result[str(k)]['samples'], result[str(k)]['weights'], labels,
-                       prefix + ('Nest_trace (solution' + str(midx + 1) + ').png' if len(to_plot) > 1 else 'Nest_trace.png'))
+                       prefix + ('Nest_trace_sol' + str(midx) + '.png' if len(to_plot) > 1 else 'Nest_trace.png'))
 
             bnd = _bounds(result[str(k)]['samples'], result[str(k)]['weights'])
             truths = None
@@ -994,9 +989,9 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
             fig = _corner(corner_samples, result[str(k)]['weights'], corner_labels, corner_bounds,
                           truths=corner_truths, color=colors[k])
             if mnest.param.get('corner_selected_params') is None:
-                outp = prefix + ('Nest_posteriors (solution' + str(midx + 1) + ').pdf' if len(to_plot) > 1 else 'Nest_posteriors.pdf')
+                outp = prefix + ('Nest_posteriors_sol' + str(midx) + '.pdf' if len(to_plot) > 1 else 'Nest_posteriors.pdf')
             else:
-                outp = prefix + ('Nest_selected_posteriors (solution' + str(midx + 1) + ').pdf' if len(to_plot) > 1 else 'Nest_selected_posteriors.pdf')
+                outp = prefix + ('Nest_selected_posteriors_sol' + str(midx) + '.pdf' if len(to_plot) > 1 else 'Nest_selected_posteriors.pdf')
             plt.savefig(outp, bbox_inches='tight')
             plt.close(fig)
 
@@ -1070,7 +1065,7 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
             os.system('mv ' + prefix + 'params_original.json ' + prefix + 'params.json')
 
 
-def plot_contribution(mnest, cube, solutions=None):
+def plot_contribution(mnest, cube, solutions=0):
     """Plot per-molecule spectral contributions at R≈500 and export components.
 
     Parameters
@@ -1083,17 +1078,10 @@ def plot_contribution(mnest, cube, solutions=None):
     - Plots all contributions, the cloud-only curve, and overlays the data with errors.
     - Restores all temporarily modified `mnest.param` fields.
     """
-    # Mild aesthetic improvements
-    try:
-        plt.style.use('seaborn-v0_8-white')
-    except Exception:
-        pass
+    _apply_plot_style()
 
     # Output directory handling (single check, avoid repeated os.path operations)
-    if solutions is None:
-        subdir = 'contr_comp/'
-    else:
-        subdir = f'contr_comp_{solutions}/'
+    subdir = f'contr_comp_sol{solutions}/'
     out_dir = mnest.param['out_dir'] + subdir
     if not os.path.isdir(out_dir):
         os.mkdir(out_dir)
@@ -1118,7 +1106,7 @@ def plot_contribution(mnest, cube, solutions=None):
     mnest.param['stop_c_wl_grid'] = find_nearest(mnest.param['wl_C_grid'], float(np.max(mnest.param['spectrum']['wl']))) + 35
 
     # Prepare figure
-    fig = plt.figure(figsize=(10.5, 5.5), dpi=140)
+    fig = plt.figure(figsize=(10.0, 4.0), dpi=150)
 
     # Toggle contribution mode and compute each molecule contribution on the same grid
     mnest.param['contribution'] = True
@@ -1126,6 +1114,7 @@ def plot_contribution(mnest, cube, solutions=None):
         gas_to_loop = mnest.param['fit_molecules']
     else:
         gas_to_loop = mnest.param['fit_molecules'] + [mnest.param['gas_fill']]
+    contribution_curves = []
     for mol in gas_to_loop:
         print('Plotting the contribution of ' + str(mol) + ' : VMR -> ' + str(mnest.param['vmr_' + mol][-1]))
         mnest.param['mol_contr'] = mol
@@ -1139,7 +1128,8 @@ def plot_contribution(mnest, cube, solutions=None):
         wl, model = model_finalizzation(mnest.param, alb_wl, alb,
                                         planet_albedo=mnest.param['albedo_calc'],
                                         fp_over_fs=mnest.param['fp_over_fs'])
-        plt.plot(wl, model, linewidth=1.4, label=mol)
+        line, = plt.plot(wl, model, linewidth=1.4, label=mol)
+        contribution_curves.append((wl, model, line.get_color()))
         np.savetxt(out_dir + mol + '.dat', np.column_stack([wl, model]))
 
     # Cloud-only curve (keep contribution=True, remove molecule tag)
@@ -1149,11 +1139,17 @@ def plot_contribution(mnest, cube, solutions=None):
     if mnest.param['fit_wtr_cld'] and mnest.param['cld_frac'] != 1.0:
         alb = mnest.adjust_for_cld_frac(alb, cube)
         mnest.cube_to_param(cube)
-    wl, model = model_finalizzation(mnest.param, alb_wl, alb,
-                                    planet_albedo=mnest.param['albedo_calc'],
-                                    fp_over_fs=mnest.param['fp_over_fs'])
-    plt.plot(wl, model, color='black', linestyle='--', linewidth=1.7, alpha=0.9, label='H$_2$O cloud')
-    np.savetxt(out_dir + 'H2O_cld.dat', np.column_stack([wl, model]))
+    cloud_wl, cloud_model = model_finalizzation(mnest.param, alb_wl, alb,
+                                                planet_albedo=mnest.param['albedo_calc'],
+                                                fp_over_fs=mnest.param['fp_over_fs'])
+    plt.plot(cloud_wl, cloud_model, color='black', linestyle='--', linewidth=1.7, alpha=0.9, label='H$_2$O cloud')
+    np.savetxt(out_dir + 'H2O_cld.dat', np.column_stack([cloud_wl, cloud_model]))
+    for mol_wl, mol_model, mol_color in contribution_curves:
+        if mol_wl.shape == cloud_wl.shape and np.array_equal(mol_wl, cloud_wl):
+            cloud_curve = cloud_model
+        else:
+            cloud_curve = np.interp(mol_wl, cloud_wl, cloud_model)
+        plt.fill_between(mol_wl, cloud_curve, mol_model, color=mol_color, alpha=0.4, linewidth=0.0)
     mnest.param['contribution'] = False
 
     # Restore observed wavelength grid extents for data overlay
@@ -1182,15 +1178,9 @@ def plot_contribution(mnest, cube, solutions=None):
 
     # Save figure
     if mnest.param['mol_custom_wl']:
-        if solutions is None:
-            plt.savefig(mnest.param['out_dir'] + 'Nest_mol_contribution_extended.pdf')
-        else:
-            plt.savefig(mnest.param['out_dir'] + f'Nest_mol_contribution_extended (solution {solutions}).pdf')
+        plt.savefig(mnest.param['out_dir'] + f'Nest_mol_contribution_extended_sol{solutions}.pdf')
     else:
-        if solutions is None:
-            plt.savefig(mnest.param['out_dir'] + 'Nest_mol_contribution.pdf')
-        else:
-            plt.savefig(mnest.param['out_dir'] + f'Nest_mol_contribution (solution {solutions}).pdf')
+        plt.savefig(mnest.param['out_dir'] + f'Nest_mol_contribution_sol{solutions}.pdf')
     plt.close()
 
     # Restore original bins flag
@@ -1198,7 +1188,7 @@ def plot_contribution(mnest, cube, solutions=None):
         mnest.param['spectrum']['bins'] = True
 
 
-def plot_chemistry(param, solutions=None):
+def plot_chemistry(param, solutions=0):
     """Plot retrieved atmospheric chemistry profiles and mean molecular mass.
 
     Parameters
@@ -1218,6 +1208,8 @@ def plot_chemistry(param, solutions=None):
     - Prints top and bottom VMRs (or stratospheric value for O3 when `O3_earth`).
     - Uses Pa on the primary y-axis and adds a secondary axis in bar.
     """
+    _apply_plot_style()
+
     # Chemistry plot
     fig, ax = plt.subplots()
 
@@ -1307,11 +1299,9 @@ def plot_chemistry(param, solutions=None):
         ax.set_ylim([1.0, bottom])
     plt.gca().invert_yaxis()
 
-    ax.legend(loc='upper left', framealpha=0)
-    if solutions is None:
-        plt.savefig(param['out_dir'] + 'Nest_chemistry.pdf')
-    else:
-        plt.savefig(param['out_dir'] + 'Nest_chemistry (solution ' + str(solutions) + ').pdf')
+    ax.legend(loc='upper left', frameon=False)
+    fig.tight_layout()
+    fig.savefig(param['out_dir'] + f'Nest_chemistry_sol{solutions}.pdf', bbox_inches='tight')
     plt.close()
 
     # Mean Molecular Mass plot
@@ -1319,6 +1309,14 @@ def plot_chemistry(param, solutions=None):
     ax.semilogy(param['mean_mol_weight'], param['P'], label='Mean Molecular Mass')
     ax.set_xlabel('Mean molecular weight')
     ax.set_ylabel('Pressure [Pa]')
+
+    def _mmm_tick_formatter(x, _pos):
+        x_round = round(x)
+        if np.isclose(x, x_round, atol=1e-9):
+            return f'{int(x_round)}'
+        return f'{x:.2f}'.rstrip('0').rstrip('.')
+
+    ax.xaxis.set_major_formatter(ticker.FuncFormatter(_mmm_tick_formatter))
 
     ax.set_xlim((ax.get_xlim()[0], ax.get_xlim()[1]))
 
@@ -1363,15 +1361,13 @@ def plot_chemistry(param, solutions=None):
         ax.set_ylim([1.0, bottom])
     plt.gca().invert_yaxis()
 
-    ax.legend(framealpha=0)
-    if solutions is None:
-        plt.savefig(param['out_dir'] + 'Nest_MMM.pdf')
-    else:
-        plt.savefig(param['out_dir'] + 'Nest_MMM (solution ' + str(solutions) + ').pdf')
+    ax.legend(frameon=False)
+    fig.tight_layout()
+    fig.savefig(param['out_dir'] + f'Nest_MMM_sol{solutions}.pdf', bbox_inches='tight')
     plt.close()
 
 
-def plot_surface_albedo(param, solutions=None):
+def plot_surface_albedo(param, solutions=0):
     """Plot the retrieved piecewise-constant surface albedo function.
 
     Parameters
@@ -1388,6 +1384,8 @@ def plot_surface_albedo(param, solutions=None):
       transitions (`Ag_x1`, `Ag_x2`) for the 5-parameter case.
     - Saves the figure to `Nest_surface_albedo.pdf` (or with a solution suffix).
     """
+    _apply_plot_style()
+
     # Define parameters for the step function
     x1 = param['Ag_x1'] + 0.0
     a1, a2 = param['Ag1'] + 0.0, param['Ag2'] + 0.0
@@ -1459,19 +1457,12 @@ def plot_surface_albedo(param, solutions=None):
 
     # Adjust layout
     plt.tight_layout()
-
-    if solutions is None:
-        plt.savefig(param['out_dir'] + 'Nest_surface_albedo.pdf')
-    else:
-        plt.savefig(param['out_dir'] + 'Nest_surface_albedo (solution ' + str(solutions) + ').pdf')
-
+    plt.savefig(param['out_dir'] + f'Nest_surface_albedo_sol{solutions}.pdf')
     plt.close()
 
 
-def plot_PT_profile(mnest, mc_samples, bestfit_cube, solutions=None):
+def plot_PT_profile(mnest, bestfit_cube, solutions=0):
     """Render the retrieved P–T profile and surface (P0, T0) credible contours."""
-    del mc_samples  # PT plotting only uses the cached profile samples on disk.
-
     def _central_quantiles(sigmas):
         sigmas = np.asarray(sigmas, dtype=float)
         inv_sqrt2 = 1.0 / np.sqrt(2.0)
@@ -1495,12 +1486,9 @@ def plot_PT_profile(mnest, mc_samples, bestfit_cube, solutions=None):
             levels.append(flat[order[idx]])
         return np.asarray(levels)
 
-    try:
-        plt.style.use('seaborn-v0_8-white')
-    except Exception:
-        pass
+    _apply_plot_style()
 
-    sample_path = mnest.param['out_dir'] + 'random_temp_samples.dat'
+    sample_path = mnest.param['out_dir'] + f'random_temp_samples_sol{solutions}.dat'
     if not os.path.isfile(sample_path):
         raise FileNotFoundError('Missing random_temp_samples.dat; run calc_spectra before plotting PT profiles.')
 
@@ -1680,29 +1668,21 @@ def plot_PT_profile(mnest, mc_samples, bestfit_cube, solutions=None):
     ax.autoscale(axis='x', tight=True)
     ax.margins(x=0.05)
 
-    legend = ax.legend(handles=legend_elements, loc='lower left', frameon=False, fontsize=9)
+    legend = ax.legend(handles=legend_elements, loc='lower left', frameon=False)
     if legend is not None:
         legend._legend_box.align = 'left'
 
     fig.tight_layout()
-
-    if solutions is None:
-        fig.savefig(mnest.param['out_dir'] + 'PT_profile.pdf')
-    else:
-        fig.savefig(mnest.param['out_dir'] + f'PT_profile (solution {solutions}).pdf')
-
+    fig.savefig(mnest.param['out_dir'] + f'PT_profile_sol{solutions}.pdf')
     plt.close(fig)
 
 
-def elpd_loo_stats(mnest, parameters, solutions=None):
+def elpd_loo_stats(mnest, parameters, solutions=0):
     print('\n#### EXECUTING CROSS VALIDATION LEAVE-ONE-OUT STATISTICS ####')
-    try:
-        plt.style.use('seaborn-v0_8-whitegrid')
-    except Exception:
-        pass
+    _apply_plot_style()
 
-    loglike_samples = np.loadtxt(mnest.param['out_dir'] + 'loglike_per_datapoint.dat')
-    par_samples = np.loadtxt(mnest.param['out_dir'] + 'parameters_samples.dat')
+    loglike_samples = np.loadtxt(mnest.param['out_dir'] + f'loglike_per_datapoint_sol{solutions}.dat')
+    par_samples = np.loadtxt(mnest.param['out_dir'] + f'parameters_samples_sol{solutions}.dat')
 
     n_samples, n_obs = loglike_samples.shape
     n_chains = 1
@@ -1735,6 +1715,7 @@ def elpd_loo_stats(mnest, parameters, solutions=None):
 
     bad_mask = pareto_k > 0.7
     good_mask = pareto_k < 0.7
+    bad_indices = np.flatnonzero(bad_mask).astype(int)
 
     fig, ax = plt.subplots(figsize=(8.2, 5.0), dpi=150)
     ax.scatter(wl_sorted[good_mask], pareto_k[good_mask], s=36, color='#1f77b4',
@@ -1746,12 +1727,9 @@ def elpd_loo_stats(mnest, parameters, solutions=None):
     ax.set_xlabel('Wavelength [$\\mu$m]')
     ax.set_ylabel('Pareto $k$')
     ax.set_ylim(bottom=0.0)
-    ax.legend(frameon=False, fontsize=9)
+    ax.legend(frameon=False)
     fig.tight_layout()
-    if solutions is None:
-        fig.savefig(mnest.param['out_dir'] + 'pareto_k.pdf')
-    else:
-        fig.savefig(mnest.param['out_dir'] + 'pareto_k_(solution ' + str(solutions) + ').pdf')
+    fig.savefig(mnest.param['out_dir'] + f'pareto_k_sol{solutions}.pdf')
     plt.close(fig)
 
     bad_count = int(np.sum(bad_mask))
@@ -1773,12 +1751,9 @@ def elpd_loo_stats(mnest, parameters, solutions=None):
     ax.axvline(0.5, color='#2ca02c', linestyle='--', linewidth=1.0)
     ax.set_xlabel('Pareto $k$')
     ax.set_ylabel('Pointwise elpd$_{\\mathrm{loo}}$')
-    ax.legend(frameon=False, fontsize=9)
+    ax.legend(frameon=False)
     fig.tight_layout()
-    if solutions is None:
-        fig.savefig(mnest.param['out_dir'] + 'pareto_k_vs_elpd_loo.pdf')
-    else:
-        fig.savefig(mnest.param['out_dir'] + 'pareto_k_vs_elpd_loo_(solution ' + str(solutions) + ').pdf')
+    fig.savefig(mnest.param['out_dir'] + f'pareto_k_vs_elpd_loo_sol{solutions}.pdf')
     plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(8.2, 5.0), dpi=150)
@@ -1786,19 +1761,27 @@ def elpd_loo_stats(mnest, parameters, solutions=None):
                 linestyle='none', linewidth=0.7, color='#444444', capsize=2.0, zorder=1)
     sc = ax.scatter(wl_sorted, tdepth_sorted, c=elpd_loo_pointwise, cmap='viridis',
                     s=40, edgecolor='white', linewidth=0.5, zorder=2)
+    if bad_indices.size:
+        ax.scatter(
+            wl_sorted[bad_mask],
+            tdepth_sorted[bad_mask],
+            s=88,
+            facecolors='none',
+            edgecolors='#d62728',
+            linewidths=1.2,
+            zorder=3
+        )
     cbar = fig.colorbar(sc, ax=ax, pad=0.02)
     cbar.set_label('elpd$_{i,Reference}$')
     ax.set_xlabel('Wavelength [$\\mu$m]')
     ax.set_ylabel('Contrast Ratio (F$_p$/F$_{\star}$)')
     fig.tight_layout()
-    if solutions is None:
-        fig.savefig(mnest.param['out_dir'] + 'elpd_loo.pdf')
-    else:
-        fig.savefig(mnest.param['out_dir'] + 'elpd_loo_(solution ' + str(solutions) + ').pdf')
+    fig.savefig(mnest.param['out_dir'] + f'elpd_loo_sol{solutions}.pdf')
     plt.close(fig)
 
     elpd_stats = {
         'pareto_k': pareto_k.tolist(),
+        'bad_point_indices': bad_indices.tolist(),
         'total_elpd_loo': float(total_elpd_loo),
         'elpd_loo_se': float(elpd_loo_se),
         'elpd_loo_pointwise': elpd_loo_pointwise.tolist()
@@ -1810,7 +1793,15 @@ def elpd_loo_stats(mnest, parameters, solutions=None):
         with open(mnest.param['elpd_reference']) as ref_file:
             ref_elpd = json.load(ref_file)
         delta_elpd = np.array(ref_elpd['elpd_loo_pointwise']) - elpd_stats['elpd_loo_pointwise']
-        delta_elpd_err = np.sqrt(len(delta_elpd) * np.var(delta_elpd, ddof=0))
+        ref_bad_raw = ref_elpd.get('bad_point_indices', None)
+        if ref_bad_raw is None and 'pareto_k' in ref_elpd:
+            ref_bad_raw = np.flatnonzero(np.asarray(ref_elpd['pareto_k']) > 0.7).tolist()
+        if ref_bad_raw is None:
+            ref_bad_raw = []
+        ref_bad_idx = np.asarray(ref_bad_raw, dtype=int)
+        union_bad_mask = np.zeros(len(delta_elpd), dtype=bool)
+        union_bad_mask[bad_indices[bad_indices < len(union_bad_mask)]] = True
+        union_bad_mask[ref_bad_idx[(ref_bad_idx >= 0) & (ref_bad_idx < len(union_bad_mask))]] = True
 
         vmax = float(np.max(np.abs(delta_elpd))) if len(delta_elpd) else 1.0
         fig, ax = plt.subplots(figsize=(8.2, 5.0), dpi=150)
@@ -1818,19 +1809,38 @@ def elpd_loo_stats(mnest, parameters, solutions=None):
                     linestyle='none', linewidth=0.7, color='#444444', capsize=2.0, zorder=1)
         sc = ax.scatter(wl_sorted, tdepth_sorted, c=delta_elpd, cmap='coolwarm',
                         vmin=-vmax, vmax=vmax, s=40, edgecolor='white', linewidth=0.5, zorder=2)
+        
+        if np.any(union_bad_mask):
+            ax.scatter(
+                wl_sorted[union_bad_mask],
+                tdepth_sorted[union_bad_mask],
+                s=88,
+                facecolors='none',
+                edgecolors='#808080',
+                alpha=0.3,
+                linewidths=1.2,
+                zorder=3
+            )
         cbar = fig.colorbar(sc, ax=ax, pad=0.02)
         cbar.set_label('elpd$_{i,Reference}$ - elpd$_{i}$')
         ax.set_xlabel('Wavelength [$\\mu$m]')
         ax.set_ylabel('Contrast Ratio (F$_p$/F$_{\star}$)')
         fig.tight_layout()
-        if solutions is None:
-            fig.savefig(mnest.param['out_dir'] + 'elpd_loo_comparison.pdf')
-        else:
-            fig.savefig(mnest.param['out_dir'] + 'elpd_loo_comparison_(solution ' + str(solutions) + ').pdf')
+        fig.savefig(mnest.param['out_dir'] + f'elpd_loo_comparison_sol{solutions}.pdf')
         plt.close(fig)
 
+        delta_elpd_valid = delta_elpd[~union_bad_mask]
+        if len(delta_elpd_valid) == 0:
+            delta_over_se = np.nan
+        else:
+            delta_elpd_err = np.sqrt(len(delta_elpd_valid) * np.var(delta_elpd_valid, ddof=0))
+            if delta_elpd_err > 0.0 and np.isfinite(delta_elpd_err):
+                delta_over_se = np.sum(delta_elpd_valid) / delta_elpd_err
+            else:
+                delta_over_se = np.nan
+
         fig, ax = plt.subplots(figsize=(4.2, 4.2), dpi=150)
-        ax.bar(['Model parameter'], [np.sum(delta_elpd) / delta_elpd_err], color='#d62728')
+        ax.bar(['Model parameter'], [delta_over_se], color='#d62728')
         ax.axhline(0.0, linestyle='--', color='#333333', linewidth=1.0)
         ax.text(0.15, 1.4, 'Increased\npredictive\nperformance', fontsize=8)
         ax.text(0.15, -2.6, 'Decreased\npredictive\nperformance', fontsize=8)
@@ -1839,8 +1849,5 @@ def elpd_loo_stats(mnest, parameters, solutions=None):
         ax.set_ylabel('$\\Delta$elpd/SE')
         ax.set_xlabel('Adding Model Component')
         fig.tight_layout()
-        if solutions is None:
-            fig.savefig(mnest.param['out_dir'] + 'elpd_loo_SE_comparison.pdf')
-        else:
-            fig.savefig(mnest.param['out_dir'] + 'elpd_loo_SE_comparison_(solution ' + str(solutions) + ').pdf')
+        fig.savefig(mnest.param['out_dir'] + f'elpd_loo_SE_comparison_sol{solutions}.pdf')
         plt.close(fig)

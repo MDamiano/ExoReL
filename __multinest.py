@@ -1,3 +1,5 @@
+from importlib.metadata import distributions
+
 from .__basics import *
 from .__utils import *
 from .__forward import *
@@ -339,10 +341,26 @@ class MULTINEST:
         ### PRODUCE PLOTS FROM HERE --- POST-PROCESSING ###
         self.param['model_n_par'] = len(parameters)
         multinest_results = pymultinest.Analyzer(n_params=self.param['model_n_par'], outputfiles_basename=prefix, verbose=False)
-        mc_samp = multinest_results.get_equal_weighted_posterior()[:, :-1]
 
-        if self.param['calc_likelihood_data'] and not os.path.exists(self.param['out_dir'] + 'loglike_per_datapoint.dat'):
-            self.calc_spectra(mc_samp)
+        if MPIimport and MPIrank == 0:
+            if self.param['filter_multi_solutions']:
+                s, mds = self.filter_pymultinest_modes(multinest_results)
+                mds_orig = len(multinest_results.get_stats()['modes'])
+            else:
+                s = multinest_results.get_stats()
+                mds_orig = mds = len(s['modes'])
+            
+            if self.param['multimodal'] and mds_orig > 1 and self.param['calc_likelihood_data']:
+                self.store_nest_solutions(prefix)
+
+        if MPIimport:
+            MPI.COMM_WORLD.Barrier()  # wait for everybody to synchronize here
+            mds_orig = MPI.COMM_WORLD.bcast(mds_orig if MPIrank == 0 else None, root=0)
+
+        check_files = os.path.exists(self.param['out_dir'] + 'loglike_per_datapoint_sol0.dat')
+
+        if self.param['calc_likelihood_data'] and not check_files:
+            self.calc_spectra(prefix, mds_orig)
 
             if MPIimport:
                 MPI.COMM_WORLD.Barrier()  # wait for everybody to synchronize here
@@ -350,78 +368,76 @@ class MULTINEST:
             if MPIimport and MPIrank == 0:
                 if platform.system() != 'Darwin':
                     time.sleep(600)
-                rank_0 = np.loadtxt(self.param['out_dir'] + 'loglikelihood_per_datapoint/loglike_0.dat')
-                rank_0_spec = np.loadtxt(self.param['out_dir'] + 'loglikelihood_per_datapoint/samples_0.dat')
-                rank_0_par = np.loadtxt(self.param['out_dir'] + 'loglikelihood_per_datapoint/samples_par_0.dat')
-                if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
-                    rank_0_temp = np.loadtxt(self.param['out_dir'] + 'loglikelihood_per_datapoint/temp_samples_0.dat')
-                for i in range(1, MPIsize):
-                    rank_n = np.loadtxt(self.param['out_dir'] + 'loglikelihood_per_datapoint/loglike_' + str(i) + '.dat')
-                    rank_n_spec = np.loadtxt(self.param['out_dir'] + 'loglikelihood_per_datapoint/samples_' + str(i) + '.dat')
-                    rank_n_par = np.loadtxt(self.param['out_dir'] + 'loglikelihood_per_datapoint/samples_par_' + str(i) + '.dat')
-                    rank_0 = np.concatenate((rank_0, rank_n), axis=0)
-                    rank_0_spec = np.concatenate((rank_0_spec, rank_n_spec[:, 1:]), axis=1)
-                    rank_0_par = np.concatenate((rank_0_par, rank_n_par), axis=0)
+                loglike_dir = []
+                for mds in range(0, mds_orig):
+                    loglike_dir.append(self.param['out_dir'] + f'loglikelihood_per_datapoint_sol{mds}/')
+                for idx, folder in enumerate(loglike_dir):
+                    rank_0 = np.loadtxt(folder + 'loglike_0.dat')
+                    rank_0_spec = np.loadtxt(folder + 'samples_0.dat')
+                    rank_0_par = np.loadtxt(folder + 'samples_par_0.dat')
                     if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
-                        rank_n_temp = np.loadtxt(self.param['out_dir'] + 'loglikelihood_per_datapoint/temp_samples_' + str(i) + '.dat')
-                        rank_0_temp = np.concatenate((rank_0_temp, rank_n_temp[:, 1:]), axis=1)
-                np.savetxt(self.param['out_dir'] + 'loglike_per_datapoint.dat', rank_0)
-                np.savetxt(self.param['out_dir'] + 'random_samples.dat', rank_0_spec)
-                np.savetxt(self.param['out_dir'] + 'parameters_samples.dat', rank_0_par)
-                if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
-                    np.savetxt(self.param['out_dir'] + 'random_temp_samples.dat', rank_0_temp)
-                    del rank_0_temp
-                os.system('rm -rf ' + self.param['out_dir'] + 'loglikelihood_per_datapoint/')
-
-                self.param['spec_sample'] = rank_0_spec + 0.0
-                del rank_0, rank_0_spec, rank_0_par
-        else:
-            print('\n"loglike_per_datapoint.dat" file already exists. Skipping likelihood per data point calculation.')
-
-        if MPIimport and MPIrank == 0:  # Plot Nest_spectrum
-            if self.param['filter_multi_solutions']:
-                s, mds = self.filter_pymultinest_modes(multinest_results)
-                mds_orig = len(multinest_results.get_stats()['modes'])
-            else:
-                s = multinest_results.get_stats()
-                mds_orig = mds = len(s['modes'])
-
-            if self.param['plot_models']:
-                if mds < 2:
-
-                    cube = np.ones((len(s['modes'][0]['maximum a posterior']), mds))
-                    cube[:, 0] = list(s['modes'][0]['maximum a posterior'])
-
-                    plot_nest_spec(self, cube[:, 0], solutions=None)
-                    plot_chemistry(self.param, solutions=None)
-                    if self.param['surface_albedo_parameters'] > 1:
-                        plot_surface_albedo(self.param, solutions=None)
-                    if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
-                        plot_PT_profile(self, mc_samp, cube[:, 0])
-                    if self.param['plot_contribution'] and self.param['obs_numb'] is None:
-                        plot_contribution(self, cube[:, 0], solutions=None)
-                    if os.path.exists(self.param['out_dir'] + 'loglike_per_datapoint.dat') and os.path.exists(self.param['out_dir'] + 'parameters_samples.dat') and self.param['plot_elpd_stats']:
-                        elpd_loo_stats(self, parameters, solutions=None)
-                    elif not os.path.exists(self.param['out_dir'] + 'loglike_per_datapoint.dat') or not os.path.exists(self.param['out_dir'] + 'parameters_samples.dat'):
-                        print('\nTo plot elpd statistics, the calculation of the likelihood per data point must be enabled (calc_likelihood_data = True).')
-                else:
-                    cube = np.ones((len(s['modes'][0]['maximum a posterior']), mds))
-                    for i in range(0, mds):
-                        cube[:, i] = list(s['modes'][i]['maximum a posterior'])
-
-                        plot_nest_spec(self, cube[:, i], solutions=i + 1)
-                        plot_chemistry(self.param, solutions=i + 1)
-                        if self.param['surface_albedo_parameters'] > 1:
-                            plot_surface_albedo(self.param, solutions=i + 1)
+                        rank_0_temp = np.loadtxt(folder + 'temp_samples_0.dat')
+                    for i in range(1, MPIsize):
+                        rank_n = np.loadtxt(folder + f'loglike_{i}.dat')
+                        rank_n_spec = np.loadtxt(folder + f'samples_{i}.dat')
+                        rank_n_par = np.loadtxt(folder + f'samples_par_{i}.dat')
+                        rank_0 = np.concatenate((rank_0, rank_n), axis=0)
+                        rank_0_spec = np.concatenate((rank_0_spec, rank_n_spec[:, 1:]), axis=1)
+                        rank_0_par = np.concatenate((rank_0_par, rank_n_par), axis=0)
                         if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
-                            plot_PT_profile(self, mc_samp, cube[:, i])
-                        if self.param['plot_contribution'] and self.param['obs_numb'] is None:
-                            plot_contribution(self, cube[:, i], solutions=i + 1)
-                        if os.path.exists(self.param['out_dir'] + 'loglike_per_datapoint.dat') and os.path.exists(self.param['out_dir'] + 'parameters_samples.dat') and self.param['plot_elpd_stats']:
-                            elpd_loo_stats(self, parameters, solutions=i + 1)
-                        elif not os.path.exists(self.param['out_dir'] + 'loglike_per_datapoint.dat') or not os.path.exists(self.param['out_dir'] + 'parameters_samples.dat'):
-                            if i == 0:
-                                print('\nTo plot elpd statistics, the calculation of the likelihood per data point must be enabled (calc_likelihood_data = True).') 
+                            rank_n_temp = np.loadtxt(folder + f'temp_samples_{i}.dat')
+                            rank_0_temp = np.concatenate((rank_0_temp, rank_n_temp[:, 1:]), axis=1)
+                    np.savetxt(self.param['out_dir'] + f'loglike_per_datapoint_sol{idx}.dat', rank_0)
+                    np.savetxt(self.param['out_dir'] + f'random_samples_sol{idx}.dat', rank_0_spec)
+                    np.savetxt(self.param['out_dir'] + f'parameters_samples_sol{idx}.dat', rank_0_par)
+                    if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
+                        np.savetxt(self.param['out_dir'] + f'random_temp_samples_sol{idx}.dat', rank_0_temp)
+                        del rank_0_temp
+                    os.system('rm -rf ' + self.param['out_dir'] + f'loglikelihood_per_datapoint_sol{idx}/')
+
+                    self.param['spec_sample'] = rank_0_spec + 0.0
+                    del rank_0, rank_0_spec, rank_0_par
+        else:
+            if MPIrank == 0:
+                print('\n"loglike_per_datapoint" files already exist. Skipping likelihood per data point calculation.')
+
+        if MPIimport and MPIrank == 0:
+            if self.param['plot_models']:
+                # if mds < 2:
+
+                #     cube = np.ones((len(s['modes'][0]['maximum a posterior']), mds))
+                #     cube[:, 0] = list(s['modes'][0]['maximum a posterior'])
+
+                #     plot_nest_spec(self, cube[:, 0], solutions=None)
+                #     plot_chemistry(self.param, solutions=None)
+                #     if self.param['surface_albedo_parameters'] > 1:
+                #         plot_surface_albedo(self.param, solutions=None)
+                #     if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
+                #         plot_PT_profile(self, cube[:, 0])
+                #     if self.param['plot_contribution'] and self.param['obs_numb'] is None:
+                #         plot_contribution(self, cube[:, 0], solutions=None)
+                #     if os.path.exists(self.param['out_dir'] + 'loglike_per_datapoint.dat') and os.path.exists(self.param['out_dir'] + 'parameters_samples.dat') and self.param['plot_elpd_stats']:
+                #         elpd_loo_stats(self, parameters, solutions=None)
+                #     elif not os.path.exists(self.param['out_dir'] + 'loglike_per_datapoint.dat') or not os.path.exists(self.param['out_dir'] + 'parameters_samples.dat'):
+                #         print('\nTo plot elpd statistics, the calculation of the likelihood per data point must be enabled (calc_likelihood_data = True).')
+                # else:
+                cube = np.ones((len(s['modes'][0]['maximum a posterior']), mds))
+                for i in range(0, mds):
+                    cube[:, i] = list(s['modes'][i]['maximum a posterior'])
+
+                    plot_nest_spec(self, cube[:, i], solutions=i)
+                    plot_chemistry(self.param, solutions=i)
+                    if self.param['surface_albedo_parameters'] > 1:
+                        plot_surface_albedo(self.param, solutions=i)
+                    if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
+                        plot_PT_profile(self, cube[:, i], solutions=i)
+                    if self.param['plot_contribution'] and self.param['obs_numb'] is None:
+                        plot_contribution(self, cube[:, i], solutions=i)
+                    if os.path.exists(self.param['out_dir'] + 'loglike_per_datapoint.dat') and os.path.exists(self.param['out_dir'] + 'parameters_samples.dat') and self.param['plot_elpd_stats']:
+                        elpd_loo_stats(self, parameters, solutions=i)
+                    elif not os.path.exists(self.param['out_dir'] + 'loglike_per_datapoint.dat') or not os.path.exists(self.param['out_dir'] + 'parameters_samples.dat'):
+                        if i == 0:
+                            print('\nTo plot elpd statistics, the calculation of the likelihood per data point must be enabled (calc_likelihood_data = True).') 
 
                 if self.param['spectrum']['bins']:
                     data_spec = np.array([self.param['spectrum']['wl_low'], self.param['spectrum']['wl_high'], self.param['spectrum']['wl'], self.param['spectrum']['Fplanet'], self.param['spectrum']['error_p']]).T
@@ -603,7 +619,18 @@ class MULTINEST:
         self.param['core_number'] = None
 
 
-    def calc_spectra(self, mc_samples):
+    def calc_spectra(self, prefix, mds_orig):
+        def sample_from_weighted_distr(x, w, m, rng=None, replace=True):
+            rng = np.random.default_rng() if rng is None else rng
+            w = np.asarray(w, dtype=float)
+            w = np.clip(w, 0, np.inf)
+            p = w / w.sum()
+            idx = rng.choice(len(x), size=m, replace=replace, p=p)
+            return x[idx, :]
+
+        if MPIrank == 0:
+            print('\nCalculating the likelihood per data point')
+
         new_wl = reso_range(0.2, 20.0, res=500, bins=True)
         if self.param['mol_custom_wl']:
             new_wl_central = np.mean(new_wl, axis=1)
@@ -629,63 +656,77 @@ class MULTINEST:
         self.param['start_c_wl_grid'] = find_nearest(self.param['wl_C_grid'], self.param['min_wl']) - 35
         self.param['stop_c_wl_grid'] = find_nearest(self.param['wl_C_grid'], self.param['max_wl']) + 35
 
-        if mc_samples.shape[0] < self.param['n_likelihood_data']:
-            self.param['n_likelihood_data'] = mc_samples.shape[0] - MPIsize
+        distributions = []
+
+        if mds_orig > 1:
+            for i in range(0, mds_orig):
+                distributions.append(np.loadtxt(prefix + f'solution{i}.txt'))
         else:
-            pass
-        
-        sample_par = np.zeros((1, self.param['model_n_par']))
-        samples = np.zeros((len(self.param['spectrum']['wl']), int(self.param['n_likelihood_data'] / MPIsize) + 1))
-        samples[:, 0] = self.param['spectrum']['wl']
-        loglike_data = np.zeros((int(self.param['n_likelihood_data'] / MPIsize), wl_len))
+            distributions.append(np.loadtxt(prefix + '.txt'))
 
-        if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
-            temp_samples = np.full((len(self.param['P_standard']) + 2, int(self.param['n_likelihood_data'] / MPIsize) + 1), np.nan)
-            temp_samples[2:, 0] = self.param['P_standard']
+        for mds in range(len(distributions)):
+            mc_samples = distributions[mds]
 
-        if MPIrank == 0:
-            print('\nCalculating the likelihood per data point')
-            try:
-                os.mkdir(self.param['out_dir'] + 'loglikelihood_per_datapoint/')
-            except OSError:
-                pass
+            loglike_dir = self.param['out_dir'] + f'loglikelihood_per_datapoint_sol{mds}/'
 
-        idx = np.random.choice(mc_samples.shape[0], int(self.param['n_likelihood_data']), replace=False)
+            if MPIrank == 0:
+                if not os.path.isdir(loglike_dir):
+                    os.mkdir(loglike_dir)
 
-        for i in range(int(self.param['n_likelihood_data'] / MPIsize)):
-            cube = mc_samples[idx[i], :]
-            self.cube_to_param(cube)
-            sample_par = np.concatenate((sample_par, np.array(cube).reshape(1, self.param['model_n_par'])), axis=0)
-            mod = FORWARD_MODEL(self.param, retrieval=False, canc_metadata=True)
-            alb_wl, alb = mod.run_forward()
-
-            if self.param['fit_wtr_cld'] and self.param['rocky'] and self.param['cld_frac'] != 1.0:
-                alb = self.adjust_for_cld_frac(alb, cube)
-                self.cube_to_param(cube)
-
-            _, samples[:, i + 1] = model_finalizzation(self.param, alb_wl, alb, planet_albedo=self.param['albedo_calc'], fp_over_fs=self.param['fp_over_fs'])
-
-            if self.param['spectrum']['bins']:
-                model = custom_spectral_binning(temp[:, :2], self.param['spectrum']['wl'], samples[:, i + 1], bins=True)
+            if mc_samples.shape[0] < self.param['n_likelihood_data']:
+                self.param['n_likelihood_data'] = mc_samples.shape[0] - MPIsize
             else:
-                model = spectres(temp, self.param['spectrum']['wl'], samples[:, i + 1], fill=False)
+                pass
+            
+            sample_par = sample_from_weighted_distr(mc_samples[:, 2:], mc_samples[:, 0], m=self.param['n_likelihood_data'], rng=np.random.default_rng(42), replace=False)
 
-            # Calculate likelihood per single datapoint
-            chi = (self.param['spectrum']['Fplanet'] - model) / self.param['spectrum']['error_p']
-            loglike_data[i, :] = ((-1.) * np.log(self.param['spectrum']['error_p'] * np.sqrt(2.0 * math.pi))) - (0.5 * chi * chi)
+            n_samples = int(self.param['n_likelihood_data'])
+            base_per_rank, extra = divmod(n_samples, MPIsize)
+            local_n = base_per_rank + (1 if MPIrank < extra else 0)
+            start_idx = MPIrank * base_per_rank + min(MPIrank, extra)
+            stop_idx = start_idx + local_n
 
-            # Calculate temperature profile
+            samples = np.zeros((len(self.param['spectrum']['wl']), local_n + 1))
+            samples[:, 0] = self.param['spectrum']['wl']
+            loglike_data = np.zeros((local_n, wl_len))
+
             if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
-                T = temp_profile(self.param)
-                temp_samples[2:len(T)+2, i+1] = T
-                temp_samples[0, i+1] = self.param['P'][-1]
-                temp_samples[1, i+1] = T[-1]
+                temp_samples = np.full((len(self.param['P_standard']) + 2, local_n + 1), np.nan)
+                temp_samples[2:, 0] = self.param['P_standard']
 
-        np.savetxt(self.param['out_dir'] + 'loglikelihood_per_datapoint/loglike_' + str(MPIrank) + '.dat', loglike_data)
-        np.savetxt(self.param['out_dir'] + 'loglikelihood_per_datapoint/samples_' + str(MPIrank) + '.dat', samples)
-        np.savetxt(self.param['out_dir'] + 'loglikelihood_per_datapoint/samples_par_' + str(MPIrank) + '.dat', sample_par[1:, :])
-        if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
-            np.savetxt(self.param['out_dir'] + 'loglikelihood_per_datapoint/temp_samples_' + str(MPIrank) + '.dat', temp_samples)
+            for i, sample_idx in enumerate(range(start_idx, stop_idx)):
+                cube = sample_par[sample_idx, :]
+                self.cube_to_param(cube)
+                mod = FORWARD_MODEL(self.param, retrieval=False, canc_metadata=True)
+                alb_wl, alb = mod.run_forward()
+
+                if self.param['fit_wtr_cld'] and self.param['rocky'] and self.param['cld_frac'] != 1.0:
+                    alb = self.adjust_for_cld_frac(alb, cube)
+                    self.cube_to_param(cube)
+
+                _, samples[:, i + 1] = model_finalizzation(self.param, alb_wl, alb, planet_albedo=self.param['albedo_calc'], fp_over_fs=self.param['fp_over_fs'])
+
+                if self.param['spectrum']['bins']:
+                    model = custom_spectral_binning(temp[:, :2], self.param['spectrum']['wl'], samples[:, i + 1], bins=True)
+                else:
+                    model = spectres(temp, self.param['spectrum']['wl'], samples[:, i + 1], fill=False)
+
+                # Calculate likelihood per single datapoint
+                chi = (self.param['spectrum']['Fplanet'] - model) / self.param['spectrum']['error_p']
+                loglike_data[i, :] = ((-1.) * np.log(self.param['spectrum']['error_p'] * np.sqrt(2.0 * math.pi))) - (0.5 * chi * chi)
+
+                # Calculate temperature profile
+                if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
+                    T = temp_profile(self.param)
+                    temp_samples[2:len(T)+2, i+1] = T
+                    temp_samples[0, i+1] = self.param['P'][-1]
+                    temp_samples[1, i+1] = T[-1]
+
+            np.savetxt(loglike_dir + 'loglike_' + str(MPIrank) + '.dat', loglike_data)
+            np.savetxt(loglike_dir + 'samples_' + str(MPIrank) + '.dat', samples)
+            np.savetxt(loglike_dir + 'samples_par_' + str(MPIrank) + '.dat', sample_par[start_idx:stop_idx, :])
+            if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
+                np.savetxt(loglike_dir + 'temp_samples_' + str(MPIrank) + '.dat', temp_samples)
 
         if self.param['spectrum']['bins']:
             self.param['spectrum']['wl'] = temp[:, 2] + 0.0
@@ -693,6 +734,8 @@ class MULTINEST:
             self.param['spectrum']['wl_high'] = temp[:, 1] + 0.0
         else:
             self.param['spectrum']['wl'] = temp + 0.0
+        self.param['min_wl'] = temp_min + 0.0
+        self.param['max_wl'] = temp_max + 0.0
 
 
     def adjust_for_cld_frac(self, albedo, mlnst_cube):
@@ -706,3 +749,47 @@ class MULTINEST:
         if self.param['double_cloud']:
             self.param['fit_amm_cld'] = True
         return (self.param['cld_frac'] * albedo) + ((1.0 - self.param['cld_frac']) * alb_no_cld)
+
+
+    def store_nest_solutions(self, prefix):
+        modes = []
+        modes_weights = []
+        modes_loglike = []
+        chains = []
+        chains_weights = []
+        chains_loglike = []
+
+        # separate modes. get individual samples for each mode
+        # get parameter values and sample probability (=weight) for each mode
+        with open(prefix + 'post_separate.dat') as f:
+            lines = f.readlines()
+            for idx, line in enumerate(lines):
+                if idx > 2:  # skip the first two lines
+                    if lines[idx - 1] == '\n' and lines[idx - 2] == '\n':
+                        modes.append(chains)
+                        modes_weights.append(chains_weights)
+                        modes_loglike.append(chains_loglike)
+                        chains = []
+                        chains_weights = []
+                        chains_loglike = []
+                chain = [float(x) for x in line.split()[2:]]
+                if len(chain) > 0:
+                    chains.append(chain)
+                    chains_weights.append(float(line.split()[0]))
+                    chains_loglike.append(float(line.split()[1]))
+            modes.append(chains)
+            modes_weights.append(chains_weights)
+            modes_loglike.append(chains_loglike)
+        modes_array = []
+        for mode in modes:
+            mode_array = np.zeros((len(mode), len(mode[0])))
+            for idx, line in enumerate(mode):
+                mode_array[idx, :] = line
+            modes_array.append(mode_array)
+
+        for nmode in range(len(modes)):
+            fl = np.ones((len(np.asarray(modes_weights[nmode])), len(modes_array[nmode][0, :]) + 2))
+            fl[:, 0] = np.asarray(modes_weights[nmode])
+            fl[:, 1] = np.asarray(modes_loglike[nmode])
+            fl[:, 2:] = modes_array[nmode]
+            np.savetxt(prefix + 'solution' + str(nmode) + '.txt', fl)
