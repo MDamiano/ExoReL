@@ -13,6 +13,8 @@ try:
     MPIimport = True
 except ImportError:
     MPIimport = False
+    MPIrank = 0
+    MPIsize = 1
 
 if MPIimport:
     if MPIrank == 1:
