@@ -42,6 +42,7 @@ def default_parameters():
 
     #### [MODEL_PAR] ####
     param['physics_model'] = 'radiative_transfer'  # choose between 'radiative_transfer', 'dataset', or 'AI_model'
+    param['gasseous_planet'] = True  # whether the planet is gaseous or rocky. If False, the surface pressure and albedo will be included in the model and can be fit during retrieval
     param['P_standard'] = 10. ** np.arange(0.0, 12.01, step=0.01)  # standard pressure grid in Pa
     param['fit_p0'] = False  # whether to fit the surface parameter during retrieval
     param['fit_ag'] = False  # whether to fit the surface albedo during retrieval
@@ -257,12 +258,7 @@ def setup_param_dict(param):
     else:
         param['double_cloud'] = False
 
-    if "Mp_range" in param.keys():
-        param['Mp'] = param["Mp_range"][0] + 0.0
-
-    if param['Mp'] <= 0.06:
-        param['rocky'] = True
-    else:
+    if param['gasseous_planet']:
         param['rocky'] = False
         param['fit_p0'] = False
         param['P0'] = 10 ** 11.5
@@ -270,6 +266,8 @@ def setup_param_dict(param):
         param['Ag'] = 0.0
         param['gas_par_space'] = 'vmr'
         param['gas_fill'] = 'H2'
+    else:
+        param['rocky'] = True
 
     if param['Mp'] is not None:
         param['Mp_orig'] = param['Mp'] + 0.0
