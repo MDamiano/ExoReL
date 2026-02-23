@@ -74,14 +74,12 @@ class MULTINEST:
             if (not MPIimport) or (MPIimport and MPIrank == 0):
                 self.param = adjust_ranges_from_dataset(self.param)
 
-        if MPIimport:
-            MPI.COMM_WORLD.Barrier()  # wait for everybody to synchronize here
-        
         if MPIimport and MPIsize > 1:
-            self.param = MPI.COMM_WORLD.bcast(self.param, root=0)
-
-        if MPIimport:
-            MPI.COMM_WORLD.Barrier()  # wait for everybody to synchronize here
+                MPI.COMM_WORLD.Barrier()  # wait for everybody to synchronize here
+            
+                self.param = MPI.COMM_WORLD.bcast(self.param, root=0)
+    
+                MPI.COMM_WORLD.Barrier()  # wait for everybody to synchronize here
 
         def internal_model(cube, phi=None, n_obs=0, free_cld_calc=False, retrieval_mode=True):
             evaluation = {}
