@@ -76,8 +76,9 @@ class MULTINEST:
 
         if MPIimport:
             MPI.COMM_WORLD.Barrier()  # wait for everybody to synchronize here
-
-        self.param = MPI.COMM_WORLD.bcast(self.param, root=0)
+        
+        if MPIimport and MPIsize > 1:
+            self.param = MPI.COMM_WORLD.bcast(self.param, root=0)
 
         if MPIimport:
             MPI.COMM_WORLD.Barrier()  # wait for everybody to synchronize here
