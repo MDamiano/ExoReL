@@ -271,811 +271,6 @@ def plot_nest_spec(mnest, cube, solutions=0):
     plt.close()
 
 
-@_isolate_posterior_plot_style
-def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
-    """Plot posterior traces and corner plots (single or multi-mode).
-
-    - Uses the MultiNest outputs at `prefix` to build weighted samples.
-    - Produces the same filenames as before for compatibility:
-      `Nest_trace.pdf`, `Nest_posteriors.pdf`, and per-solution files when multimodal.
-    - Keeps behavior for gas parameter conversion to VMR when applicable.
-    - Improves visuals slightly and avoids redundant I/O.
-    """
-    import os
-    import json
-    import numpy as np
-    import matplotlib.pyplot as plt
-    import pymultinest
-    from numpy import log
-    from scipy.stats import gaussian_kde
-    from scipy.ndimage import gaussian_filter as norm_kde
-    from skbio.stats.composition import clr_inv
-    from astropy import constants as const
-
-    def _posteriors_gas_to_vmr(loc_prefix, modes=None):
-        """Convert gas posteriors to VMR space and append mean molecular mass.
-        Mirrors previous logic to preserve outputs.
-        """
-        if modes is None:
-            os.system('cp ' + loc_prefix + '.txt ' + loc_prefix + 'original.txt')
-            a = np.loadtxt(loc_prefix + '.txt')
-        else:
-            os.system('cp ' + loc_prefix + 'solution' + str(modes) + '.txt ' + loc_prefix + 'solution' + str(modes) + '_original.txt')
-            a = np.loadtxt(loc_prefix + 'solution' + str(modes) + '.txt')
-
-        b = np.ones((len(a[:, 0]), len(a[0, :]) + 2))
-
-        if mnest.param['fit_p0'] and mnest.param['gas_par_space'] != 'partial_pressure':
-            b[:, 0:6] = a[:, 0:6] + 0.0
-            z = 6
-        elif mnest.param['gas_par_space'] == 'partial_pressure':
-            b[:, 0:2] = a[:, 0:2] + 0.0
-            b[:, 3:6] = a[:, 2:5] + 0.0
-            z = 5
-        else:
-            b[:, 0:5] = a[:, 0:5] + 0.0
-            z = 5
-
-        if not mnest.param['fit_wtr_cld'] or mnest.param['PT_profile_type'] == 'parametric':
-            z -= 3
-        if mnest.param['fit_amm_cld']:
-            b[:, 0:z + 3] = a[:, 0:z + 3] + 0.0
-            z += 3
-
-        volume_mixing_ratio = {}
-        if mnest.param['gas_par_space'] in ('centered_log_ratio', 'clr'):
-            c_l_r = np.array(a[:, z:z + len(mnest.param['fit_molecules'])])
-            c_l_r = np.concatenate((c_l_r, np.array([-np.sum(c_l_r, axis=1)]).T), axis=1)
-            v_m_r = clr_inv(c_l_r)
-            for i, mol in enumerate(mnest.param['fit_molecules']):
-                volume_mixing_ratio[mol] = v_m_r[:, i]
-            volume_mixing_ratio[mnest.param['gas_fill']] = v_m_r[:, -1]
-        elif mnest.param['gas_par_space'] in ('volume_mixing_ratio', 'vmr'):
-            volume_mixing_ratio[mnest.param['gas_fill']] = np.ones(len(a[:, 0]))
-            for i, mol in enumerate(mnest.param['fit_molecules']):
-                vmr_i = 10.0 ** np.array(a[:, z + i])
-                volume_mixing_ratio[mol] = vmr_i
-                volume_mixing_ratio[mnest.param['gas_fill']] -= vmr_i
-        elif mnest.param['gas_par_space'] == 'partial_pressure':
-            b[:, 2] = np.sum(10.0 ** np.array(a[:, z:z + len(mnest.param['fit_molecules'])]), axis=1)  # PDF of P0 (surface pressure)
-            for i, mol in enumerate(mnest.param['fit_molecules']):
-                volume_mixing_ratio[mol] = (10.0 ** np.array(a[:, z + i])) / b[:, 2]
-            b[:, 2] = np.log10(b[:, 2])
-
-        mmm = np.zeros(len(a[:, 0]))
-        for mol in volume_mixing_ratio.keys():
-            mmm += volume_mixing_ratio[mol] * mnest.param['mm'][mol]
-
-        if mnest.param['gas_par_space'] != 'partial_pressure':
-            for i, mol in enumerate(mnest.param['fit_molecules']):
-                b[:, z + i] = np.log10(volume_mixing_ratio[mol])
-            if mnest.param['gas_fill'] is not None:
-                b[:, z + i + 1] = np.log10(volume_mixing_ratio[mnest.param['gas_fill']])
-        else:
-            for i, mol in enumerate(mnest.param['fit_molecules']):
-                b[:, (z + 1) + i] = np.log10(volume_mixing_ratio[mol])
-
-        b[:, z + i + 2:-1] = a[:, z + i + 1:] + 0.0
-
-        locate_mp_rp = 4 if mnest.param['fit_p_size'] else 3
-        if mnest.param['rocky'] and mnest.param['fit_Mp']:
-            b[:, -locate_mp_rp] *= (const.M_jup.value / const.M_earth.value)
-        if mnest.param['rocky'] and mnest.param['fit_Rp']:
-            b[:, -(locate_mp_rp - 1)] *= (const.R_jup.value / const.R_earth.value)
-        if mnest.param['fit_g']:
-            b[:, -(locate_mp_rp - 2)] = 10. ** (b[:, -(locate_mp_rp - 2)] - 2.0)
-
-        b[:, -1] = np.array(mmm) + 0.0
-
-        if modes is None:
-            np.savetxt(loc_prefix + '.txt', b)
-        else:
-            np.savetxt(loc_prefix + 'solution' + str(modes) + '.txt', b)
-
-    def _weighted_quantiles(x, qs, w=None):
-        x = np.asarray(x)
-        qs = np.atleast_1d(qs)
-        if w is None:
-            return np.percentile(x, list(100.0 * qs))
-        w = np.asarray(w)
-        sorter = np.argsort(x)
-        x, w = x[sorter], w[sorter]
-        cw = np.cumsum(w)
-        cw /= cw[-1]
-        return np.interp(qs, cw, x)
-
-    def _bounds(samples, weights):
-        span = 0.999999426697
-        lo, hi = [], []
-        for i in range(samples.shape[1]):
-            # Drop non-finite sample/weight pairs to avoid propagating NaNs into the bounds
-            finite = np.isfinite(samples[:, i]) & np.isfinite(weights)
-            if not np.any(finite):
-                lo.append(0.0)
-                hi.append(0.0)
-                continue
-            col = samples[finite, i]
-            w = weights[finite]
-            q = [0.5 - 0.5 * span, 0.5 + 0.5 * span]
-            if np.sum(w) <= 0:
-                v = _weighted_quantiles(col, q, w=None)
-            else:
-                v = _weighted_quantiles(col, q, w=w)
-            lo.append(v[0])
-            hi.append(v[1])
-        return list(zip(lo, hi))
-
-    def _traceplot(samples, weights, labels, out_path):
-        npar = samples.shape[1]
-        fig, axes = plt.subplots(npar, 1, figsize=(8, max(2, 1.0 * npar)), dpi=120, sharex=True)
-        if npar == 1:
-            axes = [axes]
-        x = np.arange(samples.shape[0])
-        c = (weights - weights.min()) / (weights.max() - weights.min() + 1e-12)
-        for i, ax in enumerate(axes):
-            ax.scatter(x, samples[:, i], c=c, s=4, cmap='plasma', alpha=0.75)
-            ax.set_ylabel(labels[i])
-        axes[-1].set_xlabel('Sample index')
-        fig.tight_layout()
-        plt.savefig(out_path, bbox_inches='tight')
-        plt.close(fig)
-
-    def _corner_parameters():
-            if os.path.isfile(prefix + 'params_original.json'):
-                pass
-            else:
-                os.system('mv ' + prefix + 'params.json ' + prefix + 'params_original.json')
-
-            par = []
-            if mnest.param['fit_p0'] and mnest.param['gas_par_space'] != 'partial_pressure':
-                par.append("Log(P$_0$ [Pa])")
-            elif not mnest.param['fit_p0'] and mnest.param['gas_par_space'] == 'partial_pressure':
-                par.append("Log(P$_0$ [Pa]) (derived)")
-            if mnest.param['fit_wtr_cld'] and mnest.param['PT_profile_type'] == 'isothermal':
-                par.append("Log(P$_{top, H_2O}$ [Pa])")
-                par.append("Log(D$_{H_2O}$ [Pa])")
-                par.append("Log(CR$_{H_2O}$)")
-            if mnest.param['fit_amm_cld'] and mnest.param['PT_profile_type'] == 'isothermal':
-                par.append("Log(P$_{top, NH_3}$ [Pa])")
-                par.append("Log(D$_{NH_3}$ [Pa])")
-                par.append("Log(CR$_{NH_3}$)")
-            for mol in mnest.param['fit_molecules']:
-                par.append(mnest.param['formatted_labels'][mol])
-            if mnest.param['gas_fill'] is not None:
-                if mnest.param['rocky']:
-                    par.append(mnest.param['formatted_labels'][mnest.param['gas_fill']] + " (derived)")
-                else:
-                    par.append("Log(H$_2$ + He) (derived)")
-            if mnest.param['fit_ag']:
-                if mnest.param['surface_albedo_parameters'] == int(1):
-                    par.append("$a_{surf}$")
-                elif mnest.param['surface_albedo_parameters'] == int(3):
-                    par.append("$a_{surf, 1}$")
-                    par.append("$a_{surf, 2}$")
-                    par.append("$\lambda_{surf, 1}$ [$\mu$m]")
-                elif mnest.param['surface_albedo_parameters'] == int(5):
-                    par.append("$a_{surf, 1}$")
-                    par.append("$a_{surf, 2}$")
-                    par.append("$a_{surf, 3}$")
-                    par.append("$\lambda_{surf, 1}$ [$\mu$m]")
-                    par.append("$\lambda_{surf, 2}$ [$\mu$m]")
-            if mnest.param['fit_T']:
-                if mnest.param['PT_profile_type'] == 'isothermal':
-                    par.append("T$_p$")
-                elif mnest.param['PT_profile_type'] == 'parametric':
-                    par.append("$\kappa_{th}$")
-                    par.append("$\gamma$")
-                    par.append("$\\beta$")
-                    if mnest.param['fit_Tint']:
-                        par.append("T$_{int}$")
-            if mnest.param['fit_cld_frac']:
-                par.append("Log(cld frac)")
-            if mnest.param['fit_g']:
-                par.append("Log(g [m/s$^2$])")
-            if mnest.param['fit_Mp']:
-                if mnest.param['rocky']:
-                    par.append("M$_p$ [M$_\oplus$]")
-                else:
-                    par.append("M$_p$ [M$_J$]")
-            if mnest.param['fit_Rp']:
-                if mnest.param['rocky']:
-                    par.append("R$_p$ [R$_\oplus$]")
-                else:
-                    par.append("R$_p$ [R$_{Jup}$]")
-            if mnest.param['fit_p_size'] and mnest.param['p_size_type'] == 'constant':
-                par.append("Log(P$_{size}$ [$\mu$m])")
-            elif mnest.param['fit_p_size'] and mnest.param['p_size_type'] == 'factor':
-                par.append("Log(P$_{size, fctr})$")
-            par.append("$\mu$ (derived)")
-            json.dump(par, open(prefix + 'params.json', 'w'))
-
-    def _quantile(x, q, weights=None):
-            """
-            Compute (weighted) quantiles from an input set of samples.
-            Parameters
-            ----------
-            x : `~numpy.ndarray` with shape (nsamps,)
-                Input samples.
-            q : `~numpy.ndarray` with shape (nquantiles,)
-               The list of quantiles to compute from `[0., 1.]`.
-            weights : `~numpy.ndarray` with shape (nsamps,), optional
-                The associated weight from each sample.
-            Returns
-            -------
-            quantiles : `~numpy.ndarray` with shape (nquantiles,)
-                The weighted sample quantiles computed at `q`.
-            """
-
-            # Initial check.
-            x = np.atleast_1d(x)
-            q = np.atleast_1d(q)
-
-            # Quantile check.
-            if np.any(q < 0.0) or np.any(q > 1.0):
-                raise ValueError("Quantiles must be between 0. and 1.")
-
-            if weights is None:
-                # If no weights provided, this simply calls `np.percentile`.
-                return np.percentile(x, list(100.0 * q))
-            else:
-                # If weights are provided, compute the weighted quantiles.
-                weights = np.atleast_1d(weights)
-                if len(x) != len(weights):
-                    raise ValueError("Dimension mismatch: len(weights) != len(x).")
-                idx = np.argsort(x)  # sort samples
-                sw = weights[idx]  # sort weights
-                cdf = np.cumsum(sw)[:-1]  # compute CDF
-                cdf /= cdf[-1]  # normalize CDF
-                cdf = np.append(0, cdf)  # ensure proper span
-                quantiles = np.interp(q, cdf, x[idx]).tolist()
-                return quantiles
-    
-    def _store_nest_solutions():
-            NEST_out = {'solutions': {}}
-            NEST_stats = multinest_results.get_stats()
-            NEST_out['NEST_stats'] = NEST_stats
-            NEST_out['global_logE'] = (NEST_out['NEST_stats']['global evidence'], NEST_out['NEST_stats']['global evidence error'])
-
-            modes = []
-            modes_weights = []
-            modes_loglike = []
-            chains = []
-            chains_weights = []
-            chains_loglike = []
-
-            # separate modes. get individual samples for each mode
-            # get parameter values and sample probability (=weight) for each mode
-            with open(prefix + 'post_separate.dat') as f:
-                lines = f.readlines()
-                for idx, line in enumerate(lines):
-                    if idx > 2:  # skip the first two lines
-                        if lines[idx - 1] == '\n' and lines[idx - 2] == '\n':
-                            modes.append(chains)
-                            modes_weights.append(chains_weights)
-                            modes_loglike.append(chains_loglike)
-                            chains = []
-                            chains_weights = []
-                            chains_loglike = []
-                    chain = [float(x) for x in line.split()[2:]]
-                    if len(chain) > 0:
-                        chains.append(chain)
-                        chains_weights.append(float(line.split()[0]))
-                        chains_loglike.append(float(line.split()[1]))
-                modes.append(chains)
-                modes_weights.append(chains_weights)
-                modes_loglike.append(chains_loglike)
-            modes_array = []
-            for mode in modes:
-                mode_array = np.zeros((len(mode), len(mode[0])))
-                for idx, line in enumerate(mode):
-                    mode_array[idx, :] = line
-                modes_array.append(mode_array)
-
-            for nmode in range(len(modes)):
-                mydict = {'type': 'nest',
-                          'local_logE': (NEST_out['NEST_stats']['modes'][nmode]['local log-evidence'], NEST_out['NEST_stats']['modes'][nmode]['local log-evidence error']),
-                          'weights': np.asarray(modes_weights[nmode]),
-                          'loglike': np.asarray(modes_loglike[nmode]),
-                          'tracedata': modes_array[nmode],
-                          'fit_params': {}}
-
-                for idx, param_name in enumerate(parameters):
-                    trace = modes_array[nmode][:, idx]
-                    q_16, q_50, q_84 = _quantile(trace, [0.16, 0.5, 0.84], weights=np.asarray(modes_weights[nmode]))
-                    mydict['fit_params'][param_name] = {
-                        'value': q_50,
-                        'sigma_m': q_50 - q_16,
-                        'sigma_p': q_84 - q_50,
-                        'nest_map': NEST_stats['modes'][nmode]['maximum a posterior'][idx],
-                        'mean': NEST_stats['modes'][nmode]['mean'][idx],
-                        'nest_sigma': NEST_stats['modes'][nmode]['sigma'][idx],
-                        'trace': trace,
-                    }
-
-                NEST_out['solutions']['solution{}'.format(nmode)] = mydict
-
-            return NEST_out
-
-    def _annotate_1d_stats(ax, data, weights, fmt='{:g} [−{:g}, +{:g}]'):
-        q16, q50, q84 = _weighted_quantiles(data, [0.16, 0.5, 0.84], w=weights)
-        lo = q50 - q16
-        hi = q84 - q50
-        txt = fmt.format(np.round(q50, 4), np.round(lo, 4), np.round(hi, 4))
-        ax.text(0.5, 1.02, txt, transform=ax.transAxes, ha='center', va='bottom', fontsize=8)
-
-    def _corner(samples, weights, labels, bounds, truths=None, color='#404784', fig=None, multimodal=False):
-        # 2D contours use sigma-credible regions at 0.5, 1.0, 2.0, 3.0σ
-        # Patch _corner to add stats text and keep speed
-
-        # ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f']
-        if color == '#1f77b4':
-            colormap = 'Blues'
-        elif color == '#ff7f0e':
-            colormap = 'Oranges'
-        elif color == '#2ca02c':
-            colormap = 'Greens'
-        elif color == '#d62728':
-            colormap = 'Reds'
-        elif color == '#9467bd':
-            colormap = 'Purples'
-        elif color == '#8c564b':
-            colormap = 'YlOrBr'
-        elif color == '#e377c2':
-            colormap = 'RdPu'
-        elif color == '#7f7f7f':
-            colormap = 'Greys'
-        else:
-            colormap = 'Blues'
-
-        npar = samples.shape[1]
-        if fig is None:
-            fig, axes = plt.subplots(npar, npar, figsize=(2.2 * npar, 2.2 * npar), dpi=130)
-        else:
-            axes = fig.axes
-            axes = np.asarray(axes).reshape(npar, npar)
-
-        for j in range(npar):
-            for i in range(npar):
-                ax = axes[j, i]
-                if j < i:
-                    ax.axis('off')
-                    continue
-                if j == i:
-                    lo, hi = bounds[i]
-                    mask = (samples[:, i] >= lo) & (samples[:, i] <= hi)
-                    grid = np.linspace(lo, hi, 300)
-                    try:
-                        # Slightly reduce Scott's factor to sharpen the 1D PDF
-                        bw = (lambda s: s.scotts_factor() * 0.25)
-                        kde = gaussian_kde(samples[mask, i], weights=weights[mask], bw_method=bw)
-                        dens = kde(grid)
-                        ax.plot(grid, dens, color=color, lw=1.6)
-                        qvals = _weighted_quantiles(samples[:, i], [0.16, 0.5, 0.84], w=weights)
-                        for q in qvals:
-                            ax.axvline(q, color=color, alpha=0.5, ls='--', lw=1.0)
-                        ax.set_yticks([])
-                    except Exception:
-                        ax.hist(samples[:, i], bins=40, weights=weights, color=color, alpha=0.6)
-                        ax.set_yticks([])
-                    ax.set_xlim(lo, hi)
-                    ax.set_xlabel(labels[i])
-                    if not multimodal:
-                        _annotate_1d_stats(ax, samples[:, i], weights)
-                    if truths is not None and truths[i] is not None:
-                        try:
-                            for t in truths[i]:
-                                ax.axvline(t, color='red', lw=1.2)
-                        except Exception:
-                            ax.axvline(truths[i], color='red', lw=1.2)
-                else:
-                    xlo, xhi = bounds[i]
-                    ylo, yhi = bounds[j]
-                    xi = samples[:, i]
-                    yi = samples[:, j]
-                    m = (xi >= xlo) & (xi <= xhi) & (yi >= ylo) & (yi <= yhi)
-                    xi, yi, wi = xi[m], yi[m], weights[m]
-                    if len(xi) > 10:
-                        xx = np.linspace(xlo, xhi, 120)
-                        yy = np.linspace(ylo, yhi, 120)
-                        xv, yv = np.meshgrid(xx, yy)
-                        try:
-                            kde = gaussian_kde(np.vstack([xi, yi]), weights=wi)
-                            dens = kde(np.vstack([xv.ravel(), yv.ravel()])).reshape(xv.shape)
-                            dens = norm_kde(dens, sigma=1.0)
-                            # Compute HPD thresholds corresponding to sigma levels
-                            # For a 2D Gaussian, mass within r=sigma is 1 - exp(-sigma^2/2)
-                            sigmas = np.array([0.5, 1.0, 2.0, 3.0])
-                            probs = 1.0 - np.exp(-0.5 * sigmas * sigmas)
-                            flat = dens.ravel()
-                            order = np.argsort(flat)[::-1]
-                            cdf = np.cumsum(flat[order])
-                            cdf /= (cdf[-1] + 1e-300)
-                            thr = np.interp(probs, cdf, flat[order])
-                            # Draw a light filled background for readability
-                            if not multimodal:
-                                ax.contourf(xx, yy, dens, levels=12, cmap=colormap, alpha=0.75)
-                            # Overlay sigma-level contour lines (HPD)
-                            ax.contour(xx, yy, dens, levels=np.sort(thr), colors=[color], linewidths=1.0)
-                        except Exception:
-                            ax.hist2d(xi, yi, bins=40, weights=wi, cmap=colormap)
-                    else:
-                        ax.scatter(xi, yi, s=2, color=color, alpha=0.6)
-                    ax.set_xlim(xlo, xhi)
-                    ax.set_ylim(ylo, yhi)
-                    if j == npar - 1:
-                        ax.set_xlabel(labels[i])
-                    if i == 0:
-                        ax.set_ylabel(labels[j])
-                    if truths is not None:
-                        if truths[i] is not None:
-                            try:
-                                for t in truths[i]:
-                                    ax.axvline(t, color='red', lw=0.8)
-                            except Exception:
-                                ax.axvline(truths[i], color='red', lw=0.8)
-                        if truths[j] is not None:
-                            try:
-                                for t in truths[j]:
-                                    ax.axhline(t, color='red', lw=0.8)
-                            except Exception:
-                                ax.axhline(truths[j], color='red', lw=0.8)
-        fig.tight_layout()
-        return fig
-    
-    def _plot_1d_posteriors(sample_sets, weight_sets, labels, bounds, outfile, colors, truths=None, legend_labels=None, max_idx=0):
-        """Create grid of 1D posterior PDFs (matching the corner diagonal panels)."""
-        from matplotlib.lines import Line2D
-        sample_sets = sample_sets if isinstance(sample_sets, (list, tuple)) else [sample_sets]
-        weight_sets = weight_sets if isinstance(weight_sets, (list, tuple)) else [weight_sets]
-        sample_sets = [np.asarray(s) for s in sample_sets]
-        weight_sets = [np.asarray(w) for w in weight_sets]
-        npar = sample_sets[0].shape[1]
-
-        def _grid_shape(npars):
-            if npars <= 0:
-                return 1, 1
-            cols = int(np.ceil(np.sqrt(2 * npars)))
-            cols = max(cols, 2)
-            rows = int(np.ceil(npars / cols))
-            while rows * 2 > cols:
-                cols = rows * 2
-                rows = int(np.ceil(npars / cols))
-            return rows, cols
-
-        rows, cols = _grid_shape(npar)
-        fig, axes = plt.subplots(rows, cols, figsize=(cols * 2.8, rows * 2.2), dpi=130)
-        axes = np.atleast_1d(axes).reshape(rows, cols)
-        flat_axes = axes.ravel()
-
-        for idx, ax in enumerate(flat_axes):
-            if idx >= npar:
-                ax.axis('off')
-                continue
-            lo, hi = bounds[idx]
-            grid = np.linspace(lo, hi, 320)
-            ymax = 0.0
-            for j, (samples, weights) in enumerate(zip(sample_sets, weight_sets)):
-                color = colors[j % len(colors)]
-                vec = samples[:, idx]
-                msk = (vec >= lo) & (vec <= hi)
-                try:
-                    if msk.sum() > 4:
-                        kde = gaussian_kde(vec[msk], weights=weights[msk],
-                                           bw_method=lambda s: s.scotts_factor() * 0.25)
-                        dens = kde(grid)
-                        ax.plot(grid, dens, color=color, lw=1.6, alpha=0.9)
-                        ymax = max(ymax, float(dens.max()) if dens.size else ymax)
-                    else:
-                        raise RuntimeError("Too few points for KDE")
-                except Exception:
-                    hist, edges = np.histogram(vec, bins=40, weights=weights, range=(lo, hi))
-                    centers = 0.5 * (edges[1:] + edges[:-1])
-                    ax.plot(centers, hist, color=color, lw=1.2, alpha=0.9, drawstyle='steps-mid')
-                    ymax = max(ymax, float(hist.max()) if hist.size else ymax)
-            if truths is not None and truths[idx] is not None:
-                try:
-                    iterator = truths[idx]
-                    for t in iterator:
-                        ax.axvline(t, color='red', lw=1.0, alpha=0.8)
-                except Exception:
-                    ax.axvline(truths[idx], color='red', lw=1.0, alpha=0.8)
-            ax.set_xlim(lo, hi)
-            ax.set_xlabel(labels[idx])
-            ax.set_yticks([])
-            if ymax > 0.0:
-                ax.set_ylim(0.0, ymax * 1.05)
-            _annotate_1d_stats(ax, sample_sets[max_idx][:, idx], weight_sets[max_idx])
-
-        if legend_labels and len(sample_sets) > 1:
-            right = max(0.5, 1 - (0.85 / fig.get_figwidth()))
-            fig.tight_layout(rect=[0, 0, right, 1])
-            handles = [Line2D([0], [0], color=colors[i % len(colors)], lw=1.6, label=legend_labels[i])
-                       for i in range(len(sample_sets))]
-            fig.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, 1.05), ncol=2, fontsize=8, frameon=True)
-
-        fig.tight_layout()
-        fig.savefig(outfile, bbox_inches='tight')
-        plt.close(fig)
-
-    def _corner_selected(labels):
-        """Return sorted label indices requested for the corner plot, or None."""
-        sel_cfg = mnest.param.get('corner_selected_params')
-        if not sel_cfg:
-            return None
-
-        from collections import defaultdict
-        import re
-
-        if isinstance(sel_cfg, str):
-            raw_terms = [chunk.strip() for chunk in re.split(r'[;,]', sel_cfg) if chunk.strip()]
-        else:
-            raw_terms = [str(chunk).strip() for chunk in sel_cfg if str(chunk).strip()]
-        if not raw_terms:
-            return None
-
-        label_lookup = defaultdict(list)
-        for idx, label in enumerate(labels):
-            label_lookup[label].append(idx)
-
-        selected = []
-        used = set()
-        missing = []
-
-        for raw in raw_terms:
-            candidates = label_lookup.get(raw, [])
-            if not candidates:
-                missing.append(raw)
-                continue
-
-            chosen = None
-            for idx in candidates:
-                if idx not in used:
-                    chosen = idx
-                    break
-            if chosen is None and candidates:
-                chosen = candidates[0]
-            if chosen is not None:
-                used.add(chosen)
-                selected.append(chosen)
-
-        if missing:
-            print(f"corner_selected_params - could not match: {', '.join(missing)}")
-
-        if not selected:
-            return None
-        return sorted(set(selected))
-
-    print('Generating the Posterior Distribution Functions (PDFs) plot')
-
-    _corner_parameters()
-    # Single-mode
-    if mds_orig < 2:
-        _posteriors_gas_to_vmr(prefix)
-
-        # Read MultiNest data through Analyzer to be robust
-        a = pymultinest.Analyzer(n_params=len(parameters), outputfiles_basename=prefix, verbose=False)
-        data = a.get_data()
-        s = a.get_stats()
-        order = data[:, 1].argsort()[::-1]
-        samples = data[order, 2:]
-        weights = data[order, 0]
-        loglike = data[order, 1]
-        Z = s.get('global evidence', s.get('global_logE', [0]))
-        if isinstance(Z, (list, tuple, np.ndarray)):
-            Z = Z[0]
-        logvol = log(weights) + 0.5 * loglike + Z
-        logvol = logvol - logvol.max()
-
-        print("Solution global log-evidence: " + str(s['modes'][0]['local log-evidence']))
-
-        labels = json.load(open(prefix + 'params.json'))
-
-        # Trace
-        _traceplot(samples, weights, labels, prefix + 'Nest_trace.png')
-        
-        bounds = _bounds(samples, weights)
-        truths = None
-        if mnest.param.get('truths') is not None:
-            try:
-                truths = list(np.loadtxt(mnest.param['truths']))
-            except Exception:
-                truths = None
-        if truths is not None:
-            truths = list(truths) + [None] * (len(labels) - len(truths))
-        selected_idx = _corner_selected(labels)
-        corner_labels_all = [labels[i] for i in selected_idx] if selected_idx else labels
-        corner_labels = [labels[i] for i in selected_idx] if selected_idx else labels
-        if selected_idx:
-            corner_samples = samples[:, selected_idx]
-            corner_bounds = [bounds[i] for i in selected_idx]
-            corner_truths = [truths[i] for i in selected_idx] if truths is not None else None
-        else:
-            corner_samples = samples
-            corner_bounds = bounds
-            corner_truths = truths
-        fig = _corner(corner_samples, weights, corner_labels, corner_bounds, truths=corner_truths, color='#404784')
-        
-        if mnest.param.get('corner_selected_params') is None:
-            plt.savefig(prefix + 'Nest_posteriors.pdf', bbox_inches='tight')
-        else:
-            plt.savefig(prefix + 'Nest_selected_posteriors.pdf', bbox_inches='tight')
-        plt.close(fig)
-
-        if mnest.param.get('corner_selected_params') is None:
-            _plot_1d_posteriors(corner_samples, weights, corner_labels, corner_bounds,
-                                prefix + 'Nest_1D_posteriors.pdf', colors=['#404784'],
-                                truths=corner_truths)
-        else:
-            _plot_1d_posteriors(corner_samples, weights, corner_labels, corner_bounds,
-                                prefix + 'Nest_selected_1D_posteriors.pdf', colors=['#404784'],
-                                truths=corner_truths)
-
-        # Restore modified files (if any)
-        if mnest.param['rocky'] and mnest.param['mod_prior']:
-            os.system('mv ' + prefix + '.txt ' + prefix + '_PostProcess.txt')
-            os.system('mv ' + prefix + 'original.txt ' + prefix + '.txt')
-        if os.path.isfile(prefix + 'params_original.json'):
-            os.system('mv ' + prefix + 'params.json ' + prefix + '_PostProcess.json')
-            os.system('mv ' + prefix + 'params_original.json ' + prefix + 'params.json')
-
-    # Multi-modal
-    else:
-        colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f']
-
-        # Load stats.json (as in original) to obtain local evidences
-        nest_out = _store_nest_solutions()
-
-        # Pick maximum-evidence mode first
-        max_ev, max_idx = -1e99, 0
-        for modes in range(0, mds_orig):
-            loc = nest_out['solutions']['solution' + str(modes)]['local_logE'][0]
-            if loc > max_ev:
-                max_ev, max_idx = loc, modes
-
-        result = {}
-        to_add = 0
-        to_plot = []
-        kept_modes = []
-
-        # Build a small helper to read solution file -> samples/weights/logvol
-        def _read_solution(midx):
-            _posteriors_gas_to_vmr(prefix, modes=midx)
-            data = np.loadtxt(prefix + 'solution' + str(midx) + '.txt')
-            order = data[:, 1].argsort()[::-1]
-            samples = data[order, 2:]
-            weights = data[order, 0]
-            loglike = data[order, 1]
-            Z = nest_out.get('global_logE', [0])[0]
-            logvol = log(weights) + 0.5 * loglike + Z
-            logvol = logvol - logvol.max()
-            return samples, weights, logvol
-
-        # Always include the maximum-evidence solution
-        s0, w0, lv0 = _read_solution(max_idx)
-        result[str(to_add)] = dict(samples=s0, weights=w0, logvol=lv0)
-        to_plot.append(max_idx)
-        kept_modes.append(max_idx)
-        to_add += 1
-
-        # Add other significant modes
-        thresh = 11.0 if mnest.param.get('filter_multi_solutions') else 1000.0
-        for modes in range(0, mds_orig):
-            if modes == max_idx:
-                continue
-            local = nest_out['solutions']['solution' + str(modes)]['local_logE'][0]
-            if (max_ev - local) < thresh:
-                s1, w1, lv1 = _read_solution(modes)
-                result[str(to_add)] = dict(samples=s1, weights=w1, logvol=lv1)
-                to_plot.append(modes)
-                kept_modes.append(modes)
-                to_add += 1
-
-        labels = json.load(open(prefix + 'params.json'))
-        selected_idx = _corner_selected(labels)
-        corner_labels_all = [labels[i] for i in selected_idx] if selected_idx else labels
-
-        # Individual traces and corner plots
-        for k, midx in enumerate(to_plot):
-            _traceplot(result[str(k)]['samples'], result[str(k)]['weights'], labels,
-                       prefix + ('Nest_trace_sol' + str(midx) + '.png' if len(to_plot) > 1 else 'Nest_trace.png'))
-
-            bnd = _bounds(result[str(k)]['samples'], result[str(k)]['weights'])
-            truths = None
-            if mnest.param.get('truths') is not None:
-                try:
-                    truths = list(np.loadtxt(mnest.param['truths']))
-                except Exception:
-                    truths = None
-            if truths is not None:
-                truths = list(truths) + [None] * (len(labels) - len(truths))
-            corner_labels = corner_labels_all
-            if selected_idx:
-                corner_samples = result[str(k)]['samples'][:, selected_idx]
-                corner_bounds = [bnd[i] for i in selected_idx]
-                corner_truths = [truths[i] for i in selected_idx] if truths is not None else None
-            else:
-                corner_samples = result[str(k)]['samples']
-                corner_bounds = bnd
-                corner_truths = truths
-            fig = _corner(corner_samples, result[str(k)]['weights'], corner_labels, corner_bounds,
-                          truths=corner_truths, color=colors[k])
-            if mnest.param.get('corner_selected_params') is None:
-                outp = prefix + ('Nest_posteriors_sol' + str(midx) + '.pdf' if len(to_plot) > 1 else 'Nest_posteriors.pdf')
-            else:
-                outp = prefix + ('Nest_selected_posteriors_sol' + str(midx) + '.pdf' if len(to_plot) > 1 else 'Nest_selected_posteriors.pdf')
-            plt.savefig(outp, bbox_inches='tight')
-            plt.close(fig)
-
-        # Combined overlay corner plot
-        # Determine union bounds across kept modes
-        mins, maxs = None, None
-        for k in range(to_add):
-            b = _bounds(result[str(k)]['samples'], result[str(k)]['weights'])
-            lo = np.array([bb[0] for bb in b])
-            hi = np.array([bb[1] for bb in b])
-            mins = lo if mins is None else np.minimum(mins, lo)
-            maxs = hi if maxs is None else np.maximum(maxs, hi)
-        union_bounds = list(zip(mins.tolist(), maxs.tolist()))
-
-        fig = None
-        truths = None
-        if mnest.param.get('truths') is not None:
-            try:
-                truths = list(np.loadtxt(mnest.param['truths']))
-            except Exception:
-                truths = None
-        if truths is not None:
-            truths = list(truths) + [None] * (len(labels) - len(truths))
-        overlay_labels = corner_labels_all
-        if selected_idx:
-            overlay_bounds = [union_bounds[i] for i in selected_idx]
-            overlay_truths = [truths[i] for i in selected_idx] if truths is not None else None
-        else:
-            overlay_bounds = union_bounds
-            overlay_truths = truths
-        for k in range(to_add):
-            overlay_samples = result[str(k)]['samples'][:, selected_idx] if selected_idx else result[str(k)]['samples']
-            fig = _corner(overlay_samples, result[str(k)]['weights'], overlay_labels,
-                          overlay_bounds, truths=overlay_truths, color=colors[k], fig=fig, multimodal=True)
-
-        if mnest.param.get('corner_selected_params') is None:
-            plt.savefig(prefix + 'Nest_posteriors.pdf', bbox_inches='tight')
-        else:
-            plt.savefig(prefix + 'Nest_selected_posteriors.pdf', bbox_inches='tight')
-        plt.close()
-
-        sample_sets = [result[str(k)]['samples'] for k in range(to_add)]
-        weight_sets = [result[str(k)]['weights'] for k in range(to_add)]
-        legend_labels = [f'Solution {to_plot[k] + 1}' for k in range(to_add)] if to_add > 1 else None
-        sel_colors = [colors[k % len(colors)] for k in range(to_add)]
-        plot_labels = corner_labels_all
-        if selected_idx:
-            plot_bounds = [union_bounds[i] for i in selected_idx]
-            plot_truths = [truths[i] for i in selected_idx] if truths is not None else None
-            sample_sets = [s[:, selected_idx] for s in sample_sets]
-        else:
-            plot_bounds = union_bounds
-            plot_truths = truths
-        
-        if mnest.param.get('corner_selected_params') is None:
-            _plot_1d_posteriors(sample_sets, weight_sets, plot_labels, plot_bounds,
-                                prefix + 'Nest_1D_posteriors.pdf', colors=sel_colors,
-                                truths=plot_truths, legend_labels=legend_labels, max_idx=max_idx)
-        else:
-            _plot_1d_posteriors(sample_sets, weight_sets, plot_labels, plot_bounds,
-                                prefix + 'Nest_selected_1D_posteriors.pdf', colors=sel_colors,
-                                truths=plot_truths, legend_labels=legend_labels, max_idx=max_idx)
-
-        # Restore modified files (if any)
-        for modes in kept_modes:
-            if mnest.param['rocky'] and mnest.param['mod_prior']:
-                os.system('mv ' + prefix + 'solution' + str(modes) + '.txt ' + prefix + 'solution' + str(modes) + '_PostProcess.txt')
-                os.system('mv ' + prefix + 'solution' + str(modes) + '_original.txt ' + prefix + 'solution' + str(modes) + '.txt')
-        if os.path.isfile(prefix + 'params_original.json'):
-            os.system('mv ' + prefix + 'params.json ' + prefix + '_PostProcess.json')
-            os.system('mv ' + prefix + 'params_original.json ' + prefix + 'params.json')
-
-
 def plot_contribution(mnest, cube, solutions=0):
     """Plot per-molecule spectral contributions at R≈500 and export components.
 
@@ -1881,3 +1076,1137 @@ def elpd_loo_stats(mnest, parameters, solutions=0):
             fig.tight_layout()
             fig.savefig(mnest.param['out_dir'] + f'elpd_loo_SE_comparison_sol{solutions}.pdf')
             plt.close(fig)
+
+
+@_isolate_posterior_plot_style
+def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
+    """Plot posterior traces and corner plots (single or multi-mode).
+
+    - Uses the MultiNest outputs at `prefix` to build weighted samples.
+    - Produces the same filenames as before for compatibility:
+      `Nest_trace.pdf`, `Nest_posteriors.pdf`, and per-solution files when multimodal.
+    - Keeps behavior for gas parameter conversion to VMR when applicable.
+    - Improves visuals slightly and avoids redundant I/O.
+    """
+    import os
+    import json
+    import numpy as np
+    import matplotlib.pyplot as plt
+    import pymultinest
+    from numpy import log
+    from scipy.stats import gaussian_kde
+    from scipy.ndimage import gaussian_filter as norm_kde
+    from skbio.stats.composition import clr_inv
+    from astropy import constants as const
+
+    def _posteriors_gas_to_vmr(loc_prefix, modes=None):
+        """Convert gas posteriors to VMR space and append mean molecular mass.
+        Mirrors previous logic to preserve outputs.
+        """
+        if modes is None:
+            os.system('cp ' + loc_prefix + '.txt ' + loc_prefix + 'original.txt')
+            a = np.loadtxt(loc_prefix + '.txt')
+        else:
+            os.system('cp ' + loc_prefix + 'solution' + str(modes) + '.txt ' + loc_prefix + 'solution' + str(modes) + '_original.txt')
+            a = np.loadtxt(loc_prefix + 'solution' + str(modes) + '.txt')
+
+        b = np.ones((len(a[:, 0]), len(a[0, :]) + 2))
+
+        if mnest.param['fit_p0'] and mnest.param['gas_par_space'] != 'partial_pressure':
+            b[:, 0:6] = a[:, 0:6] + 0.0
+            z = 6
+        elif mnest.param['gas_par_space'] == 'partial_pressure':
+            b[:, 0:2] = a[:, 0:2] + 0.0
+            b[:, 3:6] = a[:, 2:5] + 0.0
+            z = 5
+        else:
+            b[:, 0:5] = a[:, 0:5] + 0.0
+            z = 5
+
+        if not mnest.param['fit_wtr_cld'] or mnest.param['PT_profile_type'] == 'parametric':
+            z -= 3
+        if mnest.param['fit_amm_cld']:
+            b[:, 0:z + 3] = a[:, 0:z + 3] + 0.0
+            z += 3
+
+        volume_mixing_ratio = {}
+        if mnest.param['gas_par_space'] in ('centered_log_ratio', 'clr'):
+            c_l_r = np.array(a[:, z:z + len(mnest.param['fit_molecules'])])
+            c_l_r = np.concatenate((c_l_r, np.array([-np.sum(c_l_r, axis=1)]).T), axis=1)
+            v_m_r = clr_inv(c_l_r)
+            for i, mol in enumerate(mnest.param['fit_molecules']):
+                volume_mixing_ratio[mol] = v_m_r[:, i]
+            volume_mixing_ratio[mnest.param['gas_fill']] = v_m_r[:, -1]
+        elif mnest.param['gas_par_space'] in ('volume_mixing_ratio', 'vmr'):
+            volume_mixing_ratio[mnest.param['gas_fill']] = np.ones(len(a[:, 0]))
+            for i, mol in enumerate(mnest.param['fit_molecules']):
+                vmr_i = 10.0 ** np.array(a[:, z + i])
+                volume_mixing_ratio[mol] = vmr_i
+                volume_mixing_ratio[mnest.param['gas_fill']] -= vmr_i
+        elif mnest.param['gas_par_space'] == 'partial_pressure':
+            b[:, 2] = np.sum(10.0 ** np.array(a[:, z:z + len(mnest.param['fit_molecules'])]), axis=1)  # PDF of P0 (surface pressure)
+            for i, mol in enumerate(mnest.param['fit_molecules']):
+                volume_mixing_ratio[mol] = (10.0 ** np.array(a[:, z + i])) / b[:, 2]
+            b[:, 2] = np.log10(b[:, 2])
+
+        mmm = np.zeros(len(a[:, 0]))
+        for mol in volume_mixing_ratio.keys():
+            mmm += volume_mixing_ratio[mol] * mnest.param['mm'][mol]
+
+        if mnest.param['gas_par_space'] != 'partial_pressure':
+            for i, mol in enumerate(mnest.param['fit_molecules']):
+                b[:, z + i] = np.log10(volume_mixing_ratio[mol])
+            if mnest.param['gas_fill'] is not None:
+                b[:, z + i + 1] = np.log10(volume_mixing_ratio[mnest.param['gas_fill']])
+        else:
+            for i, mol in enumerate(mnest.param['fit_molecules']):
+                b[:, (z + 1) + i] = np.log10(volume_mixing_ratio[mol])
+
+        b[:, z + i + 2:-1] = a[:, z + i + 1:] + 0.0
+
+        locate_mp_rp = 4 if mnest.param['fit_p_size'] else 3
+        if mnest.param['rocky'] and mnest.param['fit_Mp']:
+            b[:, -locate_mp_rp] *= (const.M_jup.value / const.M_earth.value)
+        if mnest.param['rocky'] and mnest.param['fit_Rp']:
+            b[:, -(locate_mp_rp - 1)] *= (const.R_jup.value / const.R_earth.value)
+        if mnest.param['fit_g']:
+            b[:, -(locate_mp_rp - 2)] = 10. ** (b[:, -(locate_mp_rp - 2)] - 2.0)
+
+        b[:, -1] = np.array(mmm) + 0.0
+
+        if modes is None:
+            np.savetxt(loc_prefix + '.txt', b)
+        else:
+            np.savetxt(loc_prefix + 'solution' + str(modes) + '.txt', b)
+
+    def _weighted_quantiles(x, qs, w=None):
+        x = np.asarray(x)
+        qs = np.atleast_1d(qs)
+        if w is None:
+            return np.percentile(x, list(100.0 * qs))
+        w = np.asarray(w)
+        sorter = np.argsort(x)
+        x, w = x[sorter], w[sorter]
+        cw = np.cumsum(w)
+        cw /= cw[-1]
+        return np.interp(qs, cw, x)
+
+    def _bounds(samples, weights):
+        span = 0.999999426697
+        lo, hi = [], []
+        for i in range(samples.shape[1]):
+            # Drop non-finite sample/weight pairs to avoid propagating NaNs into the bounds
+            finite = np.isfinite(samples[:, i]) & np.isfinite(weights)
+            if not np.any(finite):
+                lo.append(0.0)
+                hi.append(0.0)
+                continue
+            col = samples[finite, i]
+            w = weights[finite]
+            q = [0.5 - 0.5 * span, 0.5 + 0.5 * span]
+            if np.sum(w) <= 0:
+                v = _weighted_quantiles(col, q, w=None)
+            else:
+                v = _weighted_quantiles(col, q, w=w)
+            lo.append(v[0])
+            hi.append(v[1])
+        return list(zip(lo, hi))
+
+    def _traceplot(samples, weights, labels, out_path):
+        npar = samples.shape[1]
+        fig, axes = plt.subplots(npar, 1, figsize=(8, max(2, 1.0 * npar)), dpi=120, sharex=True)
+        if npar == 1:
+            axes = [axes]
+        x = np.arange(samples.shape[0])
+        c = (weights - weights.min()) / (weights.max() - weights.min() + 1e-12)
+        for i, ax in enumerate(axes):
+            ax.scatter(x, samples[:, i], c=c, s=4, cmap='plasma', alpha=0.75)
+            ax.set_ylabel(labels[i])
+        axes[-1].set_xlabel('Sample index')
+        fig.tight_layout()
+        plt.savefig(out_path, bbox_inches='tight')
+        plt.close(fig)
+
+    def _corner_parameters():
+            if os.path.isfile(prefix + 'params_original.json'):
+                pass
+            else:
+                os.system('mv ' + prefix + 'params.json ' + prefix + 'params_original.json')
+
+            par = []
+            if mnest.param['fit_p0'] and mnest.param['gas_par_space'] != 'partial_pressure':
+                par.append("Log(P$_0$ [Pa])")
+            elif not mnest.param['fit_p0'] and mnest.param['gas_par_space'] == 'partial_pressure':
+                par.append("Log(P$_0$ [Pa]) (derived)")
+            if mnest.param['fit_wtr_cld'] and mnest.param['PT_profile_type'] == 'isothermal':
+                par.append("Log(P$_{top, H_2O}$ [Pa])")
+                par.append("Log(D$_{H_2O}$ [Pa])")
+                par.append("Log(CR$_{H_2O}$)")
+            if mnest.param['fit_amm_cld'] and mnest.param['PT_profile_type'] == 'isothermal':
+                par.append("Log(P$_{top, NH_3}$ [Pa])")
+                par.append("Log(D$_{NH_3}$ [Pa])")
+                par.append("Log(CR$_{NH_3}$)")
+            for mol in mnest.param['fit_molecules']:
+                par.append(mnest.param['formatted_labels'][mol])
+            if mnest.param['gas_fill'] is not None:
+                if mnest.param['rocky']:
+                    par.append(mnest.param['formatted_labels'][mnest.param['gas_fill']] + " (derived)")
+                else:
+                    par.append("Log(H$_2$ + He) (derived)")
+            if mnest.param['fit_ag']:
+                if mnest.param['surface_albedo_parameters'] == int(1):
+                    par.append("$a_{surf}$")
+                elif mnest.param['surface_albedo_parameters'] == int(3):
+                    par.append("$a_{surf, 1}$")
+                    par.append("$a_{surf, 2}$")
+                    par.append("$\lambda_{surf, 1}$ [$\mu$m]")
+                elif mnest.param['surface_albedo_parameters'] == int(5):
+                    par.append("$a_{surf, 1}$")
+                    par.append("$a_{surf, 2}$")
+                    par.append("$a_{surf, 3}$")
+                    par.append("$\lambda_{surf, 1}$ [$\mu$m]")
+                    par.append("$\lambda_{surf, 2}$ [$\mu$m]")
+            if mnest.param['fit_T']:
+                if mnest.param['PT_profile_type'] == 'isothermal':
+                    par.append("T$_p$")
+                elif mnest.param['PT_profile_type'] == 'parametric':
+                    par.append("$\kappa_{th}$")
+                    par.append("$\gamma$")
+                    par.append("$\\beta$")
+                    if mnest.param['fit_Tint']:
+                        par.append("T$_{int}$")
+            if mnest.param['fit_cld_frac']:
+                par.append("Log(cld frac)")
+            if mnest.param['fit_g']:
+                par.append("Log(g [m/s$^2$])")
+            if mnest.param['fit_Mp']:
+                if mnest.param['rocky']:
+                    par.append("M$_p$ [M$_\oplus$]")
+                else:
+                    par.append("M$_p$ [M$_J$]")
+            if mnest.param['fit_Rp']:
+                if mnest.param['rocky']:
+                    par.append("R$_p$ [R$_\oplus$]")
+                else:
+                    par.append("R$_p$ [R$_{Jup}$]")
+            if mnest.param['fit_p_size'] and mnest.param['p_size_type'] == 'constant':
+                par.append("Log(P$_{size}$ [$\mu$m])")
+            elif mnest.param['fit_p_size'] and mnest.param['p_size_type'] == 'factor':
+                par.append("Log(P$_{size, fctr})$")
+            par.append("$\mu$ (derived)")
+            json.dump(par, open(prefix + 'params.json', 'w'))
+
+    def _quantile(x, q, weights=None):
+            """
+            Compute (weighted) quantiles from an input set of samples.
+            Parameters
+            ----------
+            x : `~numpy.ndarray` with shape (nsamps,)
+                Input samples.
+            q : `~numpy.ndarray` with shape (nquantiles,)
+               The list of quantiles to compute from `[0., 1.]`.
+            weights : `~numpy.ndarray` with shape (nsamps,), optional
+                The associated weight from each sample.
+            Returns
+            -------
+            quantiles : `~numpy.ndarray` with shape (nquantiles,)
+                The weighted sample quantiles computed at `q`.
+            """
+
+            # Initial check.
+            x = np.atleast_1d(x)
+            q = np.atleast_1d(q)
+
+            # Quantile check.
+            if np.any(q < 0.0) or np.any(q > 1.0):
+                raise ValueError("Quantiles must be between 0. and 1.")
+
+            if weights is None:
+                # If no weights provided, this simply calls `np.percentile`.
+                return np.percentile(x, list(100.0 * q))
+            else:
+                # If weights are provided, compute the weighted quantiles.
+                weights = np.atleast_1d(weights)
+                if len(x) != len(weights):
+                    raise ValueError("Dimension mismatch: len(weights) != len(x).")
+                idx = np.argsort(x)  # sort samples
+                sw = weights[idx]  # sort weights
+                cdf = np.cumsum(sw)[:-1]  # compute CDF
+                cdf /= cdf[-1]  # normalize CDF
+                cdf = np.append(0, cdf)  # ensure proper span
+                quantiles = np.interp(q, cdf, x[idx]).tolist()
+                return quantiles
+    
+    def _store_nest_solutions():
+            NEST_out = {'solutions': {}}
+            NEST_stats = multinest_results.get_stats()
+            NEST_out['NEST_stats'] = NEST_stats
+            NEST_out['global_logE'] = (NEST_out['NEST_stats']['global evidence'], NEST_out['NEST_stats']['global evidence error'])
+
+            modes = []
+            modes_weights = []
+            modes_loglike = []
+            chains = []
+            chains_weights = []
+            chains_loglike = []
+
+            # separate modes. get individual samples for each mode
+            # get parameter values and sample probability (=weight) for each mode
+            with open(prefix + 'post_separate.dat') as f:
+                lines = f.readlines()
+                for idx, line in enumerate(lines):
+                    if idx > 2:  # skip the first two lines
+                        if lines[idx - 1] == '\n' and lines[idx - 2] == '\n':
+                            modes.append(chains)
+                            modes_weights.append(chains_weights)
+                            modes_loglike.append(chains_loglike)
+                            chains = []
+                            chains_weights = []
+                            chains_loglike = []
+                    chain = [float(x) for x in line.split()[2:]]
+                    if len(chain) > 0:
+                        chains.append(chain)
+                        chains_weights.append(float(line.split()[0]))
+                        chains_loglike.append(float(line.split()[1]))
+                modes.append(chains)
+                modes_weights.append(chains_weights)
+                modes_loglike.append(chains_loglike)
+            modes_array = []
+            for mode in modes:
+                mode_array = np.zeros((len(mode), len(mode[0])))
+                for idx, line in enumerate(mode):
+                    mode_array[idx, :] = line
+                modes_array.append(mode_array)
+
+            for nmode in range(len(modes)):
+                mydict = {'type': 'nest',
+                          'local_logE': (NEST_out['NEST_stats']['modes'][nmode]['local log-evidence'], NEST_out['NEST_stats']['modes'][nmode]['local log-evidence error']),
+                          'weights': np.asarray(modes_weights[nmode]),
+                          'loglike': np.asarray(modes_loglike[nmode]),
+                          'tracedata': modes_array[nmode],
+                          'fit_params': {}}
+
+                for idx, param_name in enumerate(parameters):
+                    trace = modes_array[nmode][:, idx]
+                    q_16, q_50, q_84 = _quantile(trace, [0.16, 0.5, 0.84], weights=np.asarray(modes_weights[nmode]))
+                    mydict['fit_params'][param_name] = {
+                        'value': q_50,
+                        'sigma_m': q_50 - q_16,
+                        'sigma_p': q_84 - q_50,
+                        'nest_map': NEST_stats['modes'][nmode]['maximum a posterior'][idx],
+                        'mean': NEST_stats['modes'][nmode]['mean'][idx],
+                        'nest_sigma': NEST_stats['modes'][nmode]['sigma'][idx],
+                        'trace': trace,
+                    }
+
+                NEST_out['solutions']['solution{}'.format(nmode)] = mydict
+
+            return NEST_out
+
+    def _annotate_1d_stats(ax, data, weights, fmt='{:g} [−{:g}, +{:g}]'):
+        q16, q50, q84 = _weighted_quantiles(data, [0.16, 0.5, 0.84], w=weights)
+        lo = q50 - q16
+        hi = q84 - q50
+        txt = fmt.format(np.round(q50, 4), np.round(lo, 4), np.round(hi, 4))
+        ax.text(0.5, 1.02, txt, transform=ax.transAxes, ha='center', va='bottom', fontsize=8)
+
+    def _corner(samples, weights, labels, bounds, truths=None, color='#404784', fig=None, multimodal=False):
+        # 2D contours use sigma-credible regions at 0.5, 1.0, 2.0, 3.0σ
+        # Patch _corner to add stats text and keep speed
+
+        # ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f']
+        if color == '#1f77b4':
+            colormap = 'Blues'
+        elif color == '#ff7f0e':
+            colormap = 'Oranges'
+        elif color == '#2ca02c':
+            colormap = 'Greens'
+        elif color == '#d62728':
+            colormap = 'Reds'
+        elif color == '#9467bd':
+            colormap = 'Purples'
+        elif color == '#8c564b':
+            colormap = 'YlOrBr'
+        elif color == '#e377c2':
+            colormap = 'RdPu'
+        elif color == '#7f7f7f':
+            colormap = 'Greys'
+        else:
+            colormap = 'Blues'
+
+        npar = samples.shape[1]
+        if fig is None:
+            fig, axes = plt.subplots(npar, npar, figsize=(2.2 * npar, 2.2 * npar), dpi=130)
+        else:
+            axes = fig.axes
+            axes = np.asarray(axes).reshape(npar, npar)
+
+        for j in range(npar):
+            for i in range(npar):
+                ax = axes[j, i]
+                if j < i:
+                    ax.axis('off')
+                    continue
+                if j == i:
+                    lo, hi = bounds[i]
+                    mask = (samples[:, i] >= lo) & (samples[:, i] <= hi)
+                    grid = np.linspace(lo, hi, 300)
+                    try:
+                        # Slightly reduce Scott's factor to sharpen the 1D PDF
+                        bw = (lambda s: s.scotts_factor() * 0.25)
+                        kde = gaussian_kde(samples[mask, i], weights=weights[mask], bw_method=bw)
+                        dens = kde(grid)
+                        ax.plot(grid, dens, color=color, lw=1.6)
+                        qvals = _weighted_quantiles(samples[:, i], [0.16, 0.5, 0.84], w=weights)
+                        for q in qvals:
+                            ax.axvline(q, color=color, alpha=0.5, ls='--', lw=1.0)
+                        ax.set_yticks([])
+                    except Exception:
+                        ax.hist(samples[:, i], bins=40, weights=weights, color=color, alpha=0.6)
+                        ax.set_yticks([])
+                    ax.set_xlim(lo, hi)
+                    ax.set_xlabel(labels[i])
+                    if not multimodal:
+                        _annotate_1d_stats(ax, samples[:, i], weights)
+                    if truths is not None and truths[i] is not None:
+                        try:
+                            for t in truths[i]:
+                                ax.axvline(t, color='red', lw=1.2)
+                        except Exception:
+                            ax.axvline(truths[i], color='red', lw=1.2)
+                else:
+                    xlo, xhi = bounds[i]
+                    ylo, yhi = bounds[j]
+                    xi = samples[:, i]
+                    yi = samples[:, j]
+                    m = (xi >= xlo) & (xi <= xhi) & (yi >= ylo) & (yi <= yhi)
+                    xi, yi, wi = xi[m], yi[m], weights[m]
+                    if len(xi) > 10:
+                        xx = np.linspace(xlo, xhi, 120)
+                        yy = np.linspace(ylo, yhi, 120)
+                        xv, yv = np.meshgrid(xx, yy)
+                        try:
+                            kde = gaussian_kde(np.vstack([xi, yi]), weights=wi)
+                            dens = kde(np.vstack([xv.ravel(), yv.ravel()])).reshape(xv.shape)
+                            dens = norm_kde(dens, sigma=1.0)
+                            # Compute HPD thresholds corresponding to sigma levels
+                            # For a 2D Gaussian, mass within r=sigma is 1 - exp(-sigma^2/2)
+                            sigmas = np.array([0.5, 1.0, 2.0, 3.0])
+                            probs = 1.0 - np.exp(-0.5 * sigmas * sigmas)
+                            flat = dens.ravel()
+                            order = np.argsort(flat)[::-1]
+                            cdf = np.cumsum(flat[order])
+                            cdf /= (cdf[-1] + 1e-300)
+                            thr = np.interp(probs, cdf, flat[order])
+                            # Draw a light filled background for readability
+                            if not multimodal:
+                                ax.contourf(xx, yy, dens, levels=12, cmap=colormap, alpha=0.75)
+                            # Overlay sigma-level contour lines (HPD)
+                            ax.contour(xx, yy, dens, levels=np.sort(thr), colors=[color], linewidths=1.0)
+                        except Exception:
+                            ax.hist2d(xi, yi, bins=40, weights=wi, cmap=colormap)
+                    else:
+                        ax.scatter(xi, yi, s=2, color=color, alpha=0.6)
+                    ax.set_xlim(xlo, xhi)
+                    ax.set_ylim(ylo, yhi)
+                    if j == npar - 1:
+                        ax.set_xlabel(labels[i])
+                    if i == 0:
+                        ax.set_ylabel(labels[j])
+                    if truths is not None:
+                        if truths[i] is not None:
+                            try:
+                                for t in truths[i]:
+                                    ax.axvline(t, color='red', lw=0.8)
+                            except Exception:
+                                ax.axvline(truths[i], color='red', lw=0.8)
+                        if truths[j] is not None:
+                            try:
+                                for t in truths[j]:
+                                    ax.axhline(t, color='red', lw=0.8)
+                            except Exception:
+                                ax.axhline(truths[j], color='red', lw=0.8)
+        fig.tight_layout()
+        return fig
+    
+    def _plot_1d_posteriors(sample_sets, weight_sets, labels, bounds, outfile, colors, truths=None, legend_labels=None, max_idx=0):
+        """Create grid of 1D posterior PDFs (matching the corner diagonal panels)."""
+        from matplotlib.lines import Line2D
+        sample_sets = sample_sets if isinstance(sample_sets, (list, tuple)) else [sample_sets]
+        weight_sets = weight_sets if isinstance(weight_sets, (list, tuple)) else [weight_sets]
+        sample_sets = [np.asarray(s) for s in sample_sets]
+        weight_sets = [np.asarray(w) for w in weight_sets]
+        npar = sample_sets[0].shape[1]
+
+        def _grid_shape(npars):
+            if npars <= 0:
+                return 1, 1
+            cols = int(np.ceil(np.sqrt(2 * npars)))
+            cols = max(cols, 2)
+            rows = int(np.ceil(npars / cols))
+            while rows * 2 > cols:
+                cols = rows * 2
+                rows = int(np.ceil(npars / cols))
+            return rows, cols
+
+        rows, cols = _grid_shape(npar)
+        fig, axes = plt.subplots(rows, cols, figsize=(cols * 2.8, rows * 2.2), dpi=130)
+        axes = np.atleast_1d(axes).reshape(rows, cols)
+        flat_axes = axes.ravel()
+
+        for idx, ax in enumerate(flat_axes):
+            if idx >= npar:
+                ax.axis('off')
+                continue
+            lo, hi = bounds[idx]
+            grid = np.linspace(lo, hi, 320)
+            ymax = 0.0
+            for j, (samples, weights) in enumerate(zip(sample_sets, weight_sets)):
+                color = colors[j % len(colors)]
+                vec = samples[:, idx]
+                msk = (vec >= lo) & (vec <= hi)
+                try:
+                    if msk.sum() > 4:
+                        kde = gaussian_kde(vec[msk], weights=weights[msk],
+                                           bw_method=lambda s: s.scotts_factor() * 0.25)
+                        dens = kde(grid)
+                        ax.plot(grid, dens, color=color, lw=1.6, alpha=0.9)
+                        ymax = max(ymax, float(dens.max()) if dens.size else ymax)
+                    else:
+                        raise RuntimeError("Too few points for KDE")
+                except Exception:
+                    hist, edges = np.histogram(vec, bins=40, weights=weights, range=(lo, hi))
+                    centers = 0.5 * (edges[1:] + edges[:-1])
+                    ax.plot(centers, hist, color=color, lw=1.2, alpha=0.9, drawstyle='steps-mid')
+                    ymax = max(ymax, float(hist.max()) if hist.size else ymax)
+            if truths is not None and truths[idx] is not None:
+                try:
+                    iterator = truths[idx]
+                    for t in iterator:
+                        ax.axvline(t, color='red', lw=1.0, alpha=0.8)
+                except Exception:
+                    ax.axvline(truths[idx], color='red', lw=1.0, alpha=0.8)
+            ax.set_xlim(lo, hi)
+            ax.set_xlabel(labels[idx])
+            ax.set_yticks([])
+            if ymax > 0.0:
+                ax.set_ylim(0.0, ymax * 1.05)
+            _annotate_1d_stats(ax, sample_sets[max_idx][:, idx], weight_sets[max_idx])
+
+        if legend_labels and len(sample_sets) > 1:
+            right = max(0.5, 1 - (0.85 / fig.get_figwidth()))
+            fig.tight_layout(rect=[0, 0, right, 1])
+            handles = [Line2D([0], [0], color=colors[i % len(colors)], lw=1.6, label=legend_labels[i])
+                       for i in range(len(sample_sets))]
+            fig.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, 1.05), ncol=2, fontsize=8, frameon=True)
+
+        fig.tight_layout()
+        fig.savefig(outfile, bbox_inches='tight')
+        plt.close(fig)
+
+    def _corner_selected(labels):
+        """Return sorted label indices requested for the corner plot, or None."""
+        sel_cfg = mnest.param.get('corner_selected_params')
+        if not sel_cfg:
+            return None
+
+        from collections import defaultdict
+        import re
+
+        if isinstance(sel_cfg, str):
+            raw_terms = [chunk.strip() for chunk in re.split(r'[;,]', sel_cfg) if chunk.strip()]
+        else:
+            raw_terms = [str(chunk).strip() for chunk in sel_cfg if str(chunk).strip()]
+        if not raw_terms:
+            return None
+
+        label_lookup = defaultdict(list)
+        for idx, label in enumerate(labels):
+            label_lookup[label].append(idx)
+
+        selected = []
+        used = set()
+        missing = []
+
+        for raw in raw_terms:
+            candidates = label_lookup.get(raw, [])
+            if not candidates:
+                missing.append(raw)
+                continue
+
+            chosen = None
+            for idx in candidates:
+                if idx not in used:
+                    chosen = idx
+                    break
+            if chosen is None and candidates:
+                chosen = candidates[0]
+            if chosen is not None:
+                used.add(chosen)
+                selected.append(chosen)
+
+        if missing:
+            print(f"corner_selected_params - could not match: {', '.join(missing)}")
+
+        if not selected:
+            return None
+        return sorted(set(selected))
+
+    print('Generating the Posterior Distribution Functions (PDFs) plot')
+
+    _corner_parameters()
+    # Single-mode
+    if mds_orig < 2:
+        _posteriors_gas_to_vmr(prefix)
+
+        # Read MultiNest data through Analyzer to be robust
+        a = pymultinest.Analyzer(n_params=len(parameters), outputfiles_basename=prefix, verbose=False)
+        data = a.get_data()
+        s = a.get_stats()
+        order = data[:, 1].argsort()[::-1]
+        samples = data[order, 2:]
+        weights = data[order, 0]
+        loglike = data[order, 1]
+        Z = s.get('global evidence', s.get('global_logE', [0]))
+        if isinstance(Z, (list, tuple, np.ndarray)):
+            Z = Z[0]
+        logvol = log(weights) + 0.5 * loglike + Z
+        logvol = logvol - logvol.max()
+
+        print("Solution global log-evidence: " + str(s['modes'][0]['local log-evidence']))
+
+        labels = json.load(open(prefix + 'params.json'))
+
+        # Trace
+        _traceplot(samples, weights, labels, prefix + 'Nest_trace.png')
+        
+        bounds = _bounds(samples, weights)
+        truths = None
+        if mnest.param.get('truths') is not None:
+            try:
+                truths = list(np.loadtxt(mnest.param['truths']))
+            except Exception:
+                truths = None
+        if truths is not None:
+            truths = list(truths) + [None] * (len(labels) - len(truths))
+        selected_idx = _corner_selected(labels)
+        corner_labels_all = [labels[i] for i in selected_idx] if selected_idx else labels
+        corner_labels = [labels[i] for i in selected_idx] if selected_idx else labels
+        if selected_idx:
+            corner_samples = samples[:, selected_idx]
+            corner_bounds = [bounds[i] for i in selected_idx]
+            corner_truths = [truths[i] for i in selected_idx] if truths is not None else None
+        else:
+            corner_samples = samples
+            corner_bounds = bounds
+            corner_truths = truths
+        fig = _corner(corner_samples, weights, corner_labels, corner_bounds, truths=corner_truths, color='#404784')
+        
+        if mnest.param.get('corner_selected_params') is None:
+            plt.savefig(prefix + 'Nest_posteriors.pdf', bbox_inches='tight')
+        else:
+            plt.savefig(prefix + 'Nest_selected_posteriors.pdf', bbox_inches='tight')
+        plt.close(fig)
+
+        if mnest.param.get('corner_selected_params') is None:
+            _plot_1d_posteriors(corner_samples, weights, corner_labels, corner_bounds,
+                                prefix + 'Nest_1D_posteriors.pdf', colors=['#404784'],
+                                truths=corner_truths)
+        else:
+            _plot_1d_posteriors(corner_samples, weights, corner_labels, corner_bounds,
+                                prefix + 'Nest_selected_1D_posteriors.pdf', colors=['#404784'],
+                                truths=corner_truths)
+
+        # Restore modified files (if any)
+        if mnest.param['rocky'] and mnest.param['mod_prior']:
+            os.system('mv ' + prefix + '.txt ' + prefix + '_PostProcess.txt')
+            os.system('mv ' + prefix + 'original.txt ' + prefix + '.txt')
+        if os.path.isfile(prefix + 'params_original.json'):
+            os.system('mv ' + prefix + 'params.json ' + prefix + '_PostProcess.json')
+            os.system('mv ' + prefix + 'params_original.json ' + prefix + 'params.json')
+
+    # Multi-modal
+    else:
+        colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f']
+
+        # Load stats.json (as in original) to obtain local evidences
+        nest_out = _store_nest_solutions()
+
+        # Pick maximum-evidence mode first
+        max_ev, max_idx = -1e99, 0
+        for modes in range(0, mds_orig):
+            loc = nest_out['solutions']['solution' + str(modes)]['local_logE'][0]
+            if loc > max_ev:
+                max_ev, max_idx = loc, modes
+
+        result = {}
+        to_add = 0
+        to_plot = []
+        kept_modes = []
+
+        # Build a small helper to read solution file -> samples/weights/logvol
+        def _read_solution(midx):
+            _posteriors_gas_to_vmr(prefix, modes=midx)
+            data = np.loadtxt(prefix + 'solution' + str(midx) + '.txt')
+            order = data[:, 1].argsort()[::-1]
+            samples = data[order, 2:]
+            weights = data[order, 0]
+            loglike = data[order, 1]
+            Z = nest_out.get('global_logE', [0])[0]
+            logvol = log(weights) + 0.5 * loglike + Z
+            logvol = logvol - logvol.max()
+            return samples, weights, logvol
+
+        # Always include the maximum-evidence solution
+        s0, w0, lv0 = _read_solution(max_idx)
+        result[str(to_add)] = dict(samples=s0, weights=w0, logvol=lv0)
+        to_plot.append(max_idx)
+        kept_modes.append(max_idx)
+        to_add += 1
+
+        # Add other significant modes
+        thresh = 11.0 if mnest.param.get('filter_multi_solutions') else 1000.0
+        for modes in range(0, mds_orig):
+            if modes == max_idx:
+                continue
+            local = nest_out['solutions']['solution' + str(modes)]['local_logE'][0]
+            if (max_ev - local) < thresh:
+                s1, w1, lv1 = _read_solution(modes)
+                result[str(to_add)] = dict(samples=s1, weights=w1, logvol=lv1)
+                to_plot.append(modes)
+                kept_modes.append(modes)
+                to_add += 1
+
+        labels = json.load(open(prefix + 'params.json'))
+        selected_idx = _corner_selected(labels)
+        corner_labels_all = [labels[i] for i in selected_idx] if selected_idx else labels
+
+        # Individual traces and corner plots
+        for k, midx in enumerate(to_plot):
+            _traceplot(result[str(k)]['samples'], result[str(k)]['weights'], labels,
+                       prefix + ('Nest_trace_sol' + str(midx) + '.png' if len(to_plot) > 1 else 'Nest_trace.png'))
+
+            bnd = _bounds(result[str(k)]['samples'], result[str(k)]['weights'])
+            truths = None
+            if mnest.param.get('truths') is not None:
+                try:
+                    truths = list(np.loadtxt(mnest.param['truths']))
+                except Exception:
+                    truths = None
+            if truths is not None:
+                truths = list(truths) + [None] * (len(labels) - len(truths))
+            corner_labels = corner_labels_all
+            if selected_idx:
+                corner_samples = result[str(k)]['samples'][:, selected_idx]
+                corner_bounds = [bnd[i] for i in selected_idx]
+                corner_truths = [truths[i] for i in selected_idx] if truths is not None else None
+            else:
+                corner_samples = result[str(k)]['samples']
+                corner_bounds = bnd
+                corner_truths = truths
+            fig = _corner(corner_samples, result[str(k)]['weights'], corner_labels, corner_bounds,
+                          truths=corner_truths, color=colors[k])
+            if mnest.param.get('corner_selected_params') is None:
+                outp = prefix + ('Nest_posteriors_sol' + str(midx) + '.pdf' if len(to_plot) > 1 else 'Nest_posteriors.pdf')
+            else:
+                outp = prefix + ('Nest_selected_posteriors_sol' + str(midx) + '.pdf' if len(to_plot) > 1 else 'Nest_selected_posteriors.pdf')
+            plt.savefig(outp, bbox_inches='tight')
+            plt.close(fig)
+
+        # Combined overlay corner plot
+        # Determine union bounds across kept modes
+        mins, maxs = None, None
+        for k in range(to_add):
+            b = _bounds(result[str(k)]['samples'], result[str(k)]['weights'])
+            lo = np.array([bb[0] for bb in b])
+            hi = np.array([bb[1] for bb in b])
+            mins = lo if mins is None else np.minimum(mins, lo)
+            maxs = hi if maxs is None else np.maximum(maxs, hi)
+        union_bounds = list(zip(mins.tolist(), maxs.tolist()))
+
+        fig = None
+        truths = None
+        if mnest.param.get('truths') is not None:
+            try:
+                truths = list(np.loadtxt(mnest.param['truths']))
+            except Exception:
+                truths = None
+        if truths is not None:
+            truths = list(truths) + [None] * (len(labels) - len(truths))
+        overlay_labels = corner_labels_all
+        if selected_idx:
+            overlay_bounds = [union_bounds[i] for i in selected_idx]
+            overlay_truths = [truths[i] for i in selected_idx] if truths is not None else None
+        else:
+            overlay_bounds = union_bounds
+            overlay_truths = truths
+        for k in range(to_add):
+            overlay_samples = result[str(k)]['samples'][:, selected_idx] if selected_idx else result[str(k)]['samples']
+            fig = _corner(overlay_samples, result[str(k)]['weights'], overlay_labels,
+                          overlay_bounds, truths=overlay_truths, color=colors[k], fig=fig, multimodal=True)
+
+        if mnest.param.get('corner_selected_params') is None:
+            plt.savefig(prefix + 'Nest_posteriors.pdf', bbox_inches='tight')
+        else:
+            plt.savefig(prefix + 'Nest_selected_posteriors.pdf', bbox_inches='tight')
+        plt.close()
+
+        sample_sets = [result[str(k)]['samples'] for k in range(to_add)]
+        weight_sets = [result[str(k)]['weights'] for k in range(to_add)]
+        legend_labels = [f'Solution {to_plot[k] + 1}' for k in range(to_add)] if to_add > 1 else None
+        sel_colors = [colors[k % len(colors)] for k in range(to_add)]
+        plot_labels = corner_labels_all
+        if selected_idx:
+            plot_bounds = [union_bounds[i] for i in selected_idx]
+            plot_truths = [truths[i] for i in selected_idx] if truths is not None else None
+            sample_sets = [s[:, selected_idx] for s in sample_sets]
+        else:
+            plot_bounds = union_bounds
+            plot_truths = truths
+        
+        if mnest.param.get('corner_selected_params') is None:
+            _plot_1d_posteriors(sample_sets, weight_sets, plot_labels, plot_bounds,
+                                prefix + 'Nest_1D_posteriors.pdf', colors=sel_colors,
+                                truths=plot_truths, legend_labels=legend_labels, max_idx=max_idx)
+        else:
+            _plot_1d_posteriors(sample_sets, weight_sets, plot_labels, plot_bounds,
+                                prefix + 'Nest_selected_1D_posteriors.pdf', colors=sel_colors,
+                                truths=plot_truths, legend_labels=legend_labels, max_idx=max_idx)
+
+        # Restore modified files (if any)
+        for modes in kept_modes:
+            if mnest.param['rocky'] and mnest.param['mod_prior']:
+                os.system('mv ' + prefix + 'solution' + str(modes) + '.txt ' + prefix + 'solution' + str(modes) + '_PostProcess.txt')
+                os.system('mv ' + prefix + 'solution' + str(modes) + '_original.txt ' + prefix + 'solution' + str(modes) + '.txt')
+        if os.path.isfile(prefix + 'params_original.json'):
+            os.system('mv ' + prefix + 'params.json ' + prefix + '_PostProcess.json')
+            os.system('mv ' + prefix + 'params_original.json ' + prefix + 'params.json')
+
+
+@_isolate_posterior_plot_style
+def plot_multi_posteriors(retrieval_dirs, out_dir, parameters=None, solution_idx=None):
+    """Overlay posterior distributions from multiple retrieval folders.
+
+    Parameters
+    ----------
+    retrieval_dirs : list[str] | tuple[str]
+        Folders containing `*_PostProcess.json` and corresponding
+        `*_PostProcess.txt` or `*_solution{i}_PostProcess.txt`.
+    out_dir : str
+        Output folder for `multi_posteriors.pdf` and `multi_posteriors_1D.pdf`.
+    parameters : list[str] | None, optional
+        Parameter names to plot. If `None`, uses the union of parameters found
+        across all retrievals.
+    solution_idx : list[int | None] | tuple[int | None] | None, optional
+        Per-retrieval solution selector, same length as `retrieval_dirs`.
+        `None` selects `*_PostProcess.txt`; an integer `i` selects
+        `*_solution{i}_PostProcess.txt`.
+    """
+    import glob
+
+    if isinstance(retrieval_dirs, str):
+        retrieval_dirs = [retrieval_dirs]
+    retrieval_dirs = list(retrieval_dirs or [])
+    if len(retrieval_dirs) < 1:
+        raise ValueError("retrieval_dirs must contain at least one folder.")
+    if solution_idx is None:
+        solution_idx = [None] * len(retrieval_dirs)
+    elif isinstance(solution_idx, (list, tuple)):
+        solution_idx = list(solution_idx)
+        if len(solution_idx) != len(retrieval_dirs):
+            raise ValueError("solution_idx must have the same length as retrieval_dirs.")
+    else:
+        raise ValueError("solution_idx must be None or a list/tuple matching retrieval_dirs.")
+
+    os.makedirs(out_dir, exist_ok=True)
+
+    def _weighted_quantiles(x, qs, w):
+        x = np.asarray(x, dtype=float)
+        qs = np.atleast_1d(qs).astype(float)
+        w = np.asarray(w, dtype=float)
+        idx = np.argsort(x)
+        x = x[idx]
+        w = w[idx]
+        cw = np.cumsum(w)
+        if cw[-1] <= 0.0:
+            return np.percentile(x, list(100.0 * qs))
+        cw /= cw[-1]
+        return np.interp(qs, cw, x)
+
+    def _normalize_weights(w):
+        w = np.asarray(w, dtype=float)
+        w = np.where(np.isfinite(w) & (w >= 0.0), w, 0.0)
+        sw = np.sum(w)
+        if sw <= 0.0:
+            return np.ones_like(w, dtype=float) / max(len(w), 1)
+        return w / sw
+
+    def _find_txt_file(prefix, sol_idx):
+        base = prefix + '_PostProcess.txt'
+        if sol_idx is None:
+            return base if os.path.isfile(base) else None
+        sol_file = f"{prefix}_solution{int(sol_idx)}_PostProcess.txt"
+        if os.path.isfile(sol_file):
+            return sol_file
+        return None
+
+    retrieval_data = []
+    for folder, sol_idx in zip(retrieval_dirs, solution_idx):
+        folder = os.path.abspath(os.path.expanduser(folder))
+        if not os.path.isdir(folder):
+            print(f"Warning: folder not found: {folder}. Skipping.")
+            continue
+
+        json_files = sorted(glob.glob(os.path.join(folder, '*_PostProcess.json')))
+        if len(json_files) == 0:
+            print(f"Warning: no *_PostProcess.json found in {folder}. Skipping.")
+            continue
+        if len(json_files) > 1:
+            print(f"Warning: multiple *_PostProcess.json in {folder}. Using {os.path.basename(json_files[0])}.")
+        json_file = json_files[0]
+        prefix = json_file[:-len('_PostProcess.json')]
+        txt_file = _find_txt_file(prefix, sol_idx)
+        if txt_file is None or not os.path.isfile(txt_file):
+            print(f"Warning: no compatible *_PostProcess.txt found for prefix {prefix}. Skipping.")
+            continue
+
+        try:
+            labels_raw = json.load(open(json_file))
+            if isinstance(labels_raw, dict):
+                labels = [str(k) for k in labels_raw.keys()]
+            else:
+                labels = [str(x) for x in labels_raw]
+            arr = np.atleast_2d(np.loadtxt(txt_file))
+        except Exception as exc:
+            print(f"Warning: failed to read posterior files in {folder}: {exc}. Skipping.")
+            continue
+
+        if arr.shape[1] < 3:
+            print(f"Warning: invalid posterior table in {txt_file}. Skipping.")
+            continue
+
+        npar = min(len(labels), arr.shape[1] - 2)
+        if npar == 0:
+            print(f"Warning: no parameters available in {txt_file}. Skipping.")
+            continue
+
+        labels = labels[:npar]
+        samples = np.asarray(arr[:, 2:2 + npar], dtype=float)
+        weights = _normalize_weights(arr[:, 0])
+
+        finite = np.isfinite(weights)
+        finite &= np.all(np.isfinite(samples), axis=1)
+        if np.sum(finite) < 2:
+            print(f"Warning: not enough finite samples in {txt_file}. Skipping.")
+            continue
+        samples = samples[finite]
+        weights = _normalize_weights(weights[finite])
+
+        name = os.path.basename(os.path.normpath(folder)) or folder
+        idx_map = {p: i for i, p in enumerate(labels)}
+        retrieval_data.append({
+            'name': name,
+            'labels': labels,
+            'idx_map': idx_map,
+            'samples': samples,
+            'weights': weights,
+        })
+
+    if len(retrieval_data) == 0:
+        raise RuntimeError("No valid retrieval data found.")
+
+    if parameters is None:
+        selected_params = []
+        seen = set()
+        for data in retrieval_data:
+            for p in data['labels']:
+                if p not in seen:
+                    seen.add(p)
+                    selected_params.append(p)
+    else:
+        selected_params = []
+        for p in parameters:
+            p = str(p)
+            if p and p not in selected_params:
+                selected_params.append(p)
+
+    usable_params = []
+    for p in selected_params:
+        if any(p in d['idx_map'] for d in retrieval_data):
+            usable_params.append(p)
+        else:
+            print(f"Warning: parameter '{p}' not found in any retrieval. Skipping.")
+    selected_params = usable_params
+    if len(selected_params) == 0:
+        raise RuntimeError("No parameters available to plot.")
+
+    bounds = {}
+    for p in selected_params:
+        lo_all = []
+        hi_all = []
+        for data in retrieval_data:
+            idx = data['idx_map'].get(p, None)
+            if idx is None:
+                continue
+            x = data['samples'][:, idx]
+            w = data['weights']
+            q0, q1 = _weighted_quantiles(x, [0.001, 0.999], w)
+            if np.isfinite(q0) and np.isfinite(q1):
+                lo_all.append(float(q0))
+                hi_all.append(float(q1))
+        if not lo_all:
+            bounds[p] = (0.0, 1.0)
+        else:
+            lo = min(lo_all)
+            hi = max(hi_all)
+            if not np.isfinite(lo) or not np.isfinite(hi):
+                lo, hi = 0.0, 1.0
+            if hi <= lo:
+                span = abs(lo) if lo != 0.0 else 1.0
+                lo, hi = lo - 0.05 * span, hi + 0.05 * span
+            else:
+                pad = 0.05 * (hi - lo)
+                lo, hi = lo - pad, hi + pad
+            bounds[p] = (lo, hi)
+
+    colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f']
+    handles = [
+        Line2D([0], [0], color=colors[i % len(colors)], lw=1.8, label=d['name'])
+        for i, d in enumerate(retrieval_data)
+    ]
+
+    # Corner-style overlay plot (1D diagonals + 2D lower triangle)
+    npar = len(selected_params)
+    side = min(max(2.2 * npar, 5.5), 32.0)
+    fig, axes = plt.subplots(npar, npar, figsize=(side, side), dpi=130)
+    if npar == 1:
+        axes = np.array([[axes]])
+
+    probs = np.array([1.0 - np.exp(-0.5 * s * s) for s in (1.0, 2.0)], dtype=float)
+    for row, py in enumerate(selected_params):
+        for col, px in enumerate(selected_params):
+            ax = axes[row, col]
+            if row < col:
+                ax.axis('off')
+                continue
+
+            xlim = bounds[px]
+            if row == col:
+                any_line = False
+                for ridx, data in enumerate(retrieval_data):
+                    i = data['idx_map'].get(px, None)
+                    if i is None:
+                        continue
+                    x = data['samples'][:, i]
+                    w = data['weights']
+                    hist, edges = np.histogram(x, bins=140, range=xlim, weights=w, density=True)
+                    centers = 0.5 * (edges[1:] + edges[:-1])
+                    ax.plot(centers, hist, color=colors[ridx % len(colors)], lw=1.5, alpha=0.95)
+                    any_line = True
+                ax.set_xlim(xlim)
+                ax.set_yticks([])
+                if not any_line:
+                    ax.axis('off')
+                    continue
+                ax.set_xlabel(px)
+                continue
+
+            ylim = bounds[py]
+            any_contour = False
+            for ridx, data in enumerate(retrieval_data):
+                ix = data['idx_map'].get(px, None)
+                iy = data['idx_map'].get(py, None)
+                if ix is None or iy is None:
+                    continue
+                x = data['samples'][:, ix]
+                y = data['samples'][:, iy]
+                w = data['weights']
+                h, xedges, yedges = np.histogram2d(
+                    x, y, bins=80, range=[xlim, ylim], weights=w, density=True
+                )
+                if not np.any(h > 0.0):
+                    continue
+
+                flat = h.ravel()
+                order = np.argsort(flat)[::-1]
+                cdf = np.cumsum(flat[order])
+                if cdf[-1] <= 0.0:
+                    continue
+                cdf /= cdf[-1]
+                levels = np.interp(probs, cdf, flat[order])
+                levels = np.sort(np.unique(levels[(levels > 0.0) & np.isfinite(levels)]))
+                if levels.size == 0:
+                    continue
+
+                xc = 0.5 * (xedges[1:] + xedges[:-1])
+                yc = 0.5 * (yedges[1:] + yedges[:-1])
+                ax.contour(xc, yc, h.T, levels=levels, colors=[colors[ridx % len(colors)]], linewidths=1.0)
+                any_contour = True
+
+            ax.set_xlim(xlim)
+            ax.set_ylim(ylim)
+            if not any_contour:
+                ax.axis('off')
+                continue
+            if row == npar - 1:
+                ax.set_xlabel(px)
+            if col == 0:
+                ax.set_ylabel(py)
+
+    top_pad = 0.95 if npar == 1 else 0.985
+    fig.tight_layout(rect=[0, 0, 1, top_pad])
+    fig.legend(handles=handles, loc='upper center', bbox_to_anchor=(0.5, 1.01), ncol=min(len(handles), 4), frameon=True)
+    fig.savefig(os.path.join(out_dir, 'multi_posteriors.pdf'), bbox_inches='tight')
+    plt.close(fig)
+
+    # 1D marginalized overlay plot
+    def _grid_shape(n):
+        if n <= 1:
+            return 1, 1
+        cols = int(np.ceil(np.sqrt(2 * n)))
+        cols = max(cols, 2)
+        rows = int(np.ceil(n / cols))
+        while rows * 2 > cols:
+            cols = rows * 2
+            rows = int(np.ceil(n / cols))
+        return rows, cols
+
+    rows, cols = _grid_shape(npar)
+    fig, axes = plt.subplots(rows, cols, figsize=(cols * 2.8, rows * 2.2), dpi=130)
+    axes = np.atleast_1d(axes).reshape(rows, cols)
+    flat_axes = axes.ravel()
+
+    for i, ax in enumerate(flat_axes):
+        if i >= npar:
+            ax.axis('off')
+            continue
+        p = selected_params[i]
+        xlim = bounds[p]
+        any_line = False
+        ymax = 0.0
+        for ridx, data in enumerate(retrieval_data):
+            ip = data['idx_map'].get(p, None)
+            if ip is None:
+                continue
+            x = data['samples'][:, ip]
+            w = data['weights']
+            hist, edges = np.histogram(x, bins=160, range=xlim, weights=w, density=True)
+            centers = 0.5 * (edges[1:] + edges[:-1])
+            ax.plot(centers, hist, color=colors[ridx % len(colors)], lw=1.6, alpha=0.95)
+            if hist.size:
+                ymax = max(ymax, float(np.max(hist)))
+            any_line = True
+
+        if not any_line:
+            ax.axis('off')
+            continue
+        ax.set_xlim(xlim)
+        ax.set_xlabel(p)
+        ax.set_yticks([])
+        if ymax > 0.0 and np.isfinite(ymax):
+            ax.set_ylim(0.0, ymax * 1.05)
+
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
+    fig.legend(handles=handles, loc='upper center', bbox_to_anchor=(0.5, 1.02), ncol=min(len(handles), 4), frameon=True)
+    fig.savefig(os.path.join(out_dir, 'multi_posteriors_1D.pdf'), bbox_inches='tight')
+    plt.close(fig)
