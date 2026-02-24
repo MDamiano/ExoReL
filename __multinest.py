@@ -354,7 +354,7 @@ class MULTINEST:
             if self.param['multimodal'] and mds_orig > 1 and self.param['calc_likelihood_data']:
                 self.store_nest_solutions(prefix)
 
-        if MPIimport:
+        if MPIimport and MPIsize > 1:
             MPI.COMM_WORLD.Barrier()  # wait for everybody to synchronize here
             mds_orig = MPI.COMM_WORLD.bcast(mds_orig if MPIrank == 0 else None, root=0)
 
@@ -363,7 +363,7 @@ class MULTINEST:
         if self.param['calc_likelihood_data'] and not check_files:
             self.calc_spectra(prefix, mds_orig)
 
-            if MPIimport:
+            if MPIimport and MPIsize > 1:
                 MPI.COMM_WORLD.Barrier()  # wait for everybody to synchronize here
 
             if MPIimport and MPIrank == 0:

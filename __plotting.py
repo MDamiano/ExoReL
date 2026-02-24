@@ -1801,64 +1801,83 @@ def elpd_loo_stats(mnest, parameters, solutions=0):
         json.dump(elpd_stats, stats_file)
 
     if mnest.param['elpd_reference'] is not None:
-        with open(mnest.param['elpd_reference']) as ref_file:
-            ref_elpd = json.load(ref_file)
-        delta_elpd = np.array(ref_elpd['elpd_loo_pointwise']) - elpd_stats['elpd_loo_pointwise']
-        ref_bad_raw = ref_elpd.get('bad_point_indices', None)
-        if ref_bad_raw is None and 'pareto_k' in ref_elpd:
-            ref_bad_raw = np.flatnonzero(np.asarray(ref_elpd['pareto_k']) > 0.7).tolist()
-        if ref_bad_raw is None:
-            ref_bad_raw = []
-        ref_bad_idx = np.asarray(ref_bad_raw, dtype=int)
-        union_bad_mask = np.zeros(len(delta_elpd), dtype=bool)
-        union_bad_mask[bad_indices[bad_indices < len(union_bad_mask)]] = True
-        union_bad_mask[ref_bad_idx[(ref_bad_idx >= 0) & (ref_bad_idx < len(union_bad_mask))]] = True
-
-        vmax = float(np.max(np.abs(delta_elpd))) if len(delta_elpd) else 1.0
-        fig, ax = plt.subplots(figsize=(8.2, 5.0), dpi=150)
-        ax.errorbar(wl_sorted, tdepth_sorted, yerr=tdepth_err_sorted,
-                    linestyle='none', linewidth=0.7, color='#444444', capsize=2.0, zorder=1)
-        sc = ax.scatter(wl_sorted, tdepth_sorted, c=delta_elpd, cmap='coolwarm',
-                        vmin=-vmax, vmax=vmax, s=40, edgecolor='white', linewidth=0.5, zorder=2)
-        
-        if np.any(union_bad_mask):
-            ax.scatter(
-                wl_sorted[union_bad_mask],
-                tdepth_sorted[union_bad_mask],
-                s=88,
-                facecolors='none',
-                edgecolors='#808080',
-                alpha=0.3,
-                linewidths=1.2,
-                zorder=3
-            )
-        cbar = fig.colorbar(sc, ax=ax, pad=0.02)
-        cbar.set_label('elpd$_{i,Reference}$ - elpd$_{i}$')
-        ax.set_xlabel('Wavelength [$\\mu$m]')
-        ax.set_ylabel('Contrast Ratio (F$_p$/F$_{\star}$)')
-        fig.tight_layout()
-        fig.savefig(mnest.param['out_dir'] + f'elpd_loo_comparison_sol{solutions}.pdf')
-        plt.close(fig)
-
-        delta_elpd_valid = delta_elpd[~union_bad_mask]
-        if len(delta_elpd_valid) == 0:
-            delta_over_se = np.nan
+        ref_path = mnest.param['elpd_reference']
+        ref_elpd = None
+        ref_pointwise = None
+        if not os.path.isfile(ref_path):
+            print(f"Warning: ELPD reference file '{ref_path}' not found. Skipping comparison.")
         else:
-            delta_elpd_err = np.sqrt(len(delta_elpd_valid) * np.var(delta_elpd_valid, ddof=0))
-            if delta_elpd_err > 0.0 and np.isfinite(delta_elpd_err):
-                delta_over_se = np.sum(delta_elpd_valid) / delta_elpd_err
-            else:
-                delta_over_se = np.nan
+            try:
+                with open(ref_path) as ref_file:
+                    ref_elpd = json.load(ref_file)
+                ref_pointwise = np.asarray(ref_elpd['elpd_loo_pointwise'], dtype=float)
+                if ref_pointwise.ndim != 1 or ref_pointwise.size != len(elpd_stats['elpd_loo_pointwise']):
+                    print(
+                        f"Warning: ELPD reference file '{ref_path}' has invalid "
+                        "'elpd_loo_pointwise' length/shape. Skipping comparison."
+                    )
+                    ref_elpd = None
+            except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+                print(f"Warning: ELPD reference file '{ref_path}' is invalid. Skipping comparison.")
+                ref_elpd = None
 
-        fig, ax = plt.subplots(figsize=(4.2, 4.2), dpi=150)
-        ax.bar(['Model parameter'], [delta_over_se], color='#d62728')
-        ax.axhline(0.0, linestyle='--', color='#333333', linewidth=1.0)
-        ax.text(0.15, 1.4, 'Increased\npredictive\nperformance', fontsize=8)
-        ax.text(0.15, -2.6, 'Decreased\npredictive\nperformance', fontsize=8)
-        ax.set_ylim([-5, 5])
-        ax.set_xlim([-0.6, 0.6])
-        ax.set_ylabel('$\\Delta$elpd/SE')
-        ax.set_xlabel('Adding Model Component')
-        fig.tight_layout()
-        fig.savefig(mnest.param['out_dir'] + f'elpd_loo_SE_comparison_sol{solutions}.pdf')
-        plt.close(fig)
+        if ref_elpd is not None:
+            delta_elpd = ref_pointwise - np.asarray(elpd_stats['elpd_loo_pointwise'], dtype=float)
+            ref_bad_raw = ref_elpd.get('bad_point_indices', None)
+            if ref_bad_raw is None and 'pareto_k' in ref_elpd:
+                ref_bad_raw = np.flatnonzero(np.asarray(ref_elpd['pareto_k']) > 0.7).tolist()
+            if ref_bad_raw is None:
+                ref_bad_raw = []
+            ref_bad_idx = np.asarray(ref_bad_raw, dtype=int)
+            union_bad_mask = np.zeros(len(delta_elpd), dtype=bool)
+            union_bad_mask[bad_indices[bad_indices < len(union_bad_mask)]] = True
+            union_bad_mask[ref_bad_idx[(ref_bad_idx >= 0) & (ref_bad_idx < len(union_bad_mask))]] = True
+
+            vmax = float(np.max(np.abs(delta_elpd))) if len(delta_elpd) else 1.0
+            fig, ax = plt.subplots(figsize=(8.2, 5.0), dpi=150)
+            ax.errorbar(wl_sorted, tdepth_sorted, yerr=tdepth_err_sorted,
+                        linestyle='none', linewidth=0.7, color='#444444', capsize=2.0, zorder=1)
+            good_mask = ~union_bad_mask
+            sc = ax.scatter(wl_sorted[good_mask], tdepth_sorted[good_mask], c=delta_elpd[good_mask], cmap='coolwarm',
+                            vmin=-vmax, vmax=vmax, s=40, edgecolor='white', linewidth=0.5, zorder=2)
+            if np.any(union_bad_mask):
+                ax.scatter(
+                    wl_sorted[union_bad_mask],
+                    tdepth_sorted[union_bad_mask],
+                    s=88,
+                    facecolors='none',
+                    edgecolors='#808080',
+                    alpha=0.3,
+                    linewidths=1.2,
+                    zorder=3
+                )
+            cbar = fig.colorbar(sc, ax=ax, pad=0.02)
+            cbar.set_label('elpd$_{i,Reference}$ - elpd$_{i}$')
+            ax.set_xlabel('Wavelength [$\\mu$m]')
+            ax.set_ylabel('Contrast Ratio (F$_p$/F$_{\star}$)')
+            fig.tight_layout()
+            fig.savefig(mnest.param['out_dir'] + f'elpd_loo_comparison_sol{solutions}.pdf')
+            plt.close(fig)
+
+            delta_elpd_valid = delta_elpd[~union_bad_mask]
+            if len(delta_elpd_valid) == 0:
+                delta_over_se = np.nan
+            else:
+                delta_elpd_err = np.sqrt(len(delta_elpd_valid) * np.var(delta_elpd_valid, ddof=0))
+                if delta_elpd_err > 0.0 and np.isfinite(delta_elpd_err):
+                    delta_over_se = np.sum(delta_elpd_valid) / delta_elpd_err
+                else:
+                    delta_over_se = np.nan
+
+            fig, ax = plt.subplots(figsize=(4.2, 4.2), dpi=150)
+            ax.bar(['Model parameter'], [delta_over_se], color='#d62728')
+            ax.axhline(0.0, linestyle='--', color='#333333', linewidth=1.0)
+            ax.text(0.15, 1.4, 'Increased\npredictive\nperformance', fontsize=8)
+            ax.text(0.15, -2.6, 'Decreased\npredictive\nperformance', fontsize=8)
+            ax.set_ylim([-5, 5])
+            ax.set_xlim([-0.6, 0.6])
+            ax.set_ylabel('$\\Delta$elpd/SE')
+            ax.set_xlabel('Adding Model Component')
+            fig.tight_layout()
+            fig.savefig(mnest.param['out_dir'] + f'elpd_loo_SE_comparison_sol{solutions}.pdf')
+            plt.close(fig)
