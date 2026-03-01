@@ -849,7 +849,7 @@ def plot_PT_profile(mnest, bestfit_cube, solutions=0):
             if mnest.param['fit_Rp']:
                 Rp = truths[-(locate_mp_rp - 1)] * const.R_earth.value
             else:
-                Rp = mnest.param['Rp'] * const.M_jup.value
+                Rp = mnest.param['Rp'] * const.R_jup.value
             tmp_param['gp'] = (const.G.value * Mp) / (Rp ** 2.0)
 
         truth_profile = temp_profile(tmp_param)

@@ -343,7 +343,7 @@ class MULTINEST:
         self.param['model_n_par'] = len(parameters)
         multinest_results = pymultinest.Analyzer(n_params=self.param['model_n_par'], outputfiles_basename=prefix, verbose=False)
 
-        if MPIimport and MPIrank == 0:
+        if (not MPIimport) or (MPIimport and MPIrank == 0):
             if self.param['filter_multi_solutions']:
                 s, mds = self.filter_pymultinest_modes(multinest_results)
                 mds_orig = len(multinest_results.get_stats()['modes'])

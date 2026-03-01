@@ -18,7 +18,7 @@ class RETRIEVAL:
     def run_retrieval(self, parfile):
         if parfile.endswith('.dat'):
             raise RuntimeError("Please, convert your '.dat' partfile to a JSON file. '.dat' files have been phased out.")
-        self.param = read_parfile(self.param, parfile, json_format=True)
+        self.param = read_parfile(self.param, parfile)
         self.param = setup_param_dict(self.param)
         if self.param['optimizer'] == 'multinest':
             from ExoReL.__multinest import MULTINEST # type: ignore
@@ -42,7 +42,7 @@ class CREATE_SPECTRUM:
             raise RuntimeError("Please, convert your '.dat' partfile to a JSON file. '.dat' files have been phased out.")
         if self.param['verbose']:
             print(f"Running ExoReL – version {__version__}")
-        self.param = read_parfile(self.param, parfile, json_format=True)
+        self.param = read_parfile(self.param, parfile)
         self.param = setup_param_dict(self.param)
         self.param = par_and_calc(self.param)
         self.param = load_input_spectrum(self.param)
@@ -204,7 +204,7 @@ class CREATE_DATASET:
         self.param['verbose'] = verbose
 
     def run_forward(self, parfile):
-        self.param = read_parfile(self.param, parfile, json_format=True)
+        self.param = read_parfile(self.param, parfile)
         self.param = setup_param_dict(self.param)
         self.param = load_input_spectrum(self.param)
         from ExoReL.__gendataset import GEN_DATASET # type: ignore
@@ -219,7 +219,7 @@ class CREATE_DATASET:
 #         self.param = copy.deepcopy(param)
 
 #     def run_training(self, parfile):
-#         config = read_parfile(self.param, parfile, json_format=True)
+#         config = read_parfile(self.param, parfile)
 #         network_cfg = config.get('network_training')
 #         if not isinstance(network_cfg, dict):
 #             raise RuntimeError('Parfile must contain a "network_training" section with configuration values.')
