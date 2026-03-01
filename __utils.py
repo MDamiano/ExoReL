@@ -170,64 +170,11 @@ def read_parfile(param, parfile=None, json_format=False):
     else:
         parfile_path = os.path.join(cwd, parfile)
 
-    if json_format:
-        with open(parfile_path, 'r') as f:
-            paramdata = json.load(f)
-        for key, value in paramdata.items():
-            param[key] = value
-        del paramdata
-    else:
-        with open(parfile_path, 'r') as file:
-            paramfile = file.readlines()
-        for i in paramfile:
-            if i[0] == '%' or i[0] == '\n':
-                pass
-            else:
-                paramline = list(i.split('\t'))
-                paramline[-1] = paramline[-1][:-1]
-                if len(paramline) >= 2:
-                    try:
-                        param[paramline[0]] = float(paramline[-1])
-                    except ValueError:
-                        if str(paramline[1]) == str(True):
-                            param[paramline[0]] = bool(paramline[1])
-                        elif str(paramline[1]) == str(False):
-                            param[paramline[0]] = bool("")
-                        elif str(paramline[1]) == str(None):
-                            param[paramline[0]] = None
-                        else:
-                            param[paramline[0]] = str(paramline[1])
-
-                    if paramline[0] == 'file_output_name':
-                        try:
-                            param[paramline[0]] = str(int(paramline[1]))
-                        except ValueError:
-                            param[paramline[0]] = str(paramline[1])
-                else:
-                    paramline = str(paramline[0]).split()
-                    if paramline[0] == 'mol':
-                        param[paramline[0]] = paramline[1].split(',')
-                    elif paramline[0] == 'mol_vmr' or paramline[0] == 'range_mol':
-                        param[paramline[0]] = paramline[1].split(',')
-                        for ob in range(0, len(param[paramline[0]])):
-                            param[paramline[0]][ob] = float(param[paramline[0]][ob])
-                        if paramline[0] == 'mol_vmr':
-                            for num, mol in enumerate(param['mol']):
-                                param['vmr_' + mol] = param['mol_vmr'][num]
-                        else:
-                            pass
-                    else:
-                        try:
-                            param[paramline[0]] = float(paramline[-1])
-                        except ValueError:
-                            if str(paramline[1]) == str(True):
-                                param[paramline[0]] = bool(paramline[1])
-                            elif str(paramline[1]) == str(False):
-                                param[paramline[0]] = bool("")
-                            elif str(paramline[1]) == str(None):
-                                param[paramline[0]] = None
-                            else:
-                                param[paramline[0]] = str(paramline[1])
+    with open(parfile_path, 'r') as f:
+        paramdata = json.load(f)
+    for key, value in paramdata.items():
+        param[key] = value
+    del paramdata
 
     param['wkg_dir'] = cwd + '/'
     if param['output_directory'] is not None:
