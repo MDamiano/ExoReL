@@ -160,14 +160,10 @@ def default_parameters():
     return param
 
 
-def read_parfile(param, parfile=None, json_format=None):
+def read_parfile(param, parfile=None):
     cwd = os.getcwd()
     if parfile is None:
         raise ValueError('A parameter file path must be provided.')
-    if str(parfile).lower().endswith('.dat'):
-        raise RuntimeError("Please, convert your '.dat' partfile to a JSON file. '.dat' files have been phased out.")
-    if json_format is not None:
-        print('The "json_format" argument is deprecated and ignored. JSON is the only supported parameter file format.')
 
     if os.path.isabs(parfile):
         parfile_path = parfile
