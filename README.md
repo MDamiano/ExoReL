@@ -2,7 +2,7 @@
 
 # ExoReL<sup>R</sup>
 
-<a href="http://ascl.net/2602.013"><img src="https://img.shields.io/badge/ascl-2602.013-blue.svg?colorB=262255" alt="ascl:2602.013" /></a>
+<a href="https://ascl.net/2602.013"><img src="https://img.shields.io/badge/ascl-2602.013-blue.svg?colorB=262255" alt="ascl:2602.013" /></a>
 
 Includes:
 * A routine to generate single reflection and emission spectrum with and without noise and errorbars;
