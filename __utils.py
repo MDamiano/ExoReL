@@ -1344,6 +1344,238 @@ def retrieval_par_and_npar(param):
     return parameters, len(parameters)
 
 
+def write_stats_summary_files(param, prefix, multinest_stats, n_fitted_parameters):
+    def _retrieval_n_data_points(param):
+        if param['obs_numb'] is None:
+            return int(len(param['spectrum']['Fplanet']))
+
+        n_data = 0
+        for obs in range(0, int(param['obs_numb'])):
+            n_data += len(param['spectrum'][str(obs)]['Fplanet'])
+        return int(n_data)
+
+    def _retrieval_loglike_constant(param):
+        norm = np.sqrt(2.0 * math.pi)
+        if param['obs_numb'] is None:
+            err = np.asarray(param['spectrum']['error_p'], dtype=float)
+            return float(np.sum(np.log(err * norm)))
+
+        logc = 0.0
+        for obs in range(0, int(param['obs_numb'])):
+            err = np.asarray(param['spectrum'][str(obs)]['error_p'], dtype=float)
+            logc += float(np.sum(np.log(err * norm)))
+        return float(logc)
+
+    def _lnl_hat_from_chain_file(file_path):
+        if not os.path.isfile(file_path):
+            return None
+
+        data = np.loadtxt(file_path)
+        if data.ndim == 1:
+            if len(data) < 2:
+                return None
+            col2 = np.array([float(data[1])], dtype=float)
+        else:
+            col2 = np.asarray(data[:, 1], dtype=float)
+
+        if col2.size == 0:
+            return None
+
+        finite = col2[np.isfinite(col2)]
+        if finite.size == 0:
+            return None
+
+        # MultiNest chain column 2 is -2*ln(L); best fit minimizes this column.
+        return float(-0.5 * np.min(finite))
+    
+    def _lnl_hat_per_mode_from_post_separate(post_separate_path):
+        if not os.path.isfile(post_separate_path):
+            return []
+
+        mode_lnl_hat = []
+        current_min_col2 = None
+        empty_rows = 0
+        with open(post_separate_path, 'r') as f:
+            for idx, raw_line in enumerate(f):
+                if idx <= 2:
+                    continue
+
+                line = raw_line.strip()
+                if len(line) == 0:
+                    empty_rows += 1
+                    continue
+
+                if empty_rows >= 2 and current_min_col2 is not None:
+                    mode_lnl_hat.append(float(-0.5 * current_min_col2))
+                    current_min_col2 = None
+                empty_rows = 0
+
+                parts = line.split()
+                if len(parts) < 2:
+                    continue
+                col2 = float(parts[1])
+                if (current_min_col2 is None) or (col2 < current_min_col2):
+                    current_min_col2 = col2
+
+        if current_min_col2 is not None:
+            mode_lnl_hat.append(float(-0.5 * current_min_col2))
+
+        return mode_lnl_hat
+    
+    def _chi_square_from_best_fit_file(param, best_fit_path):
+        if param['obs_numb'] is not None or not os.path.isfile(best_fit_path):
+            return None
+
+        best_fit = np.loadtxt(best_fit_path)
+        if best_fit.ndim != 2 or best_fit.shape[1] < 2:
+            return None
+
+        model_wl = best_fit[:, 0]
+        model_flux = best_fit[:, 1]
+
+        if param['spectrum']['bins']:
+            wl_bins = np.array([param['spectrum']['wl_low'], param['spectrum']['wl_high']]).T
+            model_at_data = custom_spectral_binning(wl_bins, model_wl, model_flux, bins=True)
+        else:
+            model_at_data = spectres(param['spectrum']['wl'], model_wl, model_flux, fill=False)
+
+        chi = (param['spectrum']['Fplanet'] - model_at_data) / param['spectrum']['error_p']
+        return float(np.sum(chi ** 2.0))
+    
+    def _summary_mode_indices(multinest_stats, filter_multi_solutions):
+        modes = multinest_stats.get('modes', [])
+        if len(modes) == 0:
+            return []
+
+        if len(modes) == 1:
+            return [0]
+
+        local_loge = []
+        for mode in modes:
+            value = mode.get('local log-evidence')
+            if value is None:
+                value = -np.inf
+            local_loge.append(float(value))
+
+        max_idx = int(np.argmax(local_loge))
+        threshold = 11.0 if filter_multi_solutions else 1000.0
+
+        selected = [max_idx]
+        for mode_idx in range(0, len(modes)):
+            if mode_idx == max_idx:
+                continue
+            if (local_loge[max_idx] - local_loge[mode_idx]) < threshold:
+                selected.append(mode_idx)
+
+        return selected
+    
+    def _safe_json_number(value):
+        if value is None:
+            return None
+        value = float(value)
+        if np.isfinite(value):
+            return value
+        return None
+    
+    def _summary_float_str(value):
+        if value is None:
+            return 'nan'
+        value = float(value)
+        if not np.isfinite(value):
+            return 'nan'
+        return f'{value:.2f}'
+    
+    modes = multinest_stats.get('modes', [])
+    if len(modes) == 0:
+        return
+
+    mode_indices = _summary_mode_indices(multinest_stats, param.get('filter_multi_solutions', False))
+    if len(mode_indices) == 0:
+        return
+
+    n_data_points = _retrieval_n_data_points(param)
+    n_fit = int(n_fitted_parameters)
+    dof = int(n_data_points - n_fit)
+    loglike_const = _retrieval_loglike_constant(param)
+
+    mode_lnl_hat = []
+    if len(modes) > 1:
+        mode_lnl_hat = _lnl_hat_per_mode_from_post_separate(prefix + 'post_separate.dat')
+    else:
+        single_mode_lnl_hat = _lnl_hat_from_chain_file(prefix + '.txt')
+        if single_mode_lnl_hat is not None:
+            mode_lnl_hat = [single_mode_lnl_hat]
+
+    summary_data = {'solutions': {}}
+    txt_lines = []
+
+    for mode_pos, mode_idx in enumerate(mode_indices):
+        mode = modes[mode_idx]
+
+        lnl_hat = None
+        if mode_idx < len(mode_lnl_hat):
+            lnl_hat = mode_lnl_hat[mode_idx]
+        if lnl_hat is None:
+            lnl_hat = _lnl_hat_from_chain_file(prefix + f'solution{mode_idx}.txt')
+        if lnl_hat is None:
+            lnl_hat = mode.get('maximum log-likelihood')
+        if lnl_hat is not None:
+            lnl_hat = float(lnl_hat)
+
+        chi_square = _chi_square_from_best_fit_file(param, param['out_dir'] + f'Best_fit_sol{mode_idx}.dat')
+        if chi_square is None and param.get('filter_multi_solutions', False):
+            # In filtered runs, best-fit files can be indexed by filtered order.
+            chi_square = _chi_square_from_best_fit_file(param, param['out_dir'] + f'Best_fit_sol{mode_pos}.dat')
+
+        if chi_square is None and lnl_hat is not None and np.isfinite(lnl_hat):
+            chi_square = float(-2.0 * (lnl_hat + loglike_const))
+        if chi_square is None:
+            chi_square = np.nan
+
+        if lnl_hat is not None and np.isfinite(lnl_hat):
+            aic = float((2.0 * n_fit) - (2.0 * lnl_hat))
+        else:
+            aic = np.nan
+
+        if dof != 0 and np.isfinite(chi_square):
+            reduced_chi_square = float(chi_square / dof)
+        else:
+            reduced_chi_square = np.nan
+
+        ln_z = mode.get('local log-evidence', np.nan)
+        ln_z_err = mode.get('local log-evidence error', np.nan)
+
+        txt_lines.append(f'*** SOLUTION {mode_idx} ***')
+        txt_lines.append('############### SUMMARY STATISTICS ###############')
+        txt_lines.append('')
+        txt_lines.append(f'chi-square (d.o.f) = {_summary_float_str(chi_square)} ({dof})')
+        txt_lines.append(f'Reduced chi-square = {_summary_float_str(reduced_chi_square)}')
+        txt_lines.append(f'ln Z               = {_summary_float_str(ln_z)} +- {_summary_float_str(ln_z_err)}')
+        txt_lines.append(f'AIC                = {_summary_float_str(aic)}')
+        txt_lines.append('')
+        txt_lines.append('##################################################')
+        txt_lines.append('')
+
+        summary_data['solutions'][f'solution{mode_idx}'] = {
+            'solution_index': int(mode_idx),
+            'n_data_points': int(n_data_points),
+            'n_fitted_parameters': int(n_fit),
+            'degrees_of_freedom': int(dof),
+            'chi_square': _safe_json_number(chi_square),
+            'reduced_chi_square': _safe_json_number(reduced_chi_square),
+            'ln_Z': _safe_json_number(ln_z),
+            'ln_Z_error': _safe_json_number(ln_z_err),
+            'AIC': _safe_json_number(aic),
+            'max_log_likelihood': _safe_json_number(lnl_hat),
+        }
+
+    with open(param['out_dir'] + 'stats_summary.txt', 'w') as f_txt:
+        f_txt.write('\n'.join(txt_lines).rstrip() + '\n')
+
+    with open(param['out_dir'] + 'stats_summary.json', 'w') as f_json:
+        json.dump(summary_data, f_json, indent=2)
+
+
 def detect_gen_npar(param):
     n_parameters = 0
     parameters = []

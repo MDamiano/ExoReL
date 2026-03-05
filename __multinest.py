@@ -431,6 +431,9 @@ class MULTINEST:
                 # Delegate posterior plotting to centralized plotting module
                 plot_posteriors(self, prefix, multinest_results, parameters, mds_orig)
 
+        if (not MPIimport) or (MPIimport and MPIrank == 0):
+            write_stats_summary_files(self.param, prefix, multinest_results.get_stats(), len(parameters))
+
         if MPIimport:
             MPI.Finalize()
 
