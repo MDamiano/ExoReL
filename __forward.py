@@ -19,19 +19,21 @@ class FORWARD_MODEL:
             self.working_dir = os.getcwd()
 
     def __surface_structure(self):
-        self.surf_alb = np.zeros(len(self.param['wl_C_grid']))
+        wl_grid = np.asarray(self.param['wl_C_grid'])
+        self.surf_alb = np.zeros(len(wl_grid))
         if self.param['surface_albedo_parameters'] == int(1):
             self.surf_alb += self.param['Ag']
         elif self.param['surface_albedo_parameters'] == int(3):
-            x1_indx = np.where(self.param['wl_C_grid'] < self.param['Ag_x1'])[0]
-            self.surf_alb[x1_indx] += self.param['Ag1']
-            self.surf_alb[x1_indx[-1] + 1:] += self.param['Ag2']
+            left_mask = wl_grid < self.param['Ag_x1']
+            self.surf_alb[left_mask] = self.param['Ag1']
+            self.surf_alb[~left_mask] = self.param['Ag2']
         elif self.param['surface_albedo_parameters'] == int(5):
-            x1_indx = np.where(self.param['wl_C_grid'] < self.param['Ag_x1'])[0]
-            x2_indx = np.where((self.param['wl_C_grid'] > self.param['Ag_x1']) & (self.param['wl_C_grid'] < self.param['Ag_x2']))[0]
-            self.surf_alb[x1_indx] += self.param['Ag1']
-            self.surf_alb[x2_indx] += self.param['Ag2']
-            self.surf_alb[x2_indx[-1] + 1:] += self.param['Ag3']
+            left_mask = wl_grid < self.param['Ag_x1']
+            middle_mask = (wl_grid >= self.param['Ag_x1']) & (wl_grid < self.param['Ag_x2'])
+            right_mask = wl_grid >= self.param['Ag_x2']
+            self.surf_alb[left_mask] = self.param['Ag1']
+            self.surf_alb[middle_mask] = self.param['Ag2']
+            self.surf_alb[right_mask] = self.param['Ag3']
 
         with open(self.outdir + 'surface_albedo.dat', 'w') as file:
             for i in range(0, len(self.surf_alb)):

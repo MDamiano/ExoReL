@@ -195,11 +195,11 @@ def plot_nest_spec(mnest, cube, solutions=0):
 
         # Labels and cosmetics
         plt.legend(frameon=False, ncol=1, loc='center left', bbox_to_anchor=(1.02, 0.5))
-        plt.xlabel('Wavelength [$\mu$m]')
+        plt.xlabel(r'Wavelength [$\mu$m]')
         if mnest.param['albedo_calc']:
             plt.ylabel('Albedo')
         elif mnest.param['fp_over_fs']:
-            plt.ylabel('Contrast Ratio (F$_p$/F$_{\star}$)')
+            plt.ylabel(r'Contrast Ratio (F$_p$/F$_{\star}$)')
         else:
             plt.ylabel('Planetary flux [W/m$^2$]')
         fig.tight_layout()
@@ -371,11 +371,11 @@ def plot_contribution(mnest, cube, solutions=0):
         markersize=4.2, capsize=1.8, label='Data')
 
     # Labels and legend
-    plt.xlabel('Wavelength [$\mu$m]')
+    plt.xlabel(r'Wavelength [$\mu$m]')
     if mnest.param['albedo_calc']:
         plt.ylabel('Albedo')
     elif mnest.param['fp_over_fs']:
-        plt.ylabel('Contrast Ratio (F$_p$/F$_{\star}$)')
+        plt.ylabel(r'Contrast Ratio (F$_p$/F$_{\star}$)')
     else:
         plt.ylabel('Planetary flux [W/m$^2$]')
 
@@ -695,8 +695,6 @@ def plot_PT_profile(mnest, bestfit_cube, solutions=0):
     _apply_plot_style()
 
     sample_path = mnest.param['out_dir'] + f'random_temp_samples_sol{solutions}.dat'
-    if not os.path.isfile(sample_path):
-        raise FileNotFoundError('Missing random_temp_samples.dat; run calc_spectra before plotting PT profiles.')
 
     samples = np.loadtxt(sample_path)
     pressure_grid = samples[2:, 0]
@@ -980,7 +978,7 @@ def elpd_loo_stats(mnest, parameters, solutions=0):
     cbar = fig.colorbar(sc, ax=ax, pad=0.02)
     cbar.set_label('elpd$_{i,Reference}$')
     ax.set_xlabel('Wavelength [$\\mu$m]')
-    ax.set_ylabel('Contrast Ratio (F$_p$/F$_{\star}$)')
+    ax.set_ylabel(r'Contrast Ratio (F$_p$/F$_{\star}$)')
     fig.tight_layout()
     fig.savefig(mnest.param['out_dir'] + f'elpd_loo_sol{solutions}.pdf')
     plt.close(fig)
@@ -1049,7 +1047,7 @@ def elpd_loo_stats(mnest, parameters, solutions=0):
             cbar = fig.colorbar(sc, ax=ax, pad=0.02)
             cbar.set_label('elpd$_{i,Reference}$ - elpd$_{i}$')
             ax.set_xlabel('Wavelength [$\\mu$m]')
-            ax.set_ylabel('Contrast Ratio (F$_p$/F$_{\star}$)')
+            ax.set_ylabel(r'Contrast Ratio (F$_p$/F$_{\star}$)')
             fig.tight_layout()
             fig.savefig(mnest.param['out_dir'] + f'elpd_loo_comparison_sol{solutions}.pdf')
             plt.close(fig)
@@ -1259,19 +1257,19 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
                 elif mnest.param['surface_albedo_parameters'] == int(3):
                     par.append("$a_{surf, 1}$")
                     par.append("$a_{surf, 2}$")
-                    par.append("$\lambda_{surf, 1}$ [$\mu$m]")
+                    par.append(r"$\lambda_{surf, 1}$ [$\mu$m]")
                 elif mnest.param['surface_albedo_parameters'] == int(5):
                     par.append("$a_{surf, 1}$")
                     par.append("$a_{surf, 2}$")
                     par.append("$a_{surf, 3}$")
-                    par.append("$\lambda_{surf, 1}$ [$\mu$m]")
-                    par.append("$\lambda_{surf, 2}$ [$\mu$m]")
+                    par.append(r"$\lambda_{surf, 1}$ [$\mu$m]")
+                    par.append(r"$\lambda_{surf, 2}$ [$\mu$m]")
             if mnest.param['fit_T']:
                 if mnest.param['PT_profile_type'] == 'isothermal':
                     par.append("T$_p$")
                 elif mnest.param['PT_profile_type'] == 'parametric':
-                    par.append("$\kappa_{th}$")
-                    par.append("$\gamma$")
+                    par.append(r"$\kappa_{th}$")
+                    par.append(r"$\gamma$")
                     par.append("$\\beta$")
                     if mnest.param['fit_Tint']:
                         par.append("T$_{int}$")
@@ -1281,19 +1279,19 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
                 par.append("Log(g [m/s$^2$])")
             if mnest.param['fit_Mp']:
                 if mnest.param['rocky']:
-                    par.append("M$_p$ [M$_\oplus$]")
+                    par.append(r"M$_p$ [M$_\oplus$]")
                 else:
                     par.append("M$_p$ [M$_J$]")
             if mnest.param['fit_Rp']:
                 if mnest.param['rocky']:
-                    par.append("R$_p$ [R$_\oplus$]")
+                    par.append(r"R$_p$ [R$_\oplus$]")
                 else:
                     par.append("R$_p$ [R$_{Jup}$]")
             if mnest.param['fit_p_size'] and mnest.param['p_size_type'] == 'constant':
-                par.append("Log(P$_{size}$ [$\mu$m])")
+                par.append(r"Log(P$_{size}$ [$\mu$m])")
             elif mnest.param['fit_p_size'] and mnest.param['p_size_type'] == 'factor':
                 par.append("Log(P$_{size, fctr})$")
-            par.append("$\mu$ (derived)")
+            par.append(r"$\mu$ (derived)")
             json.dump(par, open(prefix + 'params.json', 'w'))
 
     def _quantile(x, q, weights=None):

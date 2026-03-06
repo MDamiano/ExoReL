@@ -1195,7 +1195,7 @@ def take_star_spectrum(param, plot=False):
         plt.grid()
         plt.xlim([0.4, 1.0])
         plt.title('Stellar spectrum, R=' + str(int(param['Resolution'])))
-        plt.xlabel('Wavelength ($\mu$m)')
+        plt.xlabel(r'Wavelength ($\mu$m)')
         plt.ylabel('Stellar flux (W/m$^2$)')
         plt.savefig(param['wkg_dir'] + 'Retrieval/Star_spectrum.pdf')
         plt.close()
@@ -1308,19 +1308,19 @@ def retrieval_par_and_npar(param):
         elif param['surface_albedo_parameters'] == int(3):
             parameters.append("$a_{surf, 1}$")
             parameters.append("$a_{surf, 2}$")
-            parameters.append("$\lambda_{surf, 1}$")
+            parameters.append(r"$\lambda_{surf, 1}$")
         elif param['surface_albedo_parameters'] == int(5):
             parameters.append("$a_{surf, 1}$")
             parameters.append("$a_{surf, 2}$")
             parameters.append("$a_{surf, 3}$")
-            parameters.append("$\lambda_{surf, 1}$")
-            parameters.append("$\lambda_{surf, 2}$")
+            parameters.append(r"$\lambda_{surf, 1}$")
+            parameters.append(r"$\lambda_{surf, 2}$")
     if param['fit_T']:
         if param['PT_profile_type'] == 'isothermal':
             parameters.append("T$_p$")
         elif param['PT_profile_type'] == 'parametric':
-            parameters.append("$\kappa_{th}$")
-            parameters.append("$\gamma$")
+            parameters.append(r"$\kappa_{th}$")
+            parameters.append(r"$\gamma$")
             parameters.append("$\beta$")
             if param['fit_Tint']:
                 parameters.append("T$_{int}$")
@@ -1336,10 +1336,10 @@ def retrieval_par_and_npar(param):
         parameters.append("Log(P$_{size}$)")
     if param['fit_phi']:
         if param['obs_numb'] is None:
-            parameters.append("$\phi$")
+            parameters.append(r"$\phi$")
         else:
             for obs in range(0, param['obs_numb']):
-                parameters.append("$\phi_" + str(obs) + "$")
+                parameters.append(r"$\phi_" + str(obs) + "$")
 
     return parameters, len(parameters)
 
@@ -1355,14 +1355,26 @@ def write_stats_summary_files(param, prefix, multinest_stats, n_fitted_parameter
         return int(n_data)
 
     def _retrieval_loglike_constant(param):
+        def _validated_error_array(err):
+            err = np.asarray(err, dtype=float)
+            if err.size == 0:
+                return np.array([], dtype=float)
+            if not np.all(np.isfinite(err)) or np.any(err <= 0.0):
+                return None
+            return err
+
         norm = np.sqrt(2.0 * math.pi)
         if param['obs_numb'] is None:
-            err = np.asarray(param['spectrum']['error_p'], dtype=float)
+            err = _validated_error_array(param['spectrum']['error_p'])
+            if err is None:
+                return np.nan
             return float(np.sum(np.log(err * norm)))
 
         logc = 0.0
         for obs in range(0, int(param['obs_numb'])):
-            err = np.asarray(param['spectrum'][str(obs)]['error_p'], dtype=float)
+            err = _validated_error_array(param['spectrum'][str(obs)]['error_p'])
+            if err is None:
+                return np.nan
             logc += float(np.sum(np.log(err * norm)))
         return float(logc)
 
@@ -1370,13 +1382,23 @@ def write_stats_summary_files(param, prefix, multinest_stats, n_fitted_parameter
         if not os.path.isfile(file_path):
             return None
 
-        data = np.loadtxt(file_path)
+        try:
+            data = np.loadtxt(file_path)
+        except (OSError, ValueError):
+            return None
+
         if data.ndim == 1:
             if len(data) < 2:
                 return None
-            col2 = np.array([float(data[1])], dtype=float)
+            try:
+                col2 = np.array([float(data[1])], dtype=float)
+            except (TypeError, ValueError):
+                return None
         else:
-            col2 = np.asarray(data[:, 1], dtype=float)
+            try:
+                col2 = np.asarray(data[:, 1], dtype=float)
+            except (TypeError, ValueError):
+                return None
 
         if col2.size == 0:
             return None
@@ -1413,7 +1435,10 @@ def write_stats_summary_files(param, prefix, multinest_stats, n_fitted_parameter
                 parts = line.split()
                 if len(parts) < 2:
                     continue
-                col2 = float(parts[1])
+                try:
+                    col2 = float(parts[1])
+                except (TypeError, ValueError):
+                    continue
                 if (current_min_col2 is None) or (col2 < current_min_col2):
                     current_min_col2 = col2
 
@@ -1527,7 +1552,7 @@ def write_stats_summary_files(param, prefix, multinest_stats, n_fitted_parameter
             # In filtered runs, best-fit files can be indexed by filtered order.
             chi_square = _chi_square_from_best_fit_file(param, param['out_dir'] + f'Best_fit_sol{mode_pos}.dat')
 
-        if chi_square is None and lnl_hat is not None and np.isfinite(lnl_hat):
+        if chi_square is None and lnl_hat is not None and np.isfinite(lnl_hat) and np.isfinite(loglike_const):
             chi_square = float(-2.0 * (lnl_hat + loglike_const))
         if chi_square is None:
             chi_square = np.nan

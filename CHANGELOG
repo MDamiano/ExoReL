@@ -1,3 +1,11 @@
+## [2.7.3] - 03/06/26
+- Added per-retrieval summary statistics export: `stats_summary.txt` and `stats_summary.json` now report per-solution chi-square, reduced chi-square, `ln Z`, AIC, max log-likelihood, and degrees of freedom.
+- Added the external `plot_multi_posteriors()` helper to overlay posterior distributions from multiple retrieval folders/solutions and save combined comparison figures.
+- Switched parameter-file loading to JSON only: `.dat` parfiles and the deprecated `json_format` path were removed, and parfile copying now works safely with both relative and absolute JSON paths.
+- Added the explicit `gaseous_planet` parameter (default `False`) so rocky vs gaseous retrieval setup is controlled directly instead of inferred from `Mp`.
+- Improved retrieval robustness by fixing MultiNest MPI fallback/synchronization when `mpi4py` is unavailable or only one rank is used, handling single-row input spectra correctly, and fixing the P-T truth-profile radius unit conversion.
+- Hardened ELPD comparison plotting by validating missing/invalid reference files and keeping bad Pareto-k points out of the comparison statistics while still marking them in the plots.
+
 ## [2.7.2] - 02/19/26
 - Added multimodal-aware likelihood-per-datapoint post-processing: per-solution temporary directories are now merged into `*_sol{n}.dat` artifacts (`loglike_per_datapoint`, `random_samples`, `parameters_samples`, and `random_temp_samples`), with MPI-balanced sample allocation and weighted posterior resampling for LOO diagnostics.
 - Added explicit MultiNest solution export/parsing helpers so multimodal chains can be reused consistently across post-processing steps.

@@ -339,7 +339,7 @@ class MULTINEST:
         if MPIimport and MPIrank == 0:
             json.dump(parameters, open(prefix + 'params.json', 'w'))  # save parameter names
 
-        ### PRODUCE PLOTS FROM HERE --- POST-PROCESSING ###
+        ### POST-PROCESSING ###
         self.param['model_n_par'] = len(parameters)
         multinest_results = pymultinest.Analyzer(n_params=self.param['model_n_par'], outputfiles_basename=prefix, verbose=False)
 
@@ -402,7 +402,14 @@ class MULTINEST:
             if MPIrank == 0:
                 print('\n"loglike_per_datapoint" files already exist. Skipping likelihood per data point calculation.')
 
-        if MPIimport and MPIrank == 0:
+        if (not MPIimport) or (MPIimport and MPIrank == 0):
+            if self.param['spectrum']['bins']:
+                data_spec = np.array([self.param['spectrum']['wl_low'], self.param['spectrum']['wl_high'], self.param['spectrum']['wl'], self.param['spectrum']['Fplanet'], self.param['spectrum']['error_p']]).T
+            else:
+                data_spec = np.array([self.param['spectrum']['wl'], self.param['spectrum']['Fplanet'], self.param['spectrum']['error_p']]).T
+            np.savetxt(self.param['out_dir'] + 'data_spectrum.dat', data_spec)
+
+            ### PRODUCE PLOTS FROM HERE ###
             if self.param['plot_models']:
                 cube = np.ones((len(s['modes'][0]['maximum a posterior']), mds))
                 for i in range(0, mds):
@@ -412,20 +419,19 @@ class MULTINEST:
                     plot_chemistry(self.param, solutions=i)
                     if self.param['surface_albedo_parameters'] > 1:
                         plot_surface_albedo(self.param, solutions=i)
-                    if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
+
+                    if os.path.exists(self.param['out_dir'] + f'random_temp_samples_sol{i}.dat') and self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
                         plot_PT_profile(self, cube[:, i], solutions=i)
+                    else:
+                        print('\nTo plot P-T profiles, the calculation of the temperatures samples must be enabled (calc_likelihood_data = True).')
+                    
                     if self.param['plot_contribution'] and self.param['obs_numb'] is None:
                         plot_contribution(self, cube[:, i], solutions=i)
+
                     if os.path.exists(self.param['out_dir'] + f'loglike_per_datapoint_sol{i}.dat') and os.path.exists(self.param['out_dir'] + f'parameters_samples_sol{i}.dat') and self.param['plot_elpd_stats']:
                         elpd_loo_stats(self, parameters, solutions=i)
                     else:
                         print('\nTo plot elpd statistics, the calculation of the likelihood per data point must be enabled (calc_likelihood_data = True).') 
-
-                if self.param['spectrum']['bins']:
-                    data_spec = np.array([self.param['spectrum']['wl_low'], self.param['spectrum']['wl_high'], self.param['spectrum']['wl'], self.param['spectrum']['Fplanet'], self.param['spectrum']['error_p']]).T
-                else:
-                    data_spec = np.array([self.param['spectrum']['wl'], self.param['spectrum']['Fplanet'], self.param['spectrum']['error_p']]).T
-                np.savetxt(self.param['out_dir'] + 'data_spectrum.dat', data_spec)
 
             if self.param['plot_posterior']:
                 # Delegate posterior plotting to centralized plotting module
