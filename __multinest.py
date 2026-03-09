@@ -423,7 +423,8 @@ class MULTINEST:
                     if os.path.exists(self.param['out_dir'] + f'random_temp_samples_sol{i}.dat') and self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
                         plot_PT_profile(self, cube[:, i], solutions=i)
                     else:
-                        print('\nTo plot P-T profiles, the calculation of the temperatures samples must be enabled (calc_likelihood_data = True).')
+                        if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
+                            print('\nTo plot P-T profiles, the calculation of the temperatures samples must be enabled (calc_likelihood_data = True).')
                     
                     if self.param['plot_contribution'] and self.param['obs_numb'] is None:
                         plot_contribution(self, cube[:, i], solutions=i)
@@ -431,7 +432,8 @@ class MULTINEST:
                     if os.path.exists(self.param['out_dir'] + f'loglike_per_datapoint_sol{i}.dat') and os.path.exists(self.param['out_dir'] + f'parameters_samples_sol{i}.dat') and self.param['plot_elpd_stats']:
                         elpd_loo_stats(self, parameters, solutions=i)
                     else:
-                        print('\nTo plot elpd statistics, the calculation of the likelihood per data point must be enabled (calc_likelihood_data = True).') 
+                        if self.param['plot_elpd_stats']:
+                            print('\nTo plot elpd statistics, the calculation of the likelihood per data point must be enabled (calc_likelihood_data = True).') 
 
             if self.param['plot_posterior']:
                 # Delegate posterior plotting to centralized plotting module
@@ -550,9 +552,9 @@ class MULTINEST:
                     self.param['Tint'] = cube[par] # internal temperature
                     par += 1
         else:
-            tp_val = self.param.get('Tp')
-            if tp_val is not None:
-                self.param['T'] = tp_val
+            pass
+        
+        self.param['T'] = temp_profile(self.param)
 
         if self.param['fit_cld_frac']:
             self.param['cld_frac'] = (10.0 ** cube[par])  # Cloud fraction
