@@ -79,9 +79,8 @@ def plot_nest_spec(mnest, cube, solutions=0):
 
     mnest.cube_to_param(cube)
 
-    # Helper: load target R=500 wavelength bins once
     def _load_target_bins():
-        new_wl = reso_range(0.2, 20.0, res=500, bins=True)
+        new_wl = reso_range(0.2, 20.0, res=1000, bins=True)
         if mnest.param['mol_custom_wl']:
             new_wl_central = np.mean(new_wl, axis=1)
             start = 0
