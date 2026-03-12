@@ -177,13 +177,6 @@ def read_parfile(param, parfile=None):
     del paramdata
 
     param['wkg_dir'] = cwd + '/'
-    if param['output_directory'] is not None:
-        param['out_dir'] = param['wkg_dir'] + param['output_directory']
-        if not os.path.isdir(param['out_dir']):
-            os.mkdir(param['out_dir'])
-        del param['output_directory']
-    else:
-        param['out_dir'] = param['wkg_dir']
 
     src = os.path.abspath(parfile_path)
     dst = os.path.abspath(os.path.join(param['out_dir'], os.path.basename(parfile_path)))

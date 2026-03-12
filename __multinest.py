@@ -63,6 +63,14 @@ class MULTINEST:
                     print('Using modified priors: ' + str(self.param['mod_prior']))
             else:
                 print('Using ExoReL-R for giant gaseous planets')
+            
+            if self.param['output_directory'] is not None:
+                self.param['out_dir'] = self.param['wkg_dir'] + self.param['output_directory']
+                if not os.path.isdir(self.param['out_dir']):
+                    os.mkdir(self.param['out_dir'])
+                del self.param['output_directory']
+            else:
+                self.param['out_dir'] = self.param['wkg_dir']
 
         parameters, n_params = retrieval_par_and_npar(self.param)
         self.param['fitting_parameters'] = parameters
@@ -78,6 +86,7 @@ class MULTINEST:
                 MPI.COMM_WORLD.Barrier()  # wait for everybody to synchronize here
             
                 self.param = MPI.COMM_WORLD.bcast(self.param, root=0)
+
     
                 MPI.COMM_WORLD.Barrier()  # wait for everybody to synchronize here
 
