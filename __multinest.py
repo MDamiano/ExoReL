@@ -53,6 +53,14 @@ class MULTINEST:
 
     def run_retrieval(self):
         if MPIimport and MPIrank == 0:
+            if self.param['output_directory'] is not None:
+                self.param['out_dir'] = self.param['wkg_dir'] + self.param['output_directory']
+                if not os.path.isdir(self.param['out_dir']):
+                    os.mkdir(self.param['out_dir'])
+                del self.param['output_directory']
+            else:
+                self.param['out_dir'] = self.param['wkg_dir']
+
             print(f"Running ExoReL – version {__version__}")
             # check if the run is done, in case clean c meta files
             if not os.path.isfile(self.param['out_dir'] + self.param['name_p'] + '_params.json'):
@@ -63,14 +71,6 @@ class MULTINEST:
                     print('Using modified priors: ' + str(self.param['mod_prior']))
             else:
                 print('Using ExoReL-R for giant gaseous planets')
-            
-            if self.param['output_directory'] is not None:
-                self.param['out_dir'] = self.param['wkg_dir'] + self.param['output_directory']
-                if not os.path.isdir(self.param['out_dir']):
-                    os.mkdir(self.param['out_dir'])
-                del self.param['output_directory']
-            else:
-                self.param['out_dir'] = self.param['wkg_dir']
 
         parameters, n_params = retrieval_par_and_npar(self.param)
         self.param['fitting_parameters'] = parameters
