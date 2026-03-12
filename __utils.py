@@ -178,11 +178,6 @@ def read_parfile(param, parfile=None):
 
     param['wkg_dir'] = cwd + '/'
 
-    src = os.path.abspath(parfile_path)
-    dst = os.path.abspath(os.path.join(param['out_dir'], os.path.basename(parfile_path)))
-    if src != dst and not os.path.exists(dst):
-        shutil.copy2(src, dst)
-
     return param
 
 
