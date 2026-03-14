@@ -52,14 +52,17 @@ class MULTINEST:
         self.param = ranges(self.param)
 
     def run_retrieval(self):
-        if MPIimport and MPIrank == 0:
-            if self.param['output_directory'] is not None:
-                self.param['out_dir'] = self.param['wkg_dir'] + self.param['output_directory']
-                if not os.path.isdir(self.param['out_dir']):
-                    os.mkdir(self.param['out_dir'])
-                del self.param['output_directory']
-            else:
-                self.param['out_dir'] = self.param['wkg_dir']
+        is_root = (not MPIimport) or MPIrank == 0
+
+        output_directory = self.param.get('output_directory')
+        if output_directory is not None:
+            out_dir = os.path.join(self.param['wkg_dir'], output_directory)
+        else:
+            out_dir = self.param['wkg_dir']
+        self.param['out_dir'] = os.path.normpath(out_dir) + os.sep
+
+        if is_root:
+            os.makedirs(self.param['out_dir'], exist_ok=True)
 
             print(f"Running ExoReL – version {__version__}")
             # check if the run is done, in case clean c meta files
@@ -79,7 +82,7 @@ class MULTINEST:
 
         if self.param['physics_model'] == 'dataset':
             # Update retrieval ranges to dataset min/max and validate coverage
-            if (not MPIimport) or (MPIimport and MPIrank == 0):
+            if is_root:
                 self.param = adjust_ranges_from_dataset(self.param)
 
         if MPIimport and MPIsize > 1:
@@ -324,7 +327,7 @@ class MULTINEST:
 
             return loglikelihood
 
-        if MPIimport and MPIrank == 0:
+        if is_root:
             time1 = time.time()
 
         pymultinest.run(LogLikelihood=loglike,
@@ -340,19 +343,19 @@ class MULTINEST:
                         verbose=self.param['multinest_verbose'],
                         init_MPI=False)
 
-        if MPIimport and MPIrank == 0:  # Plot Nest_spectrum
+        if is_root:  # Plot Nest_spectrum
             time2 = time.time()
             elapsed((time2 - time1) * (10 ** 9))
 
         prefix = self.param['out_dir'] + self.param['name_p'] + '_'
-        if MPIimport and MPIrank == 0:
+        if is_root:
             json.dump(parameters, open(prefix + 'params.json', 'w'))  # save parameter names
 
         ### POST-PROCESSING ###
         self.param['model_n_par'] = len(parameters)
         multinest_results = pymultinest.Analyzer(n_params=self.param['model_n_par'], outputfiles_basename=prefix, verbose=False)
 
-        if (not MPIimport) or (MPIimport and MPIrank == 0):
+        if is_root:
             if self.param['filter_multi_solutions']:
                 s, mds = self.filter_pymultinest_modes(multinest_results)
                 mds_orig = len(multinest_results.get_stats()['modes'])
@@ -375,7 +378,7 @@ class MULTINEST:
             if MPIimport and MPIsize > 1:
                 MPI.COMM_WORLD.Barrier()  # wait for everybody to synchronize here
 
-            if MPIimport and MPIrank == 0:
+            if is_root:
                 if platform.system() != 'Darwin':
                     time.sleep(600)
                 loglike_dir = []
@@ -408,10 +411,10 @@ class MULTINEST:
                     self.param['spec_sample'] = rank_0_spec + 0.0
                     del rank_0, rank_0_spec, rank_0_par
         elif self.param['calc_likelihood_data'] and check_files:
-            if MPIrank == 0:
+            if is_root:
                 print('\n"loglike_per_datapoint" files already exist. Skipping likelihood per data point calculation.')
 
-        if (not MPIimport) or (MPIimport and MPIrank == 0):
+        if is_root:
             if self.param['spectrum']['bins']:
                 data_spec = np.array([self.param['spectrum']['wl_low'], self.param['spectrum']['wl_high'], self.param['spectrum']['wl'], self.param['spectrum']['Fplanet'], self.param['spectrum']['error_p']]).T
             else:
@@ -448,7 +451,7 @@ class MULTINEST:
                 # Delegate posterior plotting to centralized plotting module
                 plot_posteriors(self, prefix, multinest_results, parameters, mds_orig)
 
-        if (not MPIimport) or (MPIimport and MPIrank == 0):
+        if is_root:
             write_stats_summary_files(self.param, prefix, multinest_results.get_stats(), len(parameters))
 
         if MPIimport:
@@ -672,8 +675,7 @@ class MULTINEST:
             loglike_dir = self.param['out_dir'] + f'loglikelihood_per_datapoint_sol{mds}/'
 
             if MPIrank == 0:
-                if not os.path.isdir(loglike_dir):
-                    os.mkdir(loglike_dir)
+                os.makedirs(loglike_dir, exist_ok=True)
 
             if mc_samples.shape[0] < self.param['n_likelihood_data']:
                 self.param['n_likelihood_data'] = mc_samples.shape[0] - MPIsize
