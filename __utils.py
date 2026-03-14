@@ -1547,8 +1547,18 @@ def write_stats_summary_files(param, prefix, multinest_stats, n_fitted_parameter
 
         if lnl_hat is not None and np.isfinite(lnl_hat):
             aic = float((2.0 * n_fit) - (2.0 * lnl_hat))
+            if n_data_points > (n_fit + 1):
+                aicc = float(aic + ((2.0 * n_fit * (n_fit + 1)) / (n_data_points - n_fit - 1)))
+            else:
+                aicc = np.nan
+            if n_data_points > 0:
+                bic = float((np.log(n_data_points) * n_fit) - (2.0 * lnl_hat))
+            else:
+                bic = np.nan
         else:
             aic = np.nan
+            aicc = np.nan
+            bic = np.nan
 
         if dof != 0 and np.isfinite(chi_square):
             reduced_chi_square = float(chi_square / dof)
@@ -1565,6 +1575,8 @@ def write_stats_summary_files(param, prefix, multinest_stats, n_fitted_parameter
         txt_lines.append(f'Reduced chi-square = {_summary_float_str(reduced_chi_square)}')
         txt_lines.append(f'ln Z               = {_summary_float_str(ln_z)} +- {_summary_float_str(ln_z_err)}')
         txt_lines.append(f'AIC                = {_summary_float_str(aic)}')
+        txt_lines.append(f'AICc               = {_summary_float_str(aicc)}')
+        txt_lines.append(f'BIC                = {_summary_float_str(bic)}')
         txt_lines.append('')
         txt_lines.append('##################################################')
         txt_lines.append('')
@@ -1579,6 +1591,8 @@ def write_stats_summary_files(param, prefix, multinest_stats, n_fitted_parameter
             'ln_Z': _safe_json_number(ln_z),
             'ln_Z_error': _safe_json_number(ln_z_err),
             'AIC': _safe_json_number(aic),
+            'AICc': _safe_json_number(aicc),
+            'BIC': _safe_json_number(bic),
             'max_log_likelihood': _safe_json_number(lnl_hat),
         }
 
