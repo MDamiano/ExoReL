@@ -54,13 +54,6 @@ class MULTINEST:
     def run_retrieval(self):
         is_root = (not MPIimport) or MPIrank == 0
 
-        output_directory = self.param.get('output_directory')
-        if output_directory is not None:
-            out_dir = os.path.join(self.param['wkg_dir'], output_directory)
-        else:
-            out_dir = self.param['wkg_dir']
-        self.param['out_dir'] = os.path.normpath(out_dir) + os.sep
-
         if is_root:
             os.makedirs(self.param['out_dir'], exist_ok=True)
 

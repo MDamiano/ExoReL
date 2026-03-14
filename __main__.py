@@ -188,6 +188,7 @@ class CREATE_SPECTRUM:
         if return_data:
             return data
         else:
+            os.makedirs(self.param['out_dir'], exist_ok=True)
             if self.param['file_output_name'] is not None:
                 np.savetxt(self.param['out_dir'] + str(self.param['file_output_name']) + '.dat', data)
             else:

@@ -283,8 +283,19 @@ def setup_param_dict(param):
                 param['fit_molecules'].append(mol)
 
     param['n_layer'] = int(param['n_layer'])
+    param['out_dir'] = resolve_output_dir(param)
 
     return param
+
+
+def resolve_output_dir(param):
+    output_directory = param.get('output_directory')
+    if output_directory is not None:
+        out_dir = os.path.join(param['wkg_dir'], output_directory)
+    else:
+        out_dir = param['wkg_dir']
+
+    return os.path.normpath(out_dir) + os.sep
 
 
 def par_and_calc(param):
