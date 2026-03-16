@@ -42,6 +42,7 @@ def default_parameters():
 
     #### [MODEL_PAR] ####
     param['physics_model'] = 'radiative_transfer'  # choose between 'radiative_transfer', 'dataset', or 'AI_model'
+    param['physics_model_code_language'] = 'C' # choose between 'C' and 'Python'
     param['gaseous_planet'] = False  # whether the planet is gaseous or rocky. If False, the surface pressure and albedo will be included in the model and can be fit during retrieval
     param['P_standard'] = 10. ** np.arange(0.0, 12.01, step=0.01)  # standard pressure grid in Pa
     param['fit_p0'] = False  # whether to fit the surface parameter during retrieval
@@ -442,9 +443,10 @@ def load_input_spectrum(param):
             param['min_wl'] = min(param['spectrum']['wl'])
             param['max_wl'] = max(param['spectrum']['wl'])
 
-    param['wl_C_grid'] = (10. ** np.linspace(np.log10(1e-7), np.log10(2e-4), 16000)) * 1e6
-    param['start_c_wl_grid'] = find_nearest(param['wl_C_grid'], param['min_wl']) - 35
-    param['stop_c_wl_grid'] = find_nearest(param['wl_C_grid'], param['max_wl']) + 35
+    if param['physics_model'] == 'radiative_transfer' and param['physics_model_code_language'] == 'C':
+        param['wl_C_grid'] = (10. ** np.linspace(np.log10(1e-7), np.log10(2e-4), 16000)) * 1e6
+        param['start_c_wl_grid'] = find_nearest(param['wl_C_grid'], param['min_wl']) - 35
+        param['stop_c_wl_grid'] = find_nearest(param['wl_C_grid'], param['max_wl']) + 35
     return param
 
 
@@ -1203,7 +1205,20 @@ def take_star_spectrum(param, plot=False):
 
 
 def pre_load_variables(param):
-    if not param['rocky']:
+    if param['physics_model_code_language'] == 'Python':
+        zone_data = np.genfromtxt(param['pkg_dir'] + 'forward_mod/Data/zone_Earth_Full.dat', dtype=str, skip_header=1)
+        if zone_data.ndim == 1 and zone_data.size:
+            zone_data = zone_data.reshape(1, -1)
+        param['zone_data'] = zone_data
+        param['solar_data'] = np.loadtxt(param['pkg_dir'] + 'forward_mod/Data/solar0.txt')
+        param = load_reactions(param)
+        param = load_photolysis(param)
+        param = load_cross(param)
+        param = load_cia(param)
+        param['aer_h2so4'] = np.loadtxt(param['pkg_dir'] + 'forward_mod/Data/H2SO4AER_CrossM_01.dat')
+        param['aer_s8'] = np.loadtxt(param['pkg_dir'] + 'forward_mod/Data/S8AER_CrossM_01.dat')
+
+    if param['rocky']:
     # Mass-Radius diagram
         if param['fit_Mp'] and param['fit_Rp']:
             if param['Rp_prior_type'] == 'R_M_prior':
@@ -1261,6 +1276,263 @@ def pre_load_variables(param):
         param['NH3_a'] = data[:, 1:]
         data = np.loadtxt(param['pkg_dir'] + 'forward_mod/CrossPlnt/Geo_ammonia_wavelength_250916.dat')
         param['NH3_g'] = data[:, 1:]
+
+    return param
+
+
+def load_reactions(param):
+    def _load_reaction_table(path, width):
+        data = np.loadtxt(path, dtype=int)
+        data = np.asarray(data, dtype=int)
+        if data.size == 0:
+            return np.zeros((1, width + 1), dtype=int)
+        data = np.atleast_2d(data)
+        table = np.zeros((data.shape[0] + 1, width + 1), dtype=int)
+        table[1:, 1:width + 1] = data[:, :width]
+        return table
+
+    data_dir = param['pkg_dir'] + 'forward_mod/Data/'
+    param['reaction_tables'] = {
+        'ReactionR': _load_reaction_table(data_dir + 'Reaction_R.txt', 6),
+        'ReactionM': _load_reaction_table(data_dir + 'Reaction_M.txt', 4),
+        'ReactionP': _load_reaction_table(data_dir + 'Reaction_P.txt', 8),
+        'ReactionT': _load_reaction_table(data_dir + 'Reaction_T.txt', 3),
+    }
+    return param
+
+
+def load_photolysis(param):
+    species_path = param['pkg_dir'] + 'forward_mod/Data/species_Earth_Full.dat'
+    species_data = np.genfromtxt(species_path, dtype=str, skip_header=1)
+    if species_data.ndim == 1 and species_data.size:
+        species_data = species_data.reshape(1, -1)
+
+    species_by_num = {}
+    for row in species_data:
+        if row.size >= 3:
+            species_by_num[int(row[2])] = row[0]
+
+    reaction_p = np.asarray(param['reaction_tables']['ReactionP'], dtype=int)
+    required_species = sorted({int(std_num) for std_num in reaction_p[1:, 1] if int(std_num) > 0})
+
+    photolysis_tables = {}
+    for std_num in required_species:
+        species_name = species_by_num.get(std_num)
+        if species_name is None:
+            continue
+        file_path = param['pkg_dir'] + 'forward_mod/' + species_name
+        if not os.path.exists(file_path):
+            continue
+        data = np.loadtxt(file_path)
+        data = np.atleast_2d(np.asarray(data, dtype=float))
+        order = np.argsort(data[:, 0])
+        photolysis_tables[std_num] = {
+            'name': species_name,
+            'data': data[order],
+        }
+
+    param['species_data'] = species_data
+    param['species_by_num'] = species_by_num
+    param['photolysis_tables'] = photolysis_tables
+    return param
+
+
+def load_cia(param):
+    cia_dir = param['pkg_dir'] + 'forward_mod/Cross3/N2_FullT_LowRes/'
+    cia_files = {
+        'H2H2': 'H2-H2_CIA.dat',
+        'H2He': 'H2-He_CIA.dat',
+        'H2H': 'H2-H_CIA.dat',
+        'N2H2': 'N2-H2_CIA.dat',
+        'N2N2': 'N2-N2_CIA.dat',
+        'CO2CO2': 'CO2-CO2_CIA.dat',
+        'O2O2': 'O2-O2_CIA.dat',
+    }
+
+    cia_tables = {}
+    cia_temp = None
+    for label, fname in cia_files.items():
+        path = cia_dir + fname
+        with open(path, 'r') as fim:
+            header = fim.readline().split()
+        temp_grid = np.array([float(value) for value in header[1:]], dtype=float)
+        data = np.loadtxt(path, skiprows=1)
+        if data.ndim == 1:
+            data = data.reshape(1, -1)
+        cia_tables[label] = {
+            'wavelength': data[:, 0].astype(float),
+            'values': data[:, 1:].astype(float),
+        }
+        if cia_temp is None:
+            cia_temp = temp_grid
+
+    param['cia'] = {
+        'temperature_grid': cia_temp,
+        'tables': cia_tables,
+    }
+
+    if not param['fit_T'] and param['PT_profile_type'] == 'isothermal':
+        target_T = float(param['Tp'])
+        if cia_temp.size == 0:
+            raise ValueError("CIA temperature grid is empty.")
+
+        if cia_temp.size == 1 or target_T <= cia_temp[0]:
+            temp_idx = 0
+            for table in param['cia']['tables'].values():
+                table['values'] = np.ascontiguousarray(table['values'][:, temp_idx:temp_idx + 1])
+        elif target_T >= cia_temp[-1]:
+            temp_idx = cia_temp.size - 1
+            for table in param['cia']['tables'].values():
+                table['values'] = np.ascontiguousarray(table['values'][:, temp_idx:temp_idx + 1])
+        else:
+            upper_idx = np.searchsorted(cia_temp, target_T, side='left')
+            lower_idx = upper_idx - 1
+            lower_T = cia_temp[lower_idx]
+            upper_T = cia_temp[upper_idx]
+
+            if target_T == upper_T:
+                for table in param['cia']['tables'].values():
+                    table['values'] = np.ascontiguousarray(table['values'][:, upper_idx:upper_idx + 1])
+            elif target_T == lower_T:
+                for table in param['cia']['tables'].values():
+                    table['values'] = np.ascontiguousarray(table['values'][:, lower_idx:lower_idx + 1])
+            else:
+                for table in param['cia']['tables'].values():
+                    lower_values = table['values'][:, lower_idx]
+                    upper_values = table['values'][:, upper_idx]
+                    weight = lower_values.dtype.type((target_T - lower_T) / (upper_T - lower_T))
+                    table['values'] = (lower_values + (upper_values - lower_values) * weight)[:, np.newaxis]
+
+        param['cia']['temperature_grid'] = np.array([target_T], dtype=cia_temp.dtype)
+
+    return param
+
+
+def load_cross(param, for_plotting=False):
+    def _readcross(fname, read_grids=True):
+        NTEMP = 20  # Number of temperature values (from Row 1)
+        NPRESSURE = 10  # Number of pressure values (from Row 2)
+
+        opac = []
+
+        with open(fname, 'r') as fim:
+            lines = fim.readlines()
+
+        line_idx = 0  # Start from the first line
+
+        if read_grids:
+            wave = []
+
+            # Read the temperature values from the first line
+            temp_line = lines[line_idx].strip()
+            temp_values = [float(x) for x in temp_line.split()]
+            if len(temp_values) != NTEMP:
+                raise ValueError(f"Expected {NTEMP} temperature values, got {len(temp_values)}")
+            temp = temp_values
+            line_idx += 1  # Move to the next line
+
+            # Read the pressure values from the second line
+            pres_line = lines[line_idx].strip()
+            pres_values = [float(x) for x in pres_line.split()]
+            if len(pres_values) != NPRESSURE:
+                raise ValueError(f"Expected {NPRESSURE} pressure values, got {len(pres_values)}")
+            pres = pres_values
+            line_idx += 1  # Move to the next line
+        else:
+            line_idx = 2
+
+        # Now read the data blocks
+        while line_idx < len(lines):
+            # Read wave number (should be a line with 1 value)
+            wave_line = lines[line_idx].strip()
+            if not wave_line:
+                line_idx += 1
+                continue  # Skip empty lines
+            if read_grids:
+                wave.append(float(wave_line))
+            line_idx += 1
+
+            # Read NPRESSURE blocks of data
+            opac_block = []
+            for _ in range(NPRESSURE):
+                if line_idx >= len(lines):
+                    raise ValueError("Unexpected end of file while reading data block")
+
+                # Read initial opacity values
+                data_line = lines[line_idx].strip()
+                data_values = data_line.split()
+                opacities = [float(val) for val in data_values[1:]]
+                line_idx += 1
+
+                # If opacities are split across multiple lines
+                while len(opacities) < NTEMP:
+                    if line_idx >= len(lines):
+                        raise ValueError("Unexpected end of file while reading opacities")
+                    data_line = lines[line_idx].strip()
+                    data_values = data_line.split()
+                    opacities.extend([float(val) for val in data_values])
+                    line_idx += 1
+
+                if len(opacities) > NTEMP:
+                    opacities = opacities[:NTEMP]  # Ensure exact size
+                opac_block.append(opacities)
+
+            opac.append(opac_block)
+
+        del lines
+
+        opac = np.array(opac)  # Shape: (number of wave numbers, NPRESSURE, NTEMP)
+        opac = opac.transpose(1, 2, 0)
+
+        if not read_grids:
+            return opac
+
+        # Convert lists to NumPy arrays for easier handling
+        temp = np.array(temp).reshape(1, -1)  # Shape: (1, NTEMP)
+        pres = np.array(pres).reshape(1, -1)  # Shape: (1, NPRESSURE)
+        wave = np.array(wave).reshape(1, -1)  # Shape: (1, number of wave numbers)
+
+        return temp, pres, wave, opac
+
+    if param['opac_data'] is not None:
+        if param['opac_dir'] is not None:
+            opac_dir = param['opac_dir'] + param['opac_data'] + '/'
+        else:
+            opac_dir = param['pkg_dir'] + 'forward_mod/opac/' + param['opac_data'] + '/'
+
+        for idx, mol in enumerate(param['fit_molecules'] + [param['gas_fill']]):
+            if idx == 0:
+                param['opact'], param['opacp'], param['opacw'], param['opac' + mol.lower()] = _readcross(opac_dir + 'opac' + mol + '.dat')
+            else:
+                param['opac' + mol.lower()] = _readcross(opac_dir + 'opac' + mol + '.dat', read_grids=False)
+            # making opacity files float32 to save space (cut memory usage by half)
+            if param['use_float32']:
+                param['opac' + mol.lower()] = np.array(param['opac' + mol.lower()], dtype=np.float32)
+
+    if not for_plotting:
+
+        strt = find_nearest(param['opacw'][0] * 1e6, param['min_wl'] - 0.05) - 20
+        end = find_nearest(param['opacw'][0] * 1e6, param['max_wl'] + 0.05) + 20
+        param['opacw'] = (param['opacw'][0][strt:end]).reshape(1, -1)
+
+        if not param['fit_T'] and param['PT_profile_type'] == 'isothermal':
+            strtT = find_nearest(param['opact'][0], float(param['Tp']))
+            endT = strtT
+            opac_t = np.asarray(param['opact'][0])
+            param['opact'] = np.array([[float(param['Tp'])]], dtype=opac_t.dtype)
+        elif param['fit_T'] and param['PT_profile_type'] == 'isothermal':
+            strtT = find_nearest(param['opact'][0], 50.0)
+            endT = find_nearest(param['opact'][0], 700.0)
+            param['opact'] = (param['opact'][0][strtT:endT+1]).reshape(1,-1)
+        else:
+            strtT = 0
+            endT = len(param['opact'][0])
+
+        endP = find_nearest(param['opacp'][0], np.log10(param['P_standard'][-1]))
+        param['opacp'] = (param['opacp'][0][:endP+1]).reshape(1,-1)
+        
+        for mol in param['fit_molecules'] + [param['gas_fill']]:
+            param['opac' + mol.lower()] = param['opac' + mol.lower()][:endP + 1, strtT:endT + 1, strt:end]
 
     return param
 

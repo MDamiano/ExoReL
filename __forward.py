@@ -3,7 +3,7 @@ from .__utils import *
 from pathlib import Path
 
 
-class FORWARD_MODEL:
+class RADIATIVE_TRANSFER_C:
     def __init__(self, param, retrieval=True, canc_metadata=False):
         self.param = copy.deepcopy(param)
         self.process = str(self.param['core_number']) + str(random.randint(0, 100000)) + alphabet() + alphabet() + alphabet() + str(random.randint(0, 100000))
@@ -1616,6 +1616,554 @@ class FORWARD_MODEL:
         alb_wl *= 10. ** (-3.)
 
         return alb_wl, alb
+    
+
+class RADIATIVE_TRANSFER_PYTHON:
+    def __init__(self, param):
+        self.param = copy.deepcopy(param)
+        self.hazes_calc = param['hazes']
+        self._python_core_cache = {}
+        self.test = True
+
+    def __surface_structure(self):
+        test_verbose = bool(self.test)
+        if test_verbose:
+            _surface_timer_total = time.perf_counter()
+            _surface_timer_block = _surface_timer_total
+
+            def _print_timing(label):
+                nonlocal _surface_timer_block
+                now = time.perf_counter()
+                print(f"__surface_structure [{label}]: {now - _surface_timer_block:.3f}s")
+                _surface_timer_block = now
+
+        wl_grid = np.asarray(self.param['opacw'], dtype=float).reshape(-1)
+        self.surf_alb = np.zeros(len(wl_grid))
+        if self.param['surface_albedo_parameters'] == int(1):
+            self.surf_alb += self.param['Ag']
+        elif self.param['surface_albedo_parameters'] == int(3):
+            left_mask = wl_grid < self.param['Ag_x1']
+            self.surf_alb[left_mask] = self.param['Ag1']
+            self.surf_alb[~left_mask] = self.param['Ag2']
+        elif self.param['surface_albedo_parameters'] == int(5):
+            left_mask = wl_grid < self.param['Ag_x1']
+            middle_mask = (wl_grid >= self.param['Ag_x1']) & (wl_grid < self.param['Ag_x2'])
+            right_mask = wl_grid >= self.param['Ag_x2']
+            self.surf_alb[left_mask] = self.param['Ag1']
+            self.surf_alb[middle_mask] = self.param['Ag2']
+            self.surf_alb[right_mask] = self.param['Ag3']
+        if test_verbose:
+            _print_timing('surface_albedo_setup')
+
+        self._python_core_cache['surface_albedo'] = self.surf_alb.copy()
+        if test_verbose:
+            _print_timing('surface_albedo_cache')
+            print(f"__surface_structure [total]: {time.perf_counter() - _surface_timer_total:.3f}s")
+
+    def __atmospheric_structure(self):
+        test_verbose = bool(self.test)
+        if test_verbose:
+            _atmos_timer_total = time.perf_counter()
+            _atmos_timer_block = _atmos_timer_total
+
+            def _print_timing(label):
+                nonlocal _atmos_timer_block
+                now = time.perf_counter()
+                print(f"__atmospheric_structure [{label}]: {now - _atmos_timer_block:.3f}s")
+                _atmos_timer_block = now
+
+        deltaP = 0.001 * 2.65495471  # assume super saturation to be 0.1% at 220 K
+
+        g = self.param['gp'] + 0.0
+
+        # Set up pressure grid
+        P = self.param['P'] + 0.0  # in Pascal
+
+        # Temperature profile
+        T = self.param['T'] * np.ones(len(P)) # in K
+
+        # Cloud density calculation
+        cloudden = 1.0e-36 * np.ones(len(P))
+        for i in range(len(P) - 2, -1, -1):
+            cloudden[i] = max(abs(self.param['vmr_H2O'][i] - self.param['vmr_H2O'][i + 1]) * 0.018 * P[i] / const.R.value / T[i], 1e-25)  # kg/m^3, g/L
+
+        # Particle size calculation
+        particlesize = 1.0e-36 * np.ones(len(P))
+        if self.param['fit_p_size'] and self.param['p_size_type'] == 'constant':
+            particlesize = self.param['p_size'] * np.ones(len(P))
+        else:
+            for i in range(len(P) - 2, -1, -1):
+                r0, r1, r2, VP = particlesizef(g, T[i], P[i], self.param['mean_mol_weight'][i], self.param['mm']['H2O'], self.param['KE'], deltaP)
+                if self.param['fit_p_size'] and self.param['p_size_type'] == 'factor':
+                    particlesize[i] = r2 * self.param['p_size']
+                else:
+                    particlesize[i] = r2 + 0.0
+
+        if self.param['fit_amm_cld']:
+            cloudden_nh3 = 1.0e-36 * np.ones(len(P))
+            for i in range(len(P) - 2, -1, -1):
+                cloudden_nh3[i] = max(abs(self.param['vmr_NH3'][i] - self.param['vmr_NH3'][i + 1]) * 0.017 * P[i] / const.R.value / T[i], 1e-25)  # kg/m^3, g/L
+            particlesize_nh3 = 1.0e-36 * np.ones(len(P))
+
+            if self.param['fit_p_size'] and self.param['p_size_type'] == 'constant':
+                particlesize_nh3 = self.param['p_size'] * np.ones(len(P))
+            else:
+                for i in range(len(P) - 2, -1, -1):
+                    deltaP_nh3 = P[i] * abs(self.param['vmr_NH3'][i] - self.param['vmr_NH3'][i + 1])
+                    r0, r1, r2, VP = particlesizef(g, T[i], P[i], self.param['mean_mol_weight'][i], self.param['mm']['NH3'], self.param['KE'], deltaP_nh3)
+                    if self.param['fit_p_size'] and self.param['p_size_type'] == 'factor':
+                        particlesize_nh3[i] = r2 * self.param['p_size']
+                    else:
+                        particlesize_nh3[i] = r2 + 0.0
+            
+            cloudden_nh3 = cloudden_nh3[::-1]
+            particlesize_nh3 = particlesize_nh3[::-1]
+        
+        if test_verbose:
+            _print_timing('cloud_density_and_particle_size')
+
+        # Calculate the height
+        P = P[::-1]
+        T = T[::-1]
+        cloudden = cloudden[::-1]
+        particlesize = particlesize[::-1]
+        MMM = self.param['mean_mol_weight'][::-1]
+
+        # Atmospheric Composition
+        f = {}
+        for mol in self.param['fit_molecules']:
+            f[mol] = self.param['vmr_' + mol][::-1]
+        if self.param['gas_fill'] is not None:
+            f[self.param['gas_fill']] = self.param['vmr_' + self.param['gas_fill']][::-1]
+
+        Z = np.zeros(len(P))
+        for j in range(0, len(P) - 1):
+            H = const.k_B.value * (T[j] + T[j + 1]) / 2. / g / MMM[j] / const.u.value / 1000.  # km
+            Z[j + 1] = Z[j] + H * np.log(P[j] / P[j + 1])
+
+        # Adaptive grid
+        if self.param['use_adaptive_grid']:
+            idx_cloud_layers = np.where(np.diff(f['H2O']) != 0.0)[0] + 1
+            if len(idx_cloud_layers) > 0:
+                n_cloud_layers = int(round((self.param['n_layer'] + 1) / 3, 0))
+                n_above_layers = int(round((self.param['n_layer'] + 1 - n_cloud_layers) / 2, 0))
+                n_below_layers = (self.param['n_layer'] + 1) - n_cloud_layers - n_above_layers
+
+                Z_below = np.linspace(Z[0], Z[min(idx_cloud_layers) - 1], num=n_below_layers, endpoint=False)
+                Z_within = np.linspace(Z[min(idx_cloud_layers) - 1], Z[max(idx_cloud_layers)], num=n_cloud_layers, endpoint=False)
+                Z_above = np.linspace(Z[max(idx_cloud_layers)], Z[-1], num=n_above_layers, endpoint=True)
+                zz = np.concatenate((np.concatenate((Z_below, Z_within)), Z_above))
+            else:
+                zz = np.linspace(Z[0], Z[-1], num=int(self.param['n_layer'] + 1), endpoint=True)
+        else:
+            zz = np.linspace(Z[0], Z[-1], num=int(self.param['n_layer'] + 1), endpoint=True)
+
+        if test_verbose:
+            _print_timing('atmospheric_grid_setup')
+
+        z0 = zz[:-1]
+        z1 = zz[1:]
+        zl = np.mean([z0, z1], axis=0)
+        tck = interp1d(Z, T)
+        tl = tck(zl)
+        tck = interp1d(Z, np.log(P))
+        pl = np.exp(tck(zl))
+
+        nden = pl / const.k_B.value / tl * 1.0E-6  # molecule cm-3
+        n = {}
+        for mol in self.param['fit_molecules']:
+            tck = interp1d(Z, np.log(f[mol]))
+            n[mol] = np.exp(tck(zl)) * nden
+        if self.param['gas_fill'] is not None:
+            tck = interp1d(Z, np.log(f[self.param['gas_fill']]))
+            n[self.param['gas_fill']] = np.exp(tck(zl)) * nden
+
+        tck = interp1d(Z, np.log(cloudden))
+        cloudden = np.exp(tck(zl))
+
+        tck = interp1d(Z, np.log(particlesize))
+        particlesize = np.exp(tck(zl))
+
+        if self.param['fit_amm_cld']:
+            tck = interp1d(Z, np.log(cloudden_nh3))
+            cloudden_nh3 = np.exp(tck(zl))
+
+            tck = interp1d(Z, np.log(particlesize_nh3))
+            particlesize_nh3 = np.exp(tck(zl))
+
+        self.species_to_num = self.mol_species_number()
+        #    Generate ConcentrationSTD.dat file
+        NSP = 111
+        with open(self.outdir + 'ConcentrationSTD.dat', 'w') as file:
+            file.write('z\t\tz0\t\tz1\t\tT\t\tP')
+            for i in range(1, NSP + 1):
+                file.write('\t\t' + str(i))
+            file.write('\n')
+            file.write('km\t\tkm\t\tkm\t\tK\t\tPa\n')
+            for j in range(0, len(zl)):
+                file.write("{:.6f}".format(zl[j]) + '\t\t' + "{:.6f}".format(z0[j]) + '\t\t' + "{:.6f}".format(z1[j]) + '\t\t' + "{:.6f}".format(tl[j]) + '\t\t' + "{:.6e}".format(pl[j]))
+                for i in range(1, NSP + 1):
+                    # H2O
+                    if i == 7 and 'H2O' in self.param['fit_molecules']:
+                        if self.param['contribution'] and self.param['mol_contr'] == 'H2O':
+                            file.write('\t\t' + "{:.6e}".format(n['H2O'][j]))
+                        elif self.param['contribution'] and self.param['mol_contr'] != 'H2O':
+                            file.write('\t\t' + "{:.6e}".format(0.0))
+                        else:
+                            file.write('\t\t' + "{:.6e}".format(n['H2O'][j]))
+
+                    # NH3
+                    elif i == 9 and 'NH3' in self.param['fit_molecules']:
+                        if self.param['contribution'] and self.param['mol_contr'] == 'NH3':
+                            file.write('\t\t' + "{:.6e}".format(n['NH3'][j]))
+                        elif self.param['contribution'] and self.param['mol_contr'] != 'NH3':
+                            file.write('\t\t' + "{:.6e}".format(0.0))
+                        else:
+                            file.write('\t\t' + "{:.6e}".format(n['NH3'][j]))
+
+                    # CH4
+                    elif i == 21 and 'CH4' in self.param['fit_molecules']:
+                        if self.param['contribution'] and self.param['mol_contr'] == 'CH4':
+                            file.write('\t\t' + "{:.6e}".format(n['CH4'][j]))
+                        elif self.param['contribution'] and self.param['mol_contr'] != 'CH4':
+                            file.write('\t\t' + "{:.6e}".format(0.0))
+                        else:
+                            file.write('\t\t' + "{:.6e}".format(n['CH4'][j]))
+
+                    # SO2
+                    elif i == 43 and 'SO2' in self.param['fit_molecules']:
+                        if self.param['contribution'] and self.param['mol_contr'] == 'SO2':
+                            file.write('\t\t' + "{:.6e}".format(n['SO2'][j]))
+                        elif self.param['contribution'] and self.param['mol_contr'] != 'SO2':
+                            file.write('\t\t' + "{:.6e}".format(0.0))
+                        else:
+                            file.write('\t\t' + "{:.6e}".format(n['SO2'][j]))
+
+                    # H2S
+                    elif i == 45 and 'H2S' in self.param['fit_molecules']:
+                        if self.param['contribution'] and self.param['mol_contr'] == 'H2S':
+                            file.write('\t\t' + "{:.6e}".format(n['H2S'][j]))
+                        elif self.param['contribution'] and self.param['mol_contr'] != 'H2S':
+                            file.write('\t\t' + "{:.6e}".format(0.0))
+                        else:
+                            file.write('\t\t' + "{:.6e}".format(n['H2S'][j]))
+
+                    # CO2
+                    elif i == 52 and 'CO2' in self.param['fit_molecules']:
+                        if self.param['contribution'] and self.param['mol_contr'] == 'CO2':
+                            file.write('\t\t' + "{:.6e}".format(n['CO2'][j]))
+                        elif self.param['contribution'] and self.param['mol_contr'] != 'CO2':
+                            file.write('\t\t' + "{:.6e}".format(0.0))
+                        else:
+                            file.write('\t\t' + "{:.6e}".format(n['CO2'][j]))
+
+                    # CO
+                    elif i == 20 and 'CO' in self.param['fit_molecules']:
+                        if self.param['contribution'] and self.param['mol_contr'] == 'CO':
+                            file.write('\t\t' + "{:.6e}".format(n['CO'][j]))
+                        elif self.param['contribution'] and self.param['mol_contr'] != 'CO':
+                            file.write('\t\t' + "{:.6e}".format(0.0))
+                        else:
+                            file.write('\t\t' + "{:.6e}".format(n['CO'][j]))
+
+                    # O2
+                    elif i == 54 and 'O2' in self.param['fit_molecules']:
+                        if self.param['contribution'] and self.param['mol_contr'] == 'O2':
+                            file.write('\t\t' + "{:.6e}".format(n['O2'][j]))
+                        elif self.param['contribution'] and self.param['mol_contr'] != 'O2':
+                            file.write('\t\t' + "{:.6e}".format(0.0))
+                        else:
+                            file.write('\t\t' + "{:.6e}".format(n['O2'][j]))
+
+                    # O3
+                    elif i == 2 and 'O3' in self.param['fit_molecules']:
+                        if self.param['contribution'] and self.param['mol_contr'] == 'O3':
+                            file.write('\t\t' + "{:.6e}".format(n['O3'][j]))
+                        elif self.param['contribution'] and self.param['mol_contr'] != 'O3':
+                            file.write('\t\t' + "{:.6e}".format(0.0))
+                        else:
+                            file.write('\t\t' + "{:.6e}".format(n['O3'][j]))
+
+                    # N2O
+                    elif i == 11 and 'N2O' in self.param['fit_molecules']:
+                        if self.param['contribution'] and self.param['mol_contr'] == 'N2O':
+                            file.write('\t\t' + "{:.6e}".format(n['N2O'][j]))
+                        elif self.param['contribution'] and self.param['mol_contr'] != 'N2O':
+                            file.write('\t\t' + "{:.6e}".format(0.0))
+                        else:
+                            file.write('\t\t' + "{:.6e}".format(n['N2O'][j]))
+
+                    # N2
+                    elif i == 55 and 'N2' in self.param['fit_molecules']:
+                        if self.param['contribution'] and self.param['mol_contr'] == 'N2':
+                            file.write('\t\t' + "{:.6e}".format(n['N2'][j]))
+                        elif self.param['contribution'] and self.param['mol_contr'] != 'N2':
+                            file.write('\t\t' + "{:.6e}".format(0.0))
+                        else:
+                            file.write('\t\t' + "{:.6e}".format(n['N2'][j]))
+                    elif i == 55 and self.param['gas_fill'] == 'N2':
+                        if self.param['contribution'] and self.param['mol_contr'] == 'N2':
+                            file.write('\t\t' + "{:.6e}".format(n['N2'][j]))
+                        elif self.param['contribution'] and self.param['mol_contr'] != 'N2':
+                            file.write('\t\t' + "{:.6e}".format(0.0))
+                        else:
+                            file.write('\t\t' + "{:.6e}".format(n['N2'][j]))
+
+                    # H2
+                    elif i == 53 and self.param['gas_fill'] == 'H2':
+                        if self.param['contribution'] and self.param['mol_contr'] == 'H2':
+                            file.write('\t\t' + "{:.6e}".format(n['H2'][j]))
+                        elif self.param['contribution'] and self.param['mol_contr'] != 'H2':
+                            file.write('\t\t' + "{:.6e}".format(0.0))
+                        else:
+                            file.write('\t\t' + "{:.6e}".format(n['H2'][j]))
+                    else:
+                        file.write('\t\t' + "{:.6e}".format(0.0))
+                file.write('\n')
+
+        if test_verbose:
+            _print_timing('profile_interpolation')
+
+        #    cloud output
+        cro_h2o = np.zeros((len(zl), 324))
+        alb_h2o = np.ones((len(zl), 324))
+        geo_h2o = np.zeros((len(zl), 324))
+        
+        if self.param['fit_amm_cld']:
+            cro_nh3 = np.zeros((len(zl), 324))
+            alb_nh3 = np.ones((len(zl), 324))
+            geo_nh3 = np.zeros((len(zl), 324))
+
+        #    opacity
+        sig = 2
+        for j in range(0, len(zl)):
+            r2 = particlesize[j]
+            if cloudden[j] < 1e-16:
+                pass
+            else:
+                r0 = r2 * np.exp(-np.log(sig) ** 2.)
+                if self.param['wtr_cld_type'] == 'mixed' and self.param['PT_profile_type'] == 'parametric':
+                    if tl[j] < 273.15: # ice
+                        VP = 4. * math.pi / 3. * ((r2 * 1.0e-6 * np.exp(0.5 * np.log(sig) ** 2.)) ** 3.) * 1.0e+6 * 0.92  # g
+                        for indi in range(0, 324):
+                            tck = interp1d(np.log10(self.param['H2OL_r']), np.log10(self.param['H2OL_c_ice'][:, indi]))
+                            temporaneo = tck(np.log10(max(0.01, min(r0, 100))))
+                            cro_h2o[j, indi] = cloudden[j] / VP * 1.0e-3 * (10. ** temporaneo)  # cm-1
+                            tck = interp1d(np.log10(self.param['H2OL_r']), self.param['H2OL_a_ice'][:, indi])
+                            alb_h2o[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
+                            tck = interp1d(np.log10(self.param['H2OL_r']), self.param['H2OL_g_ice'][:, indi])
+                            geo_h2o[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
+                    else: # liquid
+                        VP = 4. * math.pi / 3. * ((r2 * 1.0e-6 * np.exp(0.5 * np.log(sig) ** 2.)) ** 3.) * 1.0e+6 * 1.0  # g
+                        for indi in range(0, 324):
+                            tck = interp1d(np.log10(self.param['H2OL_r']), np.log10(self.param['H2OL_c_liquid'][:, indi]))
+                            temporaneo = tck(np.log10(max(0.01, min(r0, 100))))
+                            cro_h2o[j, indi] = cloudden[j] / VP * 1.0e-3 * (10. ** temporaneo)  # cm-1
+                            tck = interp1d(np.log10(self.param['H2OL_r']), self.param['H2OL_a_liquid'][:, indi])
+                            alb_h2o[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
+                            tck = interp1d(np.log10(self.param['H2OL_r']), self.param['H2OL_g_liquid'][:, indi])
+                            geo_h2o[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
+                else:  # liquid or ice
+                    if self.param['wtr_cld_type'] == 'liquid':  # liquid
+                        VP = 4. * math.pi / 3. * ((r2 * 1.0e-6 * np.exp(0.5 * np.log(sig) ** 2.)) ** 3.) * 1.0e+6 * 1.0  # g
+                    else:  # ice
+                        VP = 4. * math.pi / 3. * ((r2 * 1.0e-6 * np.exp(0.5 * np.log(sig) ** 2.)) ** 3.) * 1.0e+6 * 0.92  # g
+                    for indi in range(0, 324):
+                        tck = interp1d(np.log10(self.param['H2OL_r']), np.log10(self.param['H2OL_c'][:, indi]))
+                        temporaneo = tck(np.log10(max(0.01, min(r0, 100))))
+                        cro_h2o[j, indi] = cloudden[j] / VP * 1.0e-3 * (10. ** temporaneo)  # cm-1
+                        tck = interp1d(np.log10(self.param['H2OL_r']), self.param['H2OL_a'][:, indi])
+                        alb_h2o[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
+                        tck = interp1d(np.log10(self.param['H2OL_r']), self.param['H2OL_g'][:, indi])
+                        geo_h2o[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
+            
+            if self.param['fit_amm_cld']:
+                r2 = particlesize_nh3[j]
+                if cloudden_nh3[j] < 1e-16:
+                    pass
+                else:
+                    r0 = r2 * np.exp(-np.log(sig) ** 2.)  # micron
+                    VP = 4. * math.pi / 3. * ((r2 * 1.0E-6 * np.exp(0.5 * (np.log(sig) ** 2.))) ** 3.) * 1.0E+6 * 0.87  # g
+                    for indi in range(0, 324):
+                        tck = interp1d(np.log10(self.param['NH3_r']), np.log10(self.param['NH3_c'][:, indi]))
+                        temporaneo = tck(np.log10(max(0.01, min(r0, 100))))
+                        cro_nh3[j, indi] = cloudden_nh3[j] / VP * 1.0e-3 * (10. ** temporaneo)  # cm-1
+                        tck = interp1d(np.log10(self.param['NH3_r']), self.param['NH3_a'][:, indi])
+                        alb_nh3[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
+                        tck = interp1d(np.log10(self.param['NH3_r']), self.param['NH3_g'][:, indi])
+                        geo_nh3[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
+
+        if test_verbose:
+            _print_timing('cloud_optics')
+
+        with open(self.outdir + 'cross_H2O.dat', 'w') as file:
+            for j in range(0, len(zl)):
+                for indi in range(0, 324):
+                    file.write("{:.6e}".format(cro_h2o[j, indi]) + '\t')
+                file.write('\n')
+
+        with open(self.outdir + 'albedo_H2O.dat', 'w') as file:
+            for j in range(0, len(zl)):
+                for indi in range(0, 324):
+                    file.write("{:.6e}".format(alb_h2o[j, indi]) + '\t')
+                file.write('\n')
+
+        with open(self.outdir + 'geo_H2O.dat', 'w') as file:
+            for j in range(0, len(zl)):
+                for indi in range(0, 324):
+                    file.write("{:.6e}".format(geo_h2o[j, indi]) + '\t')
+                file.write('\n')
+        
+        if self.param['fit_amm_cld']:
+            with open(self.outdir + 'cross_NH3.dat', 'w') as file:
+                for j in range(0, len(zl)):
+                    for indi in range(0, 324):
+                        file.write("{:.6e}".format(cro_nh3[j, indi]) + '\t')
+                    file.write('\n')
+            
+            with open(self.outdir + 'albedo_NH3.dat', 'w') as file:
+                for j in range(0, len(zl)):
+                    for indi in range(0, 324):
+                        file.write("{:.6e}".format(alb_nh3[j, indi]) + '\t')
+                    file.write('\n')
+            
+            with open(self.outdir + 'geo_NH3.dat', 'w') as file:
+                for j in range(0, len(zl)):
+                    for indi in range(0, 324):
+                        file.write("{:.6e}".format(geo_nh3[j, indi]) + '\t')
+                    file.write('\n')
+
+        if test_verbose:
+            _print_timing('atmosphere_cache')
+            print(f"__atmospheric_structure [total]: {time.perf_counter() - _atmos_timer_total:.3f}s")
+    
+    def mol_species_number(self):
+        species_to_num = {
+            'O': 1,
+            'O3': 2,
+            'H': 3,
+            'OH': 4,
+            'HO2': 5,
+            'H2O2': 6,
+            'H2O': 7,
+            'N': 8,
+            'NH3': 9,
+            'NH2': 10,
+            'N2O': 11,
+            'NO': 12,
+            'NO2': 13,
+            'NO3': 14,
+            'N2O5': 15,
+            'HNO': 16,
+            'HNO2': 17,
+            'HNO3': 18,
+            'C': 19,
+            'CO': 20,
+            'CH4': 21,
+            'CH2O': 22,
+            'CH2O2': 23,
+            'CH4O': 24,
+            'CH4O2': 25,
+            'C2': 26,
+            'C2H2': 27,
+            'C2H3': 28,
+            'C2H4': 29,
+            'C2H5': 30,
+            'C2H6': 31,
+            'C2HO': 32,
+            'C2H2O': 33,
+            'C2H3O': 34,
+            'C2H4O': 35,
+            'C2H5O': 36,
+            'HCN': 37,
+            'CN': 38,
+            'CNO': 39,
+            'S': 40,
+            'S2': 41,
+            'SO': 42,
+            'SO2': 43,
+            'SO3': 44,
+            'H2S': 45,
+            'HS': 46,
+            'HSO': 47,
+            'HSO2': 48,
+            'OCS': 49,
+            'CS': 50,
+            'CH3S': 51,
+            'CO2': 52,
+            'H2': 53,
+            'O2': 54,
+            'N2': 55,
+            'O(1D)': 56,
+            'NH': 57,
+            'CH': 58,
+            'CH2': 59,
+            'CH3': 60,
+            'CHO': 61,
+            'CH3O': 62,
+            'CHO2': 63,
+            'C2H': 64,
+            'CH3NO2': 65,
+            'CH3NO3': 66,
+            'C2H2N': 67,
+            'HSO3': 68,
+            'CH4S': 69,
+            'HNO4': 70,
+            'CH3O2': 71,
+            'HCNO': 72,
+            'H2SO4': 73,
+            'SO21': 74,
+            'SO23': 75,
+            'S3': 76,
+            'S4': 77,
+            'H2SO4A': 78,
+            'S8': 79,
+            'CH21': 80,
+            'C3H2': 81,
+            'C3H3': 82,
+            'C3H41': 83,
+            'C3H42': 84,
+            'C3H5': 85,
+            'C3H6': 86,
+            'C3H7': 87,
+            'C3H8': 88,
+            'C4H': 89,
+            'C4H2': 90,
+            'C4H3': 91,
+            'C4H4': 92,
+            'C4H5': 93,
+            'C4H61': 94,
+            'C4H62': 95,
+            'C4H63': 96,
+            'C4H8': 97,
+            'C4H9': 98,
+            'C4H10': 99,
+            'C6H': 100,
+            'C6H2': 101,
+            'C6H3': 102,
+            'C6H6': 103,
+            'C8H2': 104,
+            'CMHA': 105,
+            'N2H2': 106,
+            'N2H3': 107,
+            'N2H4': 108,
+            'CH5N': 109,
+            'C2H5N': 110,
+            'S8A': 111,
+        }
+        return species_to_num
+
+    def __core_function(self):
+        pass
+
+    def run_forward(self):
+        self.__atmospheric_structure()
+        self.__surface_structure()
+        alb_wl, alb = self.__core_function()
+
+        alb_wl *= 10. ** (-3.)
+
+        return alb_wl, alb
 
 
 def forward(parameters_dictionary, evaluation=None, phi=None, n_obs=None, retrieval_mode=True, core_number=None, albedo_calc=False, fp_over_fs=False, canc_metadata=False):
@@ -1728,7 +2276,11 @@ def forward(parameters_dictionary, evaluation=None, phi=None, n_obs=None, retrie
                 print('Calculating the planetary flux as function of wavelength')
 
     if param['physics_model'] == 'radiative_transfer':
-        mod = FORWARD_MODEL(param, retrieval=retrieval_mode, canc_metadata=canc_metadata)
+        if param['physics_model_code_language'] == 'Python':
+            mod = RADIATIVE_TRANSFER_PYTHON(param)
+        else:
+            mod = RADIATIVE_TRANSFER_C(param, retrieval=retrieval_mode, canc_metadata=canc_metadata)
+        
     # elif param['physics_model'] == 'dataset':
     #     mod = FORWARD_DATASET(param, dataset_dir=param['dataset_dir'])
     # elif param['physics_model'] == 'AI_model':
