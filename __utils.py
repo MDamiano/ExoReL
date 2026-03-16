@@ -43,6 +43,9 @@ def default_parameters():
     #### [MODEL_PAR] ####
     param['physics_model'] = 'radiative_transfer'  # choose between 'radiative_transfer', 'dataset', or 'AI_model'
     param['physics_model_code_language'] = 'C' # choose between 'C' and 'Python'
+    param['opac_data'] = '10k'  # spectral resolution of the opacities
+    param['opac_dir'] = None  # directory containing the opacities (this folder will have subdirectories for different spectral resolutions)
+    param['use_float32'] = True  # whether or not to use float32 or float64 for the opacities precision
     param['gaseous_planet'] = False  # whether the planet is gaseous or rocky. If False, the surface pressure and albedo will be included in the model and can be fit during retrieval
     param['P_standard'] = 10. ** np.arange(0.0, 12.01, step=0.01)  # standard pressure grid in Pa
     param['fit_p0'] = False  # whether to fit the surface parameter during retrieval
