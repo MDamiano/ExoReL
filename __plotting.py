@@ -15,7 +15,7 @@ import arviz as az
 
 from .__utils import find_nearest, model_finalizzation, temp_profile, reso_range
 # from .__forward import FORWARD_MODEL, FORWARD_DATASET, FORWARD_AI
-from .__forward import FORWARD_MODEL
+from .__forward import RADIATIVE_TRANSFER_C, RADIATIVE_TRANSFER_PYTHON
 
 _COMMON_PLOT_STYLE = 'seaborn-v0_8-white'
 _COMMON_PLOT_RCPARAMS = {
@@ -55,7 +55,10 @@ def _isolate_posterior_plot_style(plot_fn):
 def _instantiate_forward_model(param):
     model_type = param.get('physics_model')
     if model_type == 'radiative_transfer':
-        return FORWARD_MODEL(param, retrieval=False, canc_metadata=True)
+        if param['physics_model_code_language'] == 'Python':
+            return RADIATIVE_TRANSFER_PYTHON(param)
+        else:
+            return RADIATIVE_TRANSFER_C(param, retrieval=False, canc_metadata=True)
     # if model_type == 'dataset':
     #     return FORWARD_DATASET(param, dataset_dir=param['dataset_dir'])
     # if model_type == 'AI_model':
@@ -80,7 +83,7 @@ def plot_nest_spec(mnest, cube, solutions=0):
     mnest.cube_to_param(cube)
 
     def _load_target_bins():
-        new_wl = reso_range(0.2, 20.0, res=1000, bins=True)
+        new_wl = reso_range(0.2, 20.0, res=500, bins=True)
         if mnest.param['mol_custom_wl']:
             new_wl_central = np.mean(new_wl, axis=1)
             start = 0

@@ -1,4 +1,7 @@
 ## [2.7.3] - 03/06/26
+- Retrieval runs now copy the input JSON parfile into the configured output directory on startup, while safely skipping the copy if the file is already there.
+- Python opacity loading now clips negative cross-section values to zero after reading the opacity tables.
+- Python CIA loading now crops wavelength coverage to the working spectral window and uses log-temperature interpolation in the isothermal case to match the C implementation more closely.
 - Added per-retrieval summary statistics export: `stats_summary.txt` and `stats_summary.json` now report per-solution chi-square, reduced chi-square, `ln Z`, AIC, max log-likelihood, and degrees of freedom.
 - Added the external `plot_multi_posteriors()` helper to overlay posterior distributions from multiple retrieval folders/solutions and save combined comparison figures.
 - Switched parameter-file loading to JSON only: `.dat` parfiles and the deprecated `json_format` path were removed, and parfile copying now works safely with both relative and absolute JSON paths.

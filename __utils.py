@@ -180,9 +180,25 @@ def read_parfile(param, parfile=None):
         param[key] = value
     del paramdata
 
+    param['parfile_path'] = os.path.abspath(parfile_path)
     param['wkg_dir'] = cwd + '/'
 
     return param
+
+
+def copy_parfile_to_output(param):
+    parfile_path = param.get('parfile_path')
+    out_dir = param.get('out_dir')
+    if not parfile_path or not out_dir:
+        return None
+
+    source = os.path.abspath(parfile_path)
+    destination = os.path.join(out_dir, os.path.basename(source))
+    if os.path.normcase(source) == os.path.normcase(os.path.abspath(destination)):
+        return destination
+
+    shutil.copy2(source, destination)
+    return destination
 
 
 def setup_param_dict(param):
@@ -1341,6 +1357,39 @@ def load_photolysis(param):
 
 
 def load_cia(param):
+    def _crop_cia_wavelengths(cia_tables):
+        min_wl_nm = (param['min_wl'] - 0.05) * 1e3
+        max_wl_nm = (param['max_wl'] + 0.05) * 1e3
+
+        for table in cia_tables.values():
+            wl = table['wavelength']
+            strt = find_nearest(wl, min_wl_nm) - 20
+            end = find_nearest(wl, max_wl_nm) + 20
+            strt = max(0, strt)
+            end = min(len(wl), end)
+            if end <= strt:
+                strt = 0
+                end = len(wl)
+            table['wavelength'] = np.ascontiguousarray(wl[strt:end])
+            table['values'] = np.ascontiguousarray(table['values'][strt:end, :])
+
+    def _resample_cia_to_opacity_grid(cia_tables, target_wl_nm):
+        target_wl_nm = np.ascontiguousarray(np.asarray(target_wl_nm, dtype=float))
+        for table in cia_tables.values():
+            source_wl = np.asarray(table['wavelength'], dtype=float)
+            source_values = np.asarray(table['values'], dtype=float)
+            resampled = np.empty((target_wl_nm.size, source_values.shape[1]), dtype=source_values.dtype)
+            for col in range(source_values.shape[1]):
+                resampled[:, col] = np.interp(
+                    target_wl_nm,
+                    source_wl,
+                    source_values[:, col],
+                    left=0.0,
+                    right=0.0,
+                )
+            table['wavelength'] = target_wl_nm.copy()
+            table['values'] = np.ascontiguousarray(resampled)
+
     cia_dir = param['pkg_dir'] + 'forward_mod/Cross3/N2_FullT_LowRes/'
     cia_files = {
         'H2H2': 'H2-H2_CIA.dat',
@@ -1374,6 +1423,8 @@ def load_cia(param):
         'tables': cia_tables,
     }
 
+    _crop_cia_wavelengths(param['cia']['tables'])
+
     if not param['fit_T'] and param['PT_profile_type'] == 'isothermal':
         target_T = float(param['Tp'])
         if cia_temp.size == 0:
@@ -1400,13 +1451,20 @@ def load_cia(param):
                 for table in param['cia']['tables'].values():
                     table['values'] = np.ascontiguousarray(table['values'][:, lower_idx:lower_idx + 1])
             else:
+                log_lower_T = np.log(lower_T)
+                log_upper_T = np.log(upper_T)
+                log_target_T = np.log(target_T)
                 for table in param['cia']['tables'].values():
                     lower_values = table['values'][:, lower_idx]
                     upper_values = table['values'][:, upper_idx]
-                    weight = lower_values.dtype.type((target_T - lower_T) / (upper_T - lower_T))
+                    weight = lower_values.dtype.type((log_target_T - log_lower_T) / (log_upper_T - log_lower_T))
                     table['values'] = (lower_values + (upper_values - lower_values) * weight)[:, np.newaxis]
 
         param['cia']['temperature_grid'] = np.array([target_T], dtype=cia_temp.dtype)
+
+    if 'opacw' in param:
+        target_wl_nm = np.asarray(param['opacw'][0], dtype=float) * 1e6
+        _resample_cia_to_opacity_grid(param['cia']['tables'], target_wl_nm)
 
     return param
 
@@ -1508,6 +1566,7 @@ def load_cross(param, for_plotting=False):
                 param['opact'], param['opacp'], param['opacw'], param['opac' + mol.lower()] = _readcross(opac_dir + 'opac' + mol + '.dat')
             else:
                 param['opac' + mol.lower()] = _readcross(opac_dir + 'opac' + mol + '.dat', read_grids=False)
+            param['opac' + mol.lower()] = np.maximum(param['opac' + mol.lower()], 0.0)
             # making opacity files float32 to save space (cut memory usage by half)
             if param['use_float32']:
                 param['opac' + mol.lower()] = np.array(param['opac' + mol.lower()], dtype=np.float32)

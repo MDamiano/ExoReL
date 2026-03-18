@@ -56,6 +56,7 @@ class MULTINEST:
 
         if is_root:
             os.makedirs(self.param['out_dir'], exist_ok=True)
+            copy_parfile_to_output(self.param)
 
             print(f"Running ExoReL – version {__version__}")
             # check if the run is done, in case clean c meta files
@@ -694,7 +695,11 @@ class MULTINEST:
             for i, sample_idx in enumerate(range(start_idx, stop_idx)):
                 cube = sample_par[sample_idx, :]
                 self.cube_to_param(cube)
-                mod = FORWARD_MODEL(self.param, retrieval=False, canc_metadata=True)
+                if self.param['physics_model'] == 'radiative_transfer':
+                    if self.param['physics_model_code_language'] == 'Python':
+                        mod = RADIATIVE_TRANSFER_PYTHON(self.param)
+                    else:
+                        mod = RADIATIVE_TRANSFER_C(self.param, retrieval=False, canc_metadata=True)
                 alb_wl, alb = mod.run_forward()
 
                 if self.param['fit_wtr_cld'] and self.param['rocky'] and self.param['cld_frac'] != 1.0:
@@ -740,7 +745,11 @@ class MULTINEST:
         if self.param['double_cloud']:
             self.param['fit_amm_cld'] = False
         self.cube_to_param(mlnst_cube, free_cld_calc=True)
-        mod = FORWARD_MODEL(self.param, retrieval=False, canc_metadata=True)
+        if self.param['physics_model'] == 'radiative_transfer':
+            if self.param['physics_model_code_language'] == 'Python':
+                mod = RADIATIVE_TRANSFER_PYTHON(self.param)
+            else:
+                mod = RADIATIVE_TRANSFER_C(self.param, retrieval=False, canc_metadata=True)
         _, alb_no_cld = mod.run_forward()
         self.param['fit_wtr_cld'] = True
         if self.param['double_cloud']:
