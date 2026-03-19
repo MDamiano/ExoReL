@@ -207,6 +207,7 @@ marimo/_lsp/
 __marimo__/
 
 # User defined
+meeting_room/
 PHO_STELLAR_MODEL/
 plotting_routine/
 forward_mod/

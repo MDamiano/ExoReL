@@ -47,6 +47,18 @@ class CREATE_SPECTRUM:
         self.param = par_and_calc(self.param)
         self.param = load_input_spectrum(self.param)
 
+        self.param['fit_molecules'] = []
+        sumb = 0.0
+        for mol in self.param['supported_molecules']:
+            try:
+                if self.param['vmr_' + mol] != 0.0:
+                    self.param['fit_molecules'].append(mol)
+                    sumb += self.param['vmr_' + mol]
+            except KeyError:
+                pass
+        if self.param['gas_fill'] is not None:
+            self.param['vmr_' + self.param['gas_fill']] = 1.0 - sumb
+
         if not self.param['albedo_calc'] and not self.param['fp_over_fs']:
             self.param = take_star_spectrum(self.param)
         self.param = pre_load_variables(self.param)
@@ -82,20 +94,6 @@ class CREATE_SPECTRUM:
             pass
         else:
             raise RuntimeError("Please define two among planetary radius, mass, or gravity. I cannot complete the calculation otherwise.")
-
-        self.param['fit_molecules'] = []
-        sumb = 0.0
-        for mol in self.param['supported_molecules']:
-            try:
-                if self.param['vmr_' + mol] != 0.0:
-                    self.param['fit_molecules'].append(mol)
-                    sumb += self.param['vmr_' + mol]
-            except KeyError:
-                pass
-        if self.param['gas_fill'] is not None:
-            self.param['vmr_' + self.param['gas_fill']] = 1.0 - sumb
-        else:
-            pass
 
         if self.param['verbose']:
             if self.param['fit_wtr_cld'] and self.param['PT_profile_type'] == 'isothermal':

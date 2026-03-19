@@ -1,3 +1,6 @@
+## [ ] - 03/xx/26
+- 
+
 ## [2.7.3] - 03/06/26
 - Retrieval runs now copy the input JSON parfile into the configured output directory on startup, while safely skipping the copy if the file is already there.
 - Python opacity loading now clips negative cross-section values to zero after reading the opacity tables.

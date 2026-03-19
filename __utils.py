@@ -1463,7 +1463,7 @@ def load_cia(param):
         param['cia']['temperature_grid'] = np.array([target_T], dtype=cia_temp.dtype)
 
     if 'opacw' in param:
-        target_wl_nm = np.asarray(param['opacw'][0], dtype=float) * 1e6
+        target_wl_nm = np.asarray(param['opacw'][0], dtype=float) * 1e9
         _resample_cia_to_opacity_grid(param['cia']['tables'], target_wl_nm)
 
     return param
@@ -1590,7 +1590,7 @@ def load_cross(param, for_plotting=False):
             strtT = 0
             endT = len(param['opact'][0])
 
-        endP = find_nearest(param['opacp'][0], np.log10(param['P_standard'][-1]))
+        endP = find_nearest(param['opacp'][0], param['P_standard'][-1])
         param['opacp'] = (param['opacp'][0][:endP+1]).reshape(1,-1)
         
         for mol in param['fit_molecules'] + [param['gas_fill']]:
