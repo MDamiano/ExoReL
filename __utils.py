@@ -1283,46 +1283,47 @@ def pre_load_variables(param):
                 pass
     #  Load Mie Calculation Results
     if param['fit_wtr_cld']:
+        fldr_cld_fl = 'forward_mod/cloud_files/'
         if param['wtr_cld_type'] == 'liquid':
-            data = np.loadtxt(param['pkg_dir'] + 'forward_mod/CrossPlnt/Cross_water_wavelength_250916.dat')
+            data = np.loadtxt(param['pkg_dir'] + fldr_cld_fl + 'Cross_water_wavelength_250916.dat')
             param['H2OL_r'] = data[:, 0]  # zero-order radius, in micron
             param['H2OL_c'] = data[:, 1:]  # cross-section per droplet, in cm2
-            data = np.loadtxt(param['pkg_dir'] + 'forward_mod/CrossPlnt/Albedo_water_wavelength_250916.dat')
+            data = np.loadtxt(param['pkg_dir'] + fldr_cld_fl + 'Albedo_water_wavelength_250916.dat')
             param['H2OL_a'] = data[:, 1:]
-            data = np.loadtxt(param['pkg_dir'] + 'forward_mod/CrossPlnt/Geo_water_wavelength_250916.dat')
+            data = np.loadtxt(param['pkg_dir'] + fldr_cld_fl + 'Geo_water_wavelength_250916.dat')
             param['H2OL_g'] = data[:, 1:]
         elif param['wtr_cld_type'] == 'ice':
-            data = np.loadtxt(param['pkg_dir'] + 'forward_mod/CrossPlnt/Cross_ice_wavelength_250916.dat')
+            data = np.loadtxt(param['pkg_dir'] + fldr_cld_fl + 'Cross_ice_wavelength_250916.dat')
             param['H2OL_r'] = data[:, 0]  # zero-order radius, in micron
             param['H2OL_c'] = data[:, 1:]  # cross-section per droplet, in cm2
-            data = np.loadtxt(param['pkg_dir'] + 'forward_mod/CrossPlnt/Albedo_ice_wavelength_250916.dat')
+            data = np.loadtxt(param['pkg_dir'] + fldr_cld_fl + 'Albedo_ice_wavelength_250916.dat')
             param['H2OL_a'] = data[:, 1:]
-            data = np.loadtxt(param['pkg_dir'] + 'forward_mod/CrossPlnt/Geo_ice_wavelength_250916.dat')
+            data = np.loadtxt(param['pkg_dir'] + fldr_cld_fl + 'Geo_ice_wavelength_250916.dat')
             param['H2OL_g'] = data[:, 1:]
         elif param['wtr_cld_type'] == 'mixed' and param['PT_profile_type'] == 'parametric':
-            data = np.loadtxt(param['pkg_dir'] + 'forward_mod/CrossPlnt/Cross_water_wavelength_250916.dat')
+            data = np.loadtxt(param['pkg_dir'] + fldr_cld_fl + 'Cross_water_wavelength_250916.dat')
             param['H2OL_r'] = data[:, 0]  # zero-order radius, in micron
             param['H2OL_c_liquid'] = data[:, 1:]  # cross-section per droplet, in cm2
-            data = np.loadtxt(param['pkg_dir'] + 'forward_mod/CrossPlnt/Cross_ice_wavelength_250916.dat')
+            data = np.loadtxt(param['pkg_dir'] + fldr_cld_fl + 'Cross_ice_wavelength_250916.dat')
             param['H2OL_c_ice'] = data[:, 1:]  # cross-section per droplet, in cm2
 
-            data = np.loadtxt(param['pkg_dir'] + 'forward_mod/CrossPlnt/Albedo_water_wavelength_250916.dat')
+            data = np.loadtxt(param['pkg_dir'] + fldr_cld_fl + 'Albedo_water_wavelength_250916.dat')
             param['H2OL_a_liquid'] = data[:, 1:]
-            data = np.loadtxt(param['pkg_dir'] + 'forward_mod/CrossPlnt/Albedo_ice_wavelength_250916.dat')
+            data = np.loadtxt(param['pkg_dir'] + fldr_cld_fl + 'Albedo_ice_wavelength_250916.dat')
             param['H2OL_a_ice'] = data[:, 1:]
 
-            data = np.loadtxt(param['pkg_dir'] + 'forward_mod/CrossPlnt/Geo_water_wavelength_250916.dat')
+            data = np.loadtxt(param['pkg_dir'] + fldr_cld_fl + 'Geo_water_wavelength_250916.dat')
             param['H2OL_g_liquid'] = data[:, 1:]
-            data = np.loadtxt(param['pkg_dir'] + 'forward_mod/CrossPlnt/Geo_ice_wavelength_250916.dat')
+            data = np.loadtxt(param['pkg_dir'] + fldr_cld_fl + 'Geo_ice_wavelength_250916.dat')
             param['H2OL_g_ice'] = data[:, 1:]
     
     if param['fit_amm_cld']:
-        data = np.loadtxt(param['pkg_dir'] + 'forward_mod/CrossPlnt/Cross_ammonia_wavelength_250916.dat')
+        data = np.loadtxt(param['pkg_dir'] + fldr_cld_fl + 'Cross_ammonia_wavelength_250916.dat')
         param['NH3_r'] = data[:, 0]  # zero-order radius, in micron
         param['NH3_c'] = data[:, 1:]  # cross-section per droplet, in cm2
-        data = np.loadtxt(param['pkg_dir'] + 'forward_mod/CrossPlnt/Albedo_ammonia_wavelength_250916.dat')
+        data = np.loadtxt(param['pkg_dir'] + fldr_cld_fl + 'Albedo_ammonia_wavelength_250916.dat')
         param['NH3_a'] = data[:, 1:]
-        data = np.loadtxt(param['pkg_dir'] + 'forward_mod/CrossPlnt/Geo_ammonia_wavelength_250916.dat')
+        data = np.loadtxt(param['pkg_dir'] + fldr_cld_fl + 'Geo_ammonia_wavelength_250916.dat')
         param['NH3_g'] = data[:, 1:]
 
     return param

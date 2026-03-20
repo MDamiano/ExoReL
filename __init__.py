@@ -1,5 +1,5 @@
-__version__ = '2.7.3'
-__fmod_version__ = '2.7'
+__version__ = '3.0.0'
+__fmod_version__ = '3.0'
 
 import os
 import shutil

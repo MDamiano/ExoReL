@@ -12,7 +12,6 @@ class RADIATIVE_TRANSFER_C:
         self.canc_metadata = canc_metadata
         self.hazes_calc = param['hazes']
         self.c_code_directory = self.package_dir + 'forward_mod/'
-        self.matlab_code_directory = self.c_code_directory + 'PlanetModel/'
         try:
             self.working_dir = param['wkg_dir']
         except KeyError:
@@ -425,7 +424,7 @@ class RADIATIVE_TRANSFER_C:
                     file.write('\n')
 
     def __run_structure(self):
-        os.chdir(self.matlab_code_directory)
+        os.chdir(self.c_code_directory)
         self.__atmospheric_structure()
         self.__surface_structure()
         os.chdir(self.working_dir)
@@ -462,18 +461,6 @@ class RADIATIVE_TRANSFER_C:
                       #
                       # Planet Temperature-Pressure Preofile
                       # '#define TPMODE               1\n',  # 1: import data from a ZTP list
-                      #                                      0: calculate TP profile from the parametized formula*/
-                      # '#define TPLIST               "Data/TP1986.dat"\n',
-                      # '#define PTOP                 1.0E-5\n',  # Pressure at the top of atmosphere in bar
-                      # '#define TTOP				    ' + str(self.param['Tp']) + '\n',  # Temperature at the top of atmosphere
-                      # '#define TSTR                 ' + str(self.param['Tp']) + '\n',  # Temperature at the top of stratosphere
-                      # '#define TINV                 0\n',  # set to 1 if there is a temperature inversion
-                      # '#define PSTR                 1.0E-1\n',  # Pressure at the top of stratosphere
-                      # '#define PMIDDLE				0\n',  # Pressure at the bottom of stratosphere
-                      # '#define TMIDDLE				' + str(self.param['Tp']) + '\n',  # Temperature at the bottom of stratosphere
-                      # '#define PBOTTOM				1.0E+0\n',  # Pressure at the bottom of stratosphere
-                      # '#define TBOTTOM				' + str(self.param['Tp']) + '\n',  # Temperature at the bottom of stratosphere
-                      # '#define PPOFFSET			    0.0\n',  # Pressure offset in log [Pa]
                       #
                       # Calculation Grids
                       # '#define zbin                 180\n',  # How many altitude bin?
