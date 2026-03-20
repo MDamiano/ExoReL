@@ -162,11 +162,15 @@ class CREATE_SPECTRUM:
 
         wl, model = forward(self.param, retrieval_mode=self.param['ret_mode'], albedo_calc=self.param['albedo_calc'], fp_over_fs=self.param['fp_over_fs'], canc_metadata=self.canc_metadata)
 
-        if self.param['cld_frac'] != 1.0 and self.param['fit_wtr_cld']:
+        if self.param['cld_frac'] != 1.0 and (self.param['fit_wtr_cld'] or self.param['fit_amm_cld']):
+            fit_wtr_cld = self.param['fit_wtr_cld']
+            fit_amm_cld = self.param['fit_amm_cld']
             self.param['fit_wtr_cld'] = False
+            self.param['fit_amm_cld'] = False
             self.param['ret_mode'] = True
             model_no_cld = forward(self.param, retrieval_mode=self.param['ret_mode'], albedo_calc=self.param['albedo_calc'], fp_over_fs=self.param['fp_over_fs'], canc_metadata=self.canc_metadata)
-            self.param['fit_wtr_cld'] = True
+            self.param['fit_wtr_cld'] = fit_wtr_cld
+            self.param['fit_amm_cld'] = fit_amm_cld
             self.param['ret_mode'] = False
             model = (self.param['cld_frac'] * model) + ((1.0 - self.param['cld_frac']) * model_no_cld)
 

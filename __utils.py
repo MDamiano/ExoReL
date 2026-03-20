@@ -618,6 +618,14 @@ def cloud_pos(param, condensed_gas='H2O'):
             for i in range(len(P)-2, -1, -1):
                 mix[i] = np.nanmin([psat[i]/P[i], mix[i+1]])
         else:
+            base_profile = np.asarray(param['vmr_' + condensed_gas], dtype=float)
+            if base_profile.ndim == 0:
+                base_profile = np.full(len(param['P']), float(base_profile))
+            elif base_profile.size == len(param['P_standard']):
+                base_profile = base_profile[:len(param['P'])].astype(float, copy=True)
+            elif base_profile.size != len(param['P']):
+                raise ValueError(f"vmr_{condensed_gas} size does not match the active pressure grid.")
+
             # if param['Pw_top'] > param['P'][-1]:
             if param['P' + initial_letter + '_top'] > param['P'][-1] or (param['P' + initial_letter + '_top'] + param['cld' + initial_letter + '_depth']) > param['P'][-1]:
                 no_cloud = True
@@ -625,31 +633,31 @@ def cloud_pos(param, condensed_gas='H2O'):
                 no_cloud = False
 
             if not no_cloud:
-                pos_cld = int(find_nearest(param['P_standard'], param['P' + initial_letter + '_top']))
+                pos_cld = int(find_nearest(param['P'], param['P' + initial_letter + '_top']))
 
-                if (param['cld' + initial_letter + '_depth'] + param['P_standard'][pos_cld]) > param['P_standard'][-1]:
-                    param['cld' + initial_letter + '_depth'] = param['P_standard'][-1] - param['P_standard'][pos_cld]
+                if (param['cld' + initial_letter + '_depth'] + param['P'][pos_cld]) > param['P'][-1]:
+                    param['cld' + initial_letter + '_depth'] = param['P'][-1] - param['P'][pos_cld]
 
-                pbot = int(find_nearest(param['P_standard'], (param['cld' + initial_letter + '_depth'] + param['P_standard'][pos_cld])))
+                pbot = int(find_nearest(param['P'], (param['cld' + initial_letter + '_depth'] + param['P'][pos_cld])))
 
                 depth_layers = pbot - pos_cld
                 if depth_layers == 0:
-                    return np.ones((len(param['P']))) * param['vmr_' + condensed_gas]
+                    return base_profile
                 else:
                     pass
 
-                mix = np.ones((len(param['P_standard']))) * (param['CR_' + condensed_gas] * param['vmr_' + condensed_gas])
-                d = (np.log10(param['vmr_' + condensed_gas]) - np.log10(param['CR_' + condensed_gas] * param['vmr_' + condensed_gas])) / depth_layers
-                for i in range(0, len(mix)):
+                mix_scale = np.ones(len(param['P'])) * param['CR_' + condensed_gas]
+                d = -np.log10(param['CR_' + condensed_gas]) / depth_layers
+                for i in range(0, len(mix_scale)):
                     if i <= pos_cld:
                         pass
                     elif pos_cld < i <= pos_cld + depth_layers:
-                        mix[i] = 10. ** (np.log10(mix[i - 1]) + d)
+                        mix_scale[i] = 10. ** (np.log10(mix_scale[i - 1]) + d)
                     elif i > pos_cld + depth_layers:
-                        mix[i] = mix[i - 1]
-                mix = mix[:len(param['P'])]
+                        mix_scale[i] = mix_scale[i - 1]
+                mix = base_profile * mix_scale
             else:
-                mix = np.ones((len(param['P']))) * param['vmr_' + condensed_gas]
+                mix = base_profile
     else:
         mix = np.ones((len(param['P']))) * param['vmr_' + condensed_gas]
 
@@ -657,55 +665,76 @@ def cloud_pos(param, condensed_gas='H2O'):
 
 
 def adjust_VMR(param, all_gases=True, condensed_gas='H2O'):
-    if all_gases:
-        if param['gas_fill'] is None:
-            n_gases = len(param['fit_molecules']) - 1
-            mol_to_determine = param['fit_molecules'][1:]
+    def _profile_for(mol, size):
+        values = np.asarray(param['vmr_' + mol], dtype=float)
+        if values.ndim == 0:
+            return np.full(size, float(values))
+        return values.astype(float, copy=True)
+
+    if condensed_gas is None:
+        if param['gas_fill'] is not None:
+            gas_to_consider = param['fit_molecules'] + [param['gas_fill']]
         else:
-            n_gases = len(param['fit_molecules'])
-            mol_to_determine = param['fit_molecules'][1:]
-            mol_to_determine.append(param['gas_fill'])
+            gas_to_consider = param['fit_molecules']
 
-        ratios = []
-        for mol in mol_to_determine[1:]:
-            ratios.append(param['vmr_' + mol_to_determine[0]] / param['vmr_' + mol])
-
-        matrx = np.ones((n_gases, n_gases))
-        for i in range(0, len(matrx[:-1, 0])):
-            for j in range(1, len(matrx[0, :])):
-                if i + 1 == j:
-                    matrx[i, j] = -ratios[i]
-                else:
-                    matrx[i, j] = 0.0
-
-        res = np.zeros(n_gases)
-        for mol in mol_to_determine:
-            param['vmr_' + mol] = np.zeros(len(param['vmr_' + condensed_gas]))
-
-        for i in range(0, len(param['vmr_' + condensed_gas])):
-            res[-1] = 1.0 - param['vmr_' + condensed_gas][i]
-            v_m_r = np.linalg.solve(matrx, res)
-            for m, mol in enumerate(mol_to_determine):
-                param['vmr_' + mol][i] = v_m_r[m]
+        for mol in gas_to_consider:
+            param['vmr_' + mol] = np.ones((len(param['P']))) * param['vmr_' + mol]
 
     else:
-        if param['gas_fill'] is None:
-            if 'H2' in param['fit_molecules']:
-                considered_fill = 'H2'
-            elif 'N2' in param['fit_molecules'] and 'H2' not in param['fit_molecules']:
-                considered_fill = 'N2'
-        else:
-            considered_fill = param['gas_fill']
-
-        v_m_r = np.zeros(len(param['vmr_' + condensed_gas]))
-        for mol in param['fit_molecules']:
-            if mol == condensed_gas or mol == considered_fill:
-                pass
+        if all_gases:
+            if param['gas_fill'] is None:
+                mol_to_determine = [mol for mol in param['fit_molecules'] if mol != condensed_gas]
             else:
-                param['vmr_' + mol] = np.ones(len(param['vmr_' + condensed_gas])) * param['vmr_' + mol]
-                v_m_r += param['vmr_' + mol]
+                mol_to_determine = [mol for mol in param['fit_molecules'] if mol != condensed_gas]
+                mol_to_determine.append(param['gas_fill'])
 
-        param['vmr_' + considered_fill] = np.ones(len(param['vmr_' + condensed_gas])) - v_m_r - param['vmr_' + condensed_gas]
+            n_gases = len(mol_to_determine)
+            if n_gases == 0:
+                return param
+
+            condensed_profile = np.atleast_1d(np.asarray(param['vmr_' + condensed_gas], dtype=float))
+            source_profiles = {mol: _profile_for(mol, condensed_profile.size) for mol in mol_to_determine}
+            for mol, values in source_profiles.items():
+                if values.size != condensed_profile.size:
+                    raise ValueError(f"vmr_{mol} size does not match vmr_{condensed_gas}.")
+                param['vmr_' + mol] = np.zeros(condensed_profile.size)
+
+            for i in range(condensed_profile.size):
+                current = np.array([source_profiles[mol][i] for mol in mol_to_determine], dtype=float)
+                v_m_r = np.zeros(n_gases)
+                remaining_vmr = 1.0 - condensed_profile[i]
+
+                positive = np.isfinite(current) & (current > 0.0)
+                if np.any(positive):
+                    v_m_r[positive] = remaining_vmr * current[positive] / np.sum(current[positive])
+                else:
+                    if param['gas_fill'] in mol_to_determine:
+                        fill_idx = mol_to_determine.index(param['gas_fill'])
+                    else:
+                        fill_idx = 0
+                    v_m_r[fill_idx] = remaining_vmr
+
+                for m, mol in enumerate(mol_to_determine):
+                    param['vmr_' + mol][i] = v_m_r[m]
+
+        else:
+            if param['gas_fill'] is None:
+                if 'H2' in param['fit_molecules']:
+                    considered_fill = 'H2'
+                elif 'N2' in param['fit_molecules'] and 'H2' not in param['fit_molecules']:
+                    considered_fill = 'N2'
+            else:
+                considered_fill = param['gas_fill']
+
+            v_m_r = np.zeros(len(param['vmr_' + condensed_gas]))
+            for mol in param['fit_molecules']:
+                if mol == condensed_gas or mol == considered_fill:
+                    pass
+                else:
+                    param['vmr_' + mol] = np.ones(len(param['vmr_' + condensed_gas])) * param['vmr_' + mol]
+                    v_m_r += param['vmr_' + mol]
+
+            param['vmr_' + considered_fill] = np.ones(len(param['vmr_' + condensed_gas])) - v_m_r - param['vmr_' + condensed_gas]
 
     if not param['rocky'] and (param['H2_He_ratio'] > 0):
         param['vmr_He'] = param['vmr_' + param['gas_fill']] * (1.0 - param['H2_He_ratio'])
@@ -1561,7 +1590,12 @@ def load_cross(param, for_plotting=False):
         else:
             opac_dir = param['pkg_dir'] + 'forward_mod/opac/' + param['opac_data'] + '/'
 
-        for idx, mol in enumerate(param['fit_molecules'] + [param['gas_fill']]):
+        molecules = param['fit_molecules']
+        gas_fill = param['gas_fill']
+        if gas_fill is not None:
+            molecules = molecules + [gas_fill]
+
+        for idx, mol in enumerate(molecules):
             if idx == 0:
                 param['opact'], param['opacp'], param['opacw'], param['opac' + mol.lower()] = _readcross(opac_dir + 'opac' + mol + '.dat')
             else:
@@ -1593,7 +1627,11 @@ def load_cross(param, for_plotting=False):
         endP = find_nearest(param['opacp'][0], param['P_standard'][-1])
         param['opacp'] = (param['opacp'][0][:endP+1]).reshape(1,-1)
         
-        for mol in param['fit_molecules'] + [param['gas_fill']]:
+        molecules = param['fit_molecules']
+        gas_fill = param['gas_fill']
+        if gas_fill is not None:
+            molecules = molecules + [gas_fill]
+        for mol in molecules:
             param['opac' + mol.lower()] = param['opac' + mol.lower()][:endP + 1, strtT:endT + 1, strt:end]
 
     return param

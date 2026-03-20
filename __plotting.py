@@ -138,8 +138,10 @@ def plot_nest_spec(mnest, cube, solutions=0):
         temp_min, temp_max = mnest.param['min_wl'] + 0.0, mnest.param['max_wl'] + 0.0
         mnest.param['min_wl'] = float(np.min(mnest.param['spectrum']['wl']))
         mnest.param['max_wl'] = float(np.max(mnest.param['spectrum']['wl']))
-        mnest.param['start_c_wl_grid'] = find_nearest(mnest.param['wl_C_grid'], mnest.param['min_wl']) - 35
-        mnest.param['stop_c_wl_grid'] = find_nearest(mnest.param['wl_C_grid'], mnest.param['max_wl']) + 35
+
+        if mnest.param['physics_model_code_language'] != 'Python':
+            mnest.param['start_c_wl_grid'] = find_nearest(mnest.param['wl_C_grid'], mnest.param['min_wl']) - 35
+            mnest.param['stop_c_wl_grid'] = find_nearest(mnest.param['wl_C_grid'], mnest.param['max_wl']) + 35
 
         # Model on R=500 grid
         mod = _instantiate_forward_model(mnest.param)
@@ -192,8 +194,9 @@ def plot_nest_spec(mnest, cube, solutions=0):
             mnest.param['spectrum']['wl'] = temp_spec + 0.0
         mnest.param['min_wl'] = copy.deepcopy(temp_min)
         mnest.param['max_wl'] = copy.deepcopy(temp_max)
-        mnest.param['start_c_wl_grid'] = find_nearest(mnest.param['wl_C_grid'], mnest.param['min_wl']) - 35
-        mnest.param['stop_c_wl_grid'] = find_nearest(mnest.param['wl_C_grid'], mnest.param['max_wl']) + 35
+        if mnest.param['physics_model_code_language'] != 'Python':
+            mnest.param['start_c_wl_grid'] = find_nearest(mnest.param['wl_C_grid'], mnest.param['min_wl']) - 35
+            mnest.param['stop_c_wl_grid'] = find_nearest(mnest.param['wl_C_grid'], mnest.param['max_wl']) + 35
 
         # Labels and cosmetics
         plt.legend(frameon=False, ncol=1, loc='center left', bbox_to_anchor=(1.02, 0.5))
@@ -310,8 +313,9 @@ def plot_contribution(mnest, cube, solutions=0):
 
     temp_wl = mnest.param['spectrum']['wl'] + 0.0
     mnest.param['spectrum']['wl'] = new_wl_central[start:stop]
-    mnest.param['start_c_wl_grid'] = find_nearest(mnest.param['wl_C_grid'], float(np.min(mnest.param['spectrum']['wl']))) - 35
-    mnest.param['stop_c_wl_grid'] = find_nearest(mnest.param['wl_C_grid'], float(np.max(mnest.param['spectrum']['wl']))) + 35
+    if mnest.param['physics_model_code_language'] != 'Python':
+        mnest.param['start_c_wl_grid'] = find_nearest(mnest.param['wl_C_grid'], float(np.min(mnest.param['spectrum']['wl']))) - 35
+        mnest.param['stop_c_wl_grid'] = find_nearest(mnest.param['wl_C_grid'], float(np.max(mnest.param['spectrum']['wl']))) + 35
 
     # Prepare figure
     fig = plt.figure(figsize=(10.0, 4.0), dpi=150)
@@ -362,8 +366,9 @@ def plot_contribution(mnest, cube, solutions=0):
 
     # Restore observed wavelength grid extents for data overlay
     mnest.param['spectrum']['wl'] = temp_wl + 0.0
-    mnest.param['start_c_wl_grid'] = find_nearest(mnest.param['wl_C_grid'], mnest.param['min_wl']) - 35
-    mnest.param['stop_c_wl_grid'] = find_nearest(mnest.param['wl_C_grid'], mnest.param['max_wl']) + 35
+    if mnest.param['physics_model_code_language'] != 'Python':
+        mnest.param['start_c_wl_grid'] = find_nearest(mnest.param['wl_C_grid'], mnest.param['min_wl']) - 35
+        mnest.param['stop_c_wl_grid'] = find_nearest(mnest.param['wl_C_grid'], mnest.param['max_wl']) + 35
 
     # Data overlay
     plt.errorbar(

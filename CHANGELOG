@@ -1,10 +1,11 @@
-## [ ] - 03/xx/26
-- 
+## [3.0.0] - 03/19/26
+- Added a Python implementation of the reflected-light rocky radiative-transfer core, keeping the atmospheric/profile and cloud-optics data flow in memory while preserving the C solver physics (two-stream Eddington reflection, Rayleigh/CIA/cloud terms, and 9x9 disk integration).
+- Fixed several Python-path consistency issues relative to the C reference: `fit_molecules` is now populated before `pre_load_variables()`, CIA tables are resampled onto the opacity wavelength grid in nm, surface-albedo breakpoints are evaluated on the opacity grid in microns, and opacity pressures are trimmed in linear Pa rather than `log10(P)`.
+- Validated the Python Earth forward model against the C reference spectrum: current agreement is at the accepted regression level with median absolute relative difference `2.27e-5`, 95th-percentile relative difference `9.02e-3`, and max absolute difference `1.72e-11`; remaining relative-error tails are confined to low-flux points.
+- Cleaned up the Python forward path to avoid Python-only temporary retrieval directories and intermediate file writes (`surface_albedo`, concentration/profile tables, cloud optical tables, and `PhaseA.dat`), while preserving the validated science output and improving runtime.
+- Retrieval runs now copy the input JSON parfile into the configured output directory on startup, while safely skipping the copy if the file is already there.
 
 ## [2.7.3] - 03/06/26
-- Retrieval runs now copy the input JSON parfile into the configured output directory on startup, while safely skipping the copy if the file is already there.
-- Python opacity loading now clips negative cross-section values to zero after reading the opacity tables.
-- Python CIA loading now crops wavelength coverage to the working spectral window and uses log-temperature interpolation in the isothermal case to match the C implementation more closely.
 - Added per-retrieval summary statistics export: `stats_summary.txt` and `stats_summary.json` now report per-solution chi-square, reduced chi-square, `ln Z`, AIC, max log-likelihood, and degrees of freedom.
 - Added the external `plot_multi_posteriors()` helper to overlay posterior distributions from multiple retrieval folders/solutions and save combined comparison figures.
 - Switched parameter-file loading to JSON only: `.dat` parfiles and the deprecated `json_format` path were removed, and parfile copying now works safely with both relative and absolute JSON paths.
