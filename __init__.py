@@ -61,12 +61,12 @@ def _ensure_required_data():
         # use_cookies=False avoids interactive confirmation for public files.
         for i in missing:
             if i == "forward_mod":
-                gdown.download(id=drive_forward_mod, output=pkg_dir)
+                gdown.download(id=drive_forward_mod, output=pkg_dir, use_cookies=False)
                 with zipfile.ZipFile(pkg_dir + i + ".zip", 'r') as zip_ref:
                     zip_ref.extractall(pkg_dir)
                 os.remove(pkg_dir + "forward_mod*.zip")
             elif i == "PHO_STELLAR_MODEL":
-                gdown.download(id=drive_PHO_STELLAR_MODEL, output=pkg_dir)
+                gdown.download(id=drive_PHO_STELLAR_MODEL, output=pkg_dir, use_cookies=False)
                 with zipfile.ZipFile(pkg_dir + i + ".zip", 'r') as zip_ref:
                     zip_ref.extractall(pkg_dir)
                 os.remove(pkg_dir + "PHO_STELLAR_MODEL.zip")
@@ -84,7 +84,7 @@ def _ensure_required_data():
 
     except Exception as e:  # pragma: no cover - network dependent
         raise RuntimeError(
-            "Failed to download required data folders from Google Drive. "
+            f"Failed to download required data folders from Google Drive: {e}"
         ) from e
 
     # Validate again after download
