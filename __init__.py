@@ -35,7 +35,7 @@ def _ensure_required_data():
         return
 
     # Attempt to download the full folder from Google Drive via gdown
-    drive_forward_mod = "1QdFk_8BPjgGA8V8ZtjHUkFInt6qCa-mb"
+    drive_forward_mod = "1XTTt29H0UeJwsOyhABvja3uG87DRWvk5"
     drive_PHO_STELLAR_MODEL = "1ypxxofMwHYeHEx1eFKVWWWVEaaoNmdho"
     try:
         import gdown  # type: ignore
@@ -64,12 +64,21 @@ def _ensure_required_data():
                 gdown.download(id=drive_forward_mod, output=pkg_dir)
                 with zipfile.ZipFile(pkg_dir + i + ".zip", 'r') as zip_ref:
                     zip_ref.extractall(pkg_dir)
-                os.remove(pkg_dir + "forward_mod.zip")
+                os.remove(pkg_dir + "forward_mod*.zip")
             elif i == "PHO_STELLAR_MODEL":
                 gdown.download(id=drive_PHO_STELLAR_MODEL, output=pkg_dir)
                 with zipfile.ZipFile(pkg_dir + i + ".zip", 'r') as zip_ref:
                     zip_ref.extractall(pkg_dir)
                 os.remove(pkg_dir + "PHO_STELLAR_MODEL.zip")
+        
+        if not os.path.isdir(forward_mod_path):
+            with os.scandir(pkg_dir) as entries:
+                for entry in entries:
+                    if not entry.is_dir() or not entry.name.startswith("forward_mod"):
+                        continue
+                    if entry.name != "forward_mod":
+                        os.rename(entry.path, forward_mod_path)
+                    break
 
         os.system("rm -rf " + pkg_dir + "__MACOSX")
 
