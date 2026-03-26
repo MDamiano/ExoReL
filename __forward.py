@@ -559,7 +559,8 @@ class RADIATIVE_TRANSFER_C:
                       # Input choices for the infrared opacities
                       # Must be set to the same as the opacity code
                       #
-                      '#define CROSSHEADING         "Cross3/N2_FullT_LowRes/"\n',
+                      '#define CROSSHEADING         "opac/2k/"\n',
+                      '#define CIAHEADING           "opac/cia/"\n',
                       #
                       '#define NTEMP                20\n',  # Number of temperature points in grid
                       '#define TLOW                 100.0\n',  # Temperature range in K

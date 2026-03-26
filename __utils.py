@@ -42,8 +42,8 @@ def default_parameters():
 
     #### [MODEL_PAR] ####
     param['physics_model'] = 'radiative_transfer'  # choose between 'radiative_transfer', 'dataset', or 'AI_model'
-    param['physics_model_code_language'] = 'C' # choose between 'C' and 'Python'
-    param['opac_data'] = '10k'  # spectral resolution of the opacities
+    param['physics_model_code_language'] = 'Python' # choose between 'C' and 'Python'
+    param['opac_data'] = '2k'  # spectral resolution of the opacities
     param['opac_dir'] = None  # directory containing the opacities (this folder will have subdirectories for different spectral resolutions)
     param['use_float32'] = True  # whether or not to use float32 or float64 for the opacities precision
     param['gaseous_planet'] = False  # whether the planet is gaseous or rocky. If False, the surface pressure and albedo will be included in the model and can be fit during retrieval
@@ -1420,7 +1420,7 @@ def load_cia(param):
             table['wavelength'] = target_wl_nm.copy()
             table['values'] = np.ascontiguousarray(resampled)
 
-    cia_dir = param['pkg_dir'] + 'forward_mod/Cross3/N2_FullT_LowRes/'
+    cia_dir = param['pkg_dir'] + 'forward_mod/opac/cia/'
     cia_files = {
         'H2H2': 'H2-H2_CIA.dat',
         'H2He': 'H2-He_CIA.dat',
