@@ -64,7 +64,10 @@ def _ensure_required_data():
                 gdown.download(id=drive_forward_mod, output=pkg_dir, use_cookies=False)
                 with zipfile.ZipFile(pkg_dir + i + ".zip", 'r') as zip_ref:
                     zip_ref.extractall(pkg_dir)
-                os.remove(pkg_dir + "forward_mod*.zip")
+                with os.scandir(pkg_dir) as entries:
+                    for entry in entries:
+                        if entry.is_file() and entry.name.startswith("forward_mod") and entry.name.endswith(".zip"):
+                            os.remove(entry.path)
             elif i == "PHO_STELLAR_MODEL":
                 gdown.download(id=drive_PHO_STELLAR_MODEL, output=pkg_dir, use_cookies=False)
                 with zipfile.ZipFile(pkg_dir + i + ".zip", 'r') as zip_ref:
