@@ -61,18 +61,23 @@ def _ensure_required_data():
         # use_cookies=False avoids interactive confirmation for public files.
         for i in missing:
             if i == "forward_mod":
-                gdown.download(id=drive_forward_mod, output=pkg_dir, use_cookies=False)
-                with zipfile.ZipFile(pkg_dir + i + ".zip", 'r') as zip_ref:
+                downloaded_zip = gdown.download(id=drive_forward_mod, output=pkg_dir, use_cookies=False)
+                if not downloaded_zip:
+                    raise RuntimeError("Download failed for forward_mod archive.")
+                with zipfile.ZipFile(downloaded_zip, 'r') as zip_ref:
                     zip_ref.extractall(pkg_dir)
                 with os.scandir(pkg_dir) as entries:
                     for entry in entries:
                         if entry.is_file() and entry.name.startswith("forward_mod") and entry.name.endswith(".zip"):
                             os.remove(entry.path)
             elif i == "PHO_STELLAR_MODEL":
-                gdown.download(id=drive_PHO_STELLAR_MODEL, output=pkg_dir, use_cookies=False)
-                with zipfile.ZipFile(pkg_dir + i + ".zip", 'r') as zip_ref:
+                downloaded_zip = gdown.download(id=drive_PHO_STELLAR_MODEL, output=pkg_dir, use_cookies=False)
+                if not downloaded_zip:
+                    raise RuntimeError("Download failed for PHO_STELLAR_MODEL archive.")
+                with zipfile.ZipFile(downloaded_zip, 'r') as zip_ref:
                     zip_ref.extractall(pkg_dir)
-                os.remove(pkg_dir + "PHO_STELLAR_MODEL.zip")
+                if os.path.isfile(downloaded_zip):
+                    os.remove(downloaded_zip)
         
         if not os.path.isdir(forward_mod_path):
             with os.scandir(pkg_dir) as entries:
