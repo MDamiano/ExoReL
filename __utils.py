@@ -1781,6 +1781,220 @@ def write_stats_summary_files(param, prefix, multinest_stats, n_fitted_parameter
 
         # MultiNest chain column 2 is -2*ln(L); best fit minimizes this column.
         return float(-0.5 * np.min(finite))
+
+    def _bpics_from_chain_file(file_path, n_params):
+        """Calculates the simplified Bayesian Predictive Information Criterion
+        (BPICs) described in Ando (2011) for the given sample log-likelihoods
+        and number of parameters. Models with a lower BPICS are preferred.
+
+        Citation: Ando (2011), DOI 10.1080/01966324.2011.10737798
+
+        Args:
+            logl_samples: The natural log of the likelihood of posterior draws
+                from an MCMC run of the model.
+            n_params: The number of parameters for the model.
+            log_weights: The weights of the samples given, mainly for nested
+                sampling posteriors. For equally weighted samples, leave as
+                None.
+
+        Returns:
+            The computed BPICS as a float.
+        """
+        # Ando (2011) , DOI 10.1080/01966324.2011.10737798
+        if not os.path.isfile(file_path):
+            return None
+
+        try:
+            data = np.loadtxt(file_path)
+        except (OSError, ValueError):
+            return None
+
+        if data.ndim == 1:
+            if len(data) < 2:
+                return None
+            try:
+                logl_samples = np.array([-0.5 * float(data[1])], dtype=float)
+            except (TypeError, ValueError):
+                return None
+            weights = None
+            if len(data) >= 1:
+                try:
+                    sample_weight = float(data[0])
+                except (TypeError, ValueError):
+                    sample_weight = np.nan
+                if np.isfinite(sample_weight) and sample_weight > 0.0:
+                    weights = np.array([sample_weight], dtype=float)
+        else:
+            if data.shape[1] < 2:
+                return None
+            try:
+                logl_samples = -0.5 * np.asarray(data[:, 1], dtype=float)
+            except (TypeError, ValueError):
+                return None
+            try:
+                weights = np.asarray(data[:, 0], dtype=float)
+            except (TypeError, ValueError):
+                weights = None
+
+        finite = np.isfinite(logl_samples)
+        if weights is not None:
+            finite &= np.isfinite(weights) & (weights > 0.0)
+
+        logl_samples = logl_samples[finite]
+        if logl_samples.size == 0:
+            return None
+
+        if weights is not None:
+            weights = weights[finite]
+            weight_sum = np.sum(weights)
+            if not np.isfinite(weight_sum) or weight_sum <= 0.0:
+                weights = None
+            else:
+                weights = weights / weight_sum
+
+        mean_logl = np.average(logl_samples, weights=weights)
+        if not np.isfinite(mean_logl):
+            return None
+
+        return float((-2.0 * mean_logl) + (2.0 * float(n_params)))
+
+    def _dic_from_chain_file(file_path):
+        """Calculates the Deviance Information Criterion (DIC) for the given
+        sample log-likelihoods, using the Ando (2011) variant and the Gelman
+        (2014) number of effective parameters formula. Models with lower DIC
+        are preferred.
+
+        Args:
+            logl_samples: The natural log of the likelihood of posterior draws
+                from the MCMC run.
+
+        Returns:
+            The computed DIC as a float.
+        """
+        # Ando (2011); Gelman (2014)
+        if not os.path.isfile(file_path):
+            return None
+
+        try:
+            data = np.loadtxt(file_path)
+        except (OSError, ValueError):
+            return None
+
+        if data.ndim == 1:
+            if len(data) < 2:
+                return None
+            try:
+                logl_samples = np.array([-0.5 * float(data[1])], dtype=float)
+            except (TypeError, ValueError):
+                return None
+            weights = None
+            if len(data) >= 1:
+                try:
+                    sample_weight = float(data[0])
+                except (TypeError, ValueError):
+                    sample_weight = np.nan
+                if np.isfinite(sample_weight) and sample_weight > 0.0:
+                    weights = np.array([sample_weight], dtype=float)
+        else:
+            if data.shape[1] < 2:
+                return None
+            try:
+                logl_samples = -0.5 * np.asarray(data[:, 1], dtype=float)
+            except (TypeError, ValueError):
+                return None
+            try:
+                weights = np.asarray(data[:, 0], dtype=float)
+            except (TypeError, ValueError):
+                weights = None
+
+        finite = np.isfinite(logl_samples)
+        if weights is not None:
+            finite &= np.isfinite(weights) & (weights > 0.0)
+
+        logl_samples = logl_samples[finite]
+        if logl_samples.size == 0:
+            return None
+
+        if weights is not None:
+            weights = weights[finite]
+            weight_sum = np.sum(weights)
+            if not np.isfinite(weight_sum) or weight_sum <= 0.0:
+                weights = None
+            else:
+                weights = weights / weight_sum
+
+        mean_logl = np.average(logl_samples, weights=weights)
+        if not np.isfinite(mean_logl):
+            return None
+
+        if weights is None:
+            p_d = 2.0 * np.var(logl_samples)
+        else:
+            variance = np.average((logl_samples - mean_logl) ** 2, weights=weights)
+            p_d = 2.0 * variance
+
+        dic = (-2.0 * mean_logl) + (3.0 * p_d)
+        if not np.isfinite(dic):
+            return None
+
+        return float(dic)
+
+    def _waic_from_pointwise_logl_file(file_path, n_expected_points=None):
+        """Compute the WAIC from a saved pointwise log-likelihood array.
+
+        Pointwise log-likelihood values are not usually recorded by MCMC codes,
+        so they must be preserved explicitly. In Dynesty, this can be done by
+        setting ``blob=True`` in the sampler initialization and modifying the
+        likelihood function to return both the summed and pointwise values. The
+        pointwise log-likelihood can then be retrieved from the results object's
+        ``blob`` attribute. EMCEE has a similar mechanism.
+
+        Citation: Watanabe (2010) [no DOI]
+
+        Args:
+            file_path: Path to the saved pointwise log-likelihood array.
+            n_expected_points: Optional expected number of data points used to
+                infer whether the loaded array should be transposed.
+
+        Returns:
+            The WAIC statistic for the model, or ``None`` if it cannot be
+            computed from the file contents.
+        """
+        # Watanabe (2010)
+        if not os.path.isfile(file_path):
+            return None
+
+        try:
+            pointwise_logl = np.loadtxt(file_path)
+        except (OSError, ValueError):
+            return None
+
+        pointwise_logl = np.asarray(pointwise_logl, dtype=float)
+        if pointwise_logl.ndim != 2:
+            return None
+        if pointwise_logl.shape[0] == 0 or pointwise_logl.shape[1] == 0:
+            return None
+
+        # ExoReL stores likelihood samples as (n_samples, n_points).
+        if n_expected_points is not None:
+            if pointwise_logl.shape[1] == int(n_expected_points):
+                pass
+            elif pointwise_logl.shape[0] == int(n_expected_points):
+                pointwise_logl = pointwise_logl.T
+
+        finite_cols = np.all(np.isfinite(pointwise_logl), axis=0)
+        pointwise_logl = pointwise_logl[:, finite_cols]
+        if pointwise_logl.shape[1] == 0:
+            return None
+
+        n_samples = pointwise_logl.shape[0]
+        fit_term = sp.special.logsumexp(pointwise_logl, axis=0, b=(1.0 / float(n_samples)))
+        penalty_term = np.var(pointwise_logl, axis=0)
+        waic = -2.0 * (np.sum(fit_term) - np.sum(penalty_term))
+        if not np.isfinite(waic):
+            return None
+
+        return float(waic)
     
     def _lnl_hat_per_mode_from_post_separate(post_separate_path):
         if not os.path.isfile(post_separate_path):
@@ -1919,6 +2133,30 @@ def write_stats_summary_files(param, prefix, multinest_stats, n_fitted_parameter
         if lnl_hat is not None:
             lnl_hat = float(lnl_hat)
 
+        waic = _waic_from_pointwise_logl_file(
+            param['out_dir'] + f'loglike_per_datapoint_sol{mode_idx}.dat',
+            n_expected_points=n_data_points,
+        )
+        if waic is None and param.get('filter_multi_solutions', False):
+            waic = _waic_from_pointwise_logl_file(
+                param['out_dir'] + f'loglike_per_datapoint_sol{mode_pos}.dat',
+                n_expected_points=n_data_points,
+            )
+        if waic is None:
+            waic = np.nan
+
+        bpics = _bpics_from_chain_file(prefix + f'solution{mode_idx}.txt', n_fit)
+        if bpics is None and len(modes) == 1:
+            bpics = _bpics_from_chain_file(prefix + '.txt', n_fit)
+        if bpics is None:
+            bpics = np.nan
+
+        dic = _dic_from_chain_file(prefix + f'solution{mode_idx}.txt')
+        if dic is None and len(modes) == 1:
+            dic = _dic_from_chain_file(prefix + '.txt')
+        if dic is None:
+            dic = np.nan
+
         chi_square = _chi_square_from_best_fit_file(param, param['out_dir'] + f'Best_fit_sol{mode_idx}.dat')
         if chi_square is None and param.get('filter_multi_solutions', False):
             # In filtered runs, best-fit files can be indexed by filtered order.
@@ -1960,7 +2198,10 @@ def write_stats_summary_files(param, prefix, multinest_stats, n_fitted_parameter
         txt_lines.append(f'ln Z               = {_summary_float_str(ln_z)} +- {_summary_float_str(ln_z_err)}')
         txt_lines.append(f'AIC                = {_summary_float_str(aic)}')
         txt_lines.append(f'AICc               = {_summary_float_str(aicc)}')
+        txt_lines.append(f'WAIC               = {_summary_float_str(waic)}')
         txt_lines.append(f'BIC                = {_summary_float_str(bic)}')
+        txt_lines.append(f'DIC                = {_summary_float_str(dic)}')
+        txt_lines.append(f'BPICs              = {_summary_float_str(bpics)}')
         txt_lines.append('')
         txt_lines.append('##################################################')
         txt_lines.append('')
@@ -1976,7 +2217,10 @@ def write_stats_summary_files(param, prefix, multinest_stats, n_fitted_parameter
             'ln_Z_error': _safe_json_number(ln_z_err),
             'AIC': _safe_json_number(aic),
             'AICc': _safe_json_number(aicc),
+            'WAIC': _safe_json_number(waic),
             'BIC': _safe_json_number(bic),
+            'DIC': _safe_json_number(dic),
+            'BPICs': _safe_json_number(bpics),
             'max_log_likelihood': _safe_json_number(lnl_hat),
         }
 
