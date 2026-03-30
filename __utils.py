@@ -859,7 +859,7 @@ def ranges(param):
         elif param['surface_albedo_parameters'] == int(3):
             for surf_alb in [1, 2]:
                 param['ag' + str(surf_alb) + '_range'] = [0.0, 1.0]  # Surface albedo
-            param['ag_x1_range'] = [0.4, 1.0]  # wavelength cut-off albedo
+            param['ag_x1_range'] = [0.4, 1.8]  # wavelength cut-off albedo
         elif param['surface_albedo_parameters'] == int(5):
             for surf_alb in [1, 2, 3]:
                 param['ag' + str(surf_alb) + '_range'] = [0.0, 1.0]  # Surface albedo
