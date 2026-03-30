@@ -2712,31 +2712,7 @@ class RADIATIVE_TRANSFER_PYTHON:
 
         return rout
 
-    def __core_function(self):
-        # Architectural notes for the future Python radiative-transfer core:
-        # keep the raw opacity tables in self.param and build any interpolator
-        # objects here, close to the runtime logic that consumes them.
-        #
-        # Do not fuse everything into one giant sigma(T, P, wl) interpolator.
-        # That makes it harder to mirror the C behavior and harder to debug.
-        #
-        # Preferred split:
-        # - OpacityTable: owns temp_grid, press_grid, wl_grid, values
-        # - OpacityEvaluator: returns a spectrum on the native opacity
-        #   wavelength grid for a given T and P
-        # - WavelengthResampler: maps that native-grid spectrum onto the
-        #   radiative-transfer or instrument wavelength grid
-        #
-        # This also keeps the interpolation semantics explicit:
-        # - interpolate in T and log(P), matching the C implementation
-        # - keep the raw arrays in param
-        # - create interpolators in __core_function
-        # - CIA tables are resampled onto the same working wavelength grid as
-        #   the cross sections, so both should be consumed on a shared wl grid
-        #
-        # TODO: when wiring the Python opacity evaluator, verify whether the
-        # loaded cross sections should be converted from m^2 to cm^2 here to
-        # match forward_mod/readcross.c exactly.
+    def __core_function(self):        
         profile = self._python_core_cache.get('profile')
         cloud_optics = self._python_core_cache.get('cloud_optics')
         if profile is None or cloud_optics is None:
