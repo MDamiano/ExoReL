@@ -287,10 +287,18 @@ class MULTINEST:
 
             if self.param['fit_phi']:
                 if self.param['obs_numb'] is None:
-                    cube[par] = (cube[par] * (self.param['phi_range'][1] - self.param['phi_range'][0])) + self.param['phi_range'][0]  # uniform prior between   0  :  180   -> deg
+                    if self.param['phi_err'] is None: 
+                        cube[par] = (cube[par] * (self.param['phi_range'][1] - self.param['phi_range'][0])) + self.param['phi_range'][0]  # uniform prior between   0  :  180   -> deg
+                    else:
+                        phi_range = np.linspace(self.param['phi_range'][0], self.param['phi_range'][1], num=10000, endpoint=True)                      # gaussian prior -> phi, phase angle
+                        phi_cdf = sp.stats.norm.cdf(phi_range, self.param['phi_orig'], self.param['phi_err'])
+                        phi_cdf = np.array([0.0] + list(phi_cdf) + [1.0])
+                        phi_range = np.array([phi_range[0]] + list(phi_range) + [phi_range[-1]])
+                        phi_pri = interp1d(phi_cdf, phi_range)
+                        cube[par] = phi_pri(cube[par])
                     par += 1
                 else:
-                    for obse in range(0, self.param['obs_numb']):
+                    for _ in range(0, self.param['obs_numb']):
                         cube[par] = (cube[par] * (self.param['phi_range'][1] - self.param['phi_range'][0])) + self.param['phi_range'][0]  # uniform prior between   0  :  180   -> deg
                         par += 1
 
@@ -559,8 +567,6 @@ class MULTINEST:
                     par += 1
         else:
             pass
-        
-        self.param['T'] = temp_profile(self.param)
 
         if self.param['fit_cld_frac']:
             self.param['cld_frac'] = (10.0 ** cube[par])  # Cloud fraction
@@ -652,8 +658,9 @@ class MULTINEST:
         temp_min, temp_max = self.param['min_wl'] + 0.0, self.param['max_wl'] + 0.0
         self.param['min_wl'] = min(self.param['spectrum']['wl'])
         self.param['max_wl'] = max(self.param['spectrum']['wl'])
-        self.param['start_c_wl_grid'] = find_nearest(self.param['wl_C_grid'], self.param['min_wl']) - 35
-        self.param['stop_c_wl_grid'] = find_nearest(self.param['wl_C_grid'], self.param['max_wl']) + 35
+        if self.param['physics_model_code_language'] == 'C':
+            self.param['start_c_wl_grid'] = find_nearest(self.param['wl_C_grid'], self.param['min_wl']) - 35
+            self.param['stop_c_wl_grid'] = find_nearest(self.param['wl_C_grid'], self.param['max_wl']) + 35
 
         distributions = []
 

@@ -28,6 +28,7 @@ def default_parameters():
     param['Tirr'] = 394.109  # Irradiation Temperature at 1 AU related to the Sun case [K]
     param['Tint'] = 110.0  # Intrinsic (internal) Temperature [K]
     param['phi'] = None  # Phase angle [deg]
+    param['phi_err'] = None  # Phase angle error [deg]
     param['P0'] = None  # Surface pressure [Pa]
     param['Ag'] = None  # Surface albedo
 
@@ -229,6 +230,9 @@ def setup_param_dict(param):
 
     if param['Mp'] is not None:
         param['Mp_orig'] = param['Mp'] + 0.0
+
+    if param['fit_phi'] and param['phi'] is not None and param['phi_err'] is not None:
+        param['phi_orig'] = param['phi'] + 0.0
 
     if param['gas_fill'] == 'N2':
         param['fit_N2'] = False

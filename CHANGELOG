@@ -1,4 +1,5 @@
-## [3.0.0] - 03/27/26
+## [3.0.0] - 04/07/26
+- Added phase-angle prior support: setting `phi_err` now applies a Gaussian prior centered on the input `phi`.
 - The original forward model has been translated into a full Python implementation. Both C and Python implementations are available. 
 - Added a Python implementation of the reflected-light rocky radiative-transfer core, keeping the atmospheric/profile and cloud-optics data flow in memory while preserving the C solver physics (two-stream Eddington reflection, Rayleigh/CIA/cloud terms, and 9x9 disk integration).
 - Runtime performances greately improved due to the Python implementation.
