@@ -610,7 +610,7 @@ class MULTINEST:
         if self.param['fit_phi']:
             self.param['phi'] = cube[par + n_obs] * math.pi / 180.  # phi
 
-        if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
+        if self.param['fit_T']:
             self.param['T'] = temp_profile(self.param)
         if self.param['fit_amm_cld']:
             self.param['vmr_NH3'] = cloud_pos(self.param, condensed_gas='NH3')

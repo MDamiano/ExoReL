@@ -1158,24 +1158,62 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
         for mol in volume_mixing_ratio.keys():
             mmm += volume_mixing_ratio[mol] * mnest.param['mm'][mol]
 
+        n_fit_molecules = len(mnest.param['fit_molecules'])
+
         if mnest.param['gas_par_space'] != 'partial_pressure':
             for i, mol in enumerate(mnest.param['fit_molecules']):
                 b[:, z + i] = np.log10(volume_mixing_ratio[mol])
             if mnest.param['gas_fill'] is not None:
                 b[:, z + i + 1] = np.log10(volume_mixing_ratio[mnest.param['gas_fill']])
+            tail_src_start = z + n_fit_molecules
+            tail_dest_start = z + n_fit_molecules + 1
         else:
             for i, mol in enumerate(mnest.param['fit_molecules']):
                 b[:, (z + 1) + i] = np.log10(volume_mixing_ratio[mol])
+            tail_src_start = z + n_fit_molecules
+            tail_dest_start = z + n_fit_molecules + 1
 
-        b[:, z + i + 2:-1] = a[:, z + i + 1:] + 0.0
+        b[:, tail_dest_start:-1] = a[:, tail_src_start:] + 0.0
 
-        locate_mp_rp = 4 if mnest.param['fit_p_size'] else 3
-        if mnest.param['rocky'] and mnest.param['fit_Mp']:
-            b[:, -locate_mp_rp] *= (const.M_jup.value / const.M_earth.value)
-        if mnest.param['rocky'] and mnest.param['fit_Rp']:
-            b[:, -(locate_mp_rp - 1)] *= (const.R_jup.value / const.R_earth.value)
+        tail_idx = tail_dest_start
+        g_col = None
+        mp_col = None
+        rp_col = None
+
+        if mnest.param['fit_ag']:
+            if mnest.param['surface_albedo_parameters'] == int(1):
+                tail_idx += 1
+            elif mnest.param['surface_albedo_parameters'] == int(3):
+                tail_idx += 3
+            elif mnest.param['surface_albedo_parameters'] == int(5):
+                tail_idx += 5
+
+        if mnest.param['fit_T']:
+            if mnest.param['PT_profile_type'] == 'isothermal':
+                tail_idx += 1
+            elif mnest.param['PT_profile_type'] == 'parametric':
+                tail_idx += 3
+                if mnest.param['fit_Tint']:
+                    tail_idx += 1
+
+        if mnest.param['fit_cld_frac']:
+            tail_idx += 1
+
         if mnest.param['fit_g']:
-            b[:, -(locate_mp_rp - 2)] = 10. ** (b[:, -(locate_mp_rp - 2)] - 2.0)
+            g_col = tail_idx
+            tail_idx += 1
+        if mnest.param['fit_Mp']:
+            mp_col = tail_idx
+            tail_idx += 1
+        if mnest.param['fit_Rp']:
+            rp_col = tail_idx
+
+        if mnest.param['rocky'] and mp_col is not None:
+            b[:, mp_col] *= (const.M_jup.value / const.M_earth.value)
+        if mnest.param['rocky'] and rp_col is not None:
+            b[:, rp_col] *= (const.R_jup.value / const.R_earth.value)
+        if g_col is not None:
+            b[:, g_col] = 10. ** (b[:, g_col] - 2.0)
 
         b[:, -1] = np.array(mmm) + 0.0
 
@@ -1298,6 +1336,8 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
                 par.append(r"Log(P$_{size}$ [$\mu$m])")
             elif mnest.param['fit_p_size'] and mnest.param['p_size_type'] == 'factor':
                 par.append("Log(P$_{size, fctr})$")
+            if mnest.param['fit_phi']:
+                par.append(r"$\phi$ [deg]")
             par.append(r"$\mu$ (derived)")
             json.dump(par, open(prefix + 'params.json', 'w'))
 

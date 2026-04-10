@@ -901,12 +901,17 @@ def ranges(param):
                 param['Rp_range'] = [0.05174422312986068, 0.19627119118223021]          # 0.58 to 2.2 Earth radii
             elif param['Mp_prior_type'] == 'M_R_prior' and param['Rp_prior_type'] != 'R_M_prior':
                 param['Mp_range'] = [0.000032, 0.06292703731012286]                      # 0.01 to 20 Earth masses
+        elif param['fit_Rp'] and param['Mp_prior_type'] == 'M_R_prior' and not param['fit_Mp'] and param['Mp'] is not None:
+            param['Rp_range'] = [param['M-R_Fe'](param['Mp']), param['M-R_H2O'](param['Mp'])]
         elif param['fit_Mp'] and not param['fit_Rp']:
             param['Mp_range'] = [0.000032, 0.06]                                         # Planet mass 0.01 to 19 Earth masses
         elif param['fit_Rp'] and not param['fit_Mp']:
             param['Rp_range'] = [0.044607088905052314, 0.8921417781010462]              # Planet radius - 0.5 to 10 Earth radii
         else:
             pass
+
+        print(np.array(param['Rp_range']) * const.R_jup.value / const.R_earth.value)
+        sys.exit()
 
     if param['fit_g']:
         param['gp_range'] = [1.0, 6.0]  # Gravity
@@ -1272,7 +1277,7 @@ def pre_load_variables(param):
 
     if param['rocky']:
     # Mass-Radius diagram
-        if param['fit_Mp'] and param['fit_Rp']:
+        if param['fit_Mp'] or param['fit_Rp']:
             if param['Rp_prior_type'] == 'R_M_prior':
                 M_R_Fe = np.loadtxt(param['pkg_dir'] + 'forward_mod/Data/Fe_mass_radius_jup.dat')
                 M_R_H2O = np.loadtxt(param['pkg_dir'] + 'forward_mod/Data/H2O_mass_radius_jup.dat')
