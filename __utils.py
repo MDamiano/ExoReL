@@ -66,8 +66,8 @@ def default_parameters():
     param['fit_Rp'] = False  # whether to fit the planetary radius during retrieval
     param['fit_T'] = False  # whether to fit the planetary temperature during retrieval
     param['PT_profile_type'] = 'isothermal'  # type of PT profile to use. Possibilities: isothermal, parametric
-    param['Rp_prior_type'] = 'independent'  # type of prior function for the planetary radius. Possibilities: independent, M_R_prior, R_M_prior, random_error
-    param['Mp_prior_type'] = 'independent'  # type of prior function for the planetary mass. Possibilities: independent, M_R_prior, R_M_prior, random_error
+    param['Rp_prior_type'] = None  # type of prior function for the planetary radius. Possibilities: independent, M_R_prior
+    param['Mp_prior_type'] = None  # type of prior function for the planetary mass. Possibilities: independent, M_R_prior, gaussian
 
     param['fit_wtr_cld'] = False  # whether to include and fit water cloud position during retrieval
     param['wtr_cld_type'] = 'liquid'  # type of water cloud to consider. Choose between 'liquid', 'ice', and 'mixed'
@@ -227,6 +227,9 @@ def setup_param_dict(param):
         param['gas_fill'] = 'H2'
     else:
         param['rocky'] = True
+
+    if param['fit_Rp'] and param['Rp'] is not None and param['Rp_err'] is not None:
+        param['Rp_orig'] = param['Rp'] + 0.0
 
     if param['Mp'] is not None:
         param['Mp_orig'] = param['Mp'] + 0.0
@@ -891,17 +894,23 @@ def ranges(param):
                 param['Mp_range'] = [0.000032, 0.06]                                     # Planet mass 0.01 to 19 Earth masses
                 param['Rp_range'] = [0.044607088905052314, 0.8921417781010462]          # Planet radius - 0.5 to 10 Earth radii
             elif (param['Rp_prior_type'] is None or param['Rp_prior_type'] == 'independent') and param['Mp_prior_type'] == 'gaussian':
-                param['Mp_range'] = [param['Mp_orig'] - (5.0 * param['Mp_err']), param['Mp_orig'] + (5.0 * param['Mp_err'])]
-                if param['Mp_orig'] - (5.0 * param['Mp_err']) < 0.000032:
-                    param['Mp_range'][0] = 0.000032
-                if param['Mp_orig'] + (5.0 * param['Mp_err']) > 0.06:
-                    param['Mp_range'][1] = 0.06
+                param['Mp_range'] = [max(0.000032, param['Mp_orig'] - (5.0 * param['Mp_err'])), min(0.06, param['Mp_orig'] + (5.0 * param['Mp_err']))]
                 param['Rp_range'] = [0.044607088905052314, 0.8921417781010462]  # Planet radius - 0.5 to 10 Earth radii
-            elif param['Rp_prior_type'] == 'R_M_prior' and param['Mp_prior_type'] != 'M_R_prior':
-                param['Rp_range'] = [0.05174422312986068, 0.19627119118223021]          # 0.58 to 2.2 Earth radii
-            elif param['Mp_prior_type'] == 'M_R_prior' and param['Rp_prior_type'] != 'R_M_prior':
-                param['Mp_range'] = [0.000032, 0.06292703731012286]                      # 0.01 to 20 Earth masses
-        elif param['fit_Rp'] and param['Mp_prior_type'] == 'M_R_prior' and not param['fit_Mp'] and param['Mp'] is not None:
+            elif param['Rp_prior_type'] == 'M_R_prior':
+                if param['Mp_prior_type'] is None or param['Mp_prior_type'] == 'independent':
+                    param['Mp_range'] = [0.000032, 0.06292703731012286]                   # 0.01 to 20 Earth masses
+                elif param['Mp_prior_type'] == 'gaussian':
+                    param['Mp_range'] = [max(0.000032, param['Mp_orig'] - (5.0 * param['Mp_err'])), min(0.06292703731012286, param['Mp_orig'] + (5.0 * param['Mp_err']))]
+                elif param['Mp_prior_type'] == 'M_R_prior':
+                    raise ValueError("Both Mp_prior_type and Rp_prior_type cannot be 'M_R_prior' when fitting both Mp and Rp.")
+            elif param['Mp_prior_type'] == 'M_R_prior':
+                if param['Rp_prior_type'] is None or param['Rp_prior_type'] == 'independent':
+                    param['Rp_range'] = [0.05174422312986068, 0.19627119118223021]          # 0.58 to 2.2 Earth radii
+                elif param['Rp_prior_type'] == 'gaussian':
+                    param['Rp_range'] = [max(0.05174422312986068, param['Rp_orig'] - (5.0 * param['Rp_err'])), min(0.19627119118223021, param['Rp_orig'] + (5.0 * param['Rp_err']))]
+                elif param['Rp_prior_type'] == 'M_R_prior':
+                    raise ValueError("Both Mp_prior_type and Rp_prior_type cannot be 'M_R_prior' when fitting both Mp and Rp.")
+        elif param['fit_Rp'] and param['Rp_prior_type'] == 'M_R_prior' and not param['fit_Mp'] and param['Mp'] is not None:
             param['Rp_range'] = [param['M-R_Fe'](param['Mp']), param['M-R_H2O'](param['Mp'])]
         elif param['fit_Mp'] and not param['fit_Rp']:
             param['Mp_range'] = [0.000032, 0.06]                                         # Planet mass 0.01 to 19 Earth masses
@@ -909,9 +918,6 @@ def ranges(param):
             param['Rp_range'] = [0.044607088905052314, 0.8921417781010462]              # Planet radius - 0.5 to 10 Earth radii
         else:
             pass
-
-        print(np.array(param['Rp_range']) * const.R_jup.value / const.R_earth.value)
-        sys.exit()
 
     if param['fit_g']:
         param['gp_range'] = [1.0, 6.0]  # Gravity
@@ -937,7 +943,10 @@ def ranges(param):
         param['crnh3_range'] = [-7.0, 0.0]      # Condensation Ratio NH3
 
     if param['fit_phi']:
-        param['phi_range'] = [0.0, 180.0]       # Phase Angle
+        if param['phi_err'] is not None:
+            param['phi_range'] = [max(0.0, param['phi_orig'] - (5.0 * param['phi_err'])), min(180.0, param['phi_orig'] + (5.0 * param['phi_err']))]
+        else:
+            param['phi_range'] = [0.0, 180.0]       # Phase Angle
 
     return param
 
@@ -1278,16 +1287,14 @@ def pre_load_variables(param):
     if param['rocky']:
     # Mass-Radius diagram
         if param['fit_Mp'] or param['fit_Rp']:
-            if param['Rp_prior_type'] == 'R_M_prior':
-                M_R_Fe = np.loadtxt(param['pkg_dir'] + 'forward_mod/Data/Fe_mass_radius_jup.dat')
-                M_R_H2O = np.loadtxt(param['pkg_dir'] + 'forward_mod/Data/H2O_mass_radius_jup.dat')
-                param['R-M_Fe'] = interp1d(M_R_Fe[:, 1], M_R_Fe[:, 0])
-                param['R-M_H2O'] = interp1d(M_R_H2O[:, 1], M_R_H2O[:, 0])
-            elif param['Mp_prior_type'] == 'M_R_prior':
-                M_R_Fe = np.loadtxt(param['pkg_dir'] + 'forward_mod/Data/Fe_mass_radius_jup.dat')
-                M_R_H2O = np.loadtxt(param['pkg_dir'] + 'forward_mod/Data/H2O_mass_radius_jup.dat')
+            M_R_Fe = np.loadtxt(param['pkg_dir'] + 'forward_mod/Data/Fe_mass_radius_jup.dat')
+            M_R_H2O = np.loadtxt(param['pkg_dir'] + 'forward_mod/Data/H2O_mass_radius_jup.dat')
+            if param['Rp_prior_type'] == 'M_R_prior' and param['Mp_prior_type'] != 'M_R_prior':
                 param['M-R_Fe'] = interp1d(M_R_Fe[:, 0], M_R_Fe[:, 1])
                 param['M-R_H2O'] = interp1d(M_R_H2O[:, 0], M_R_H2O[:, 1])
+            elif param['Mp_prior_type'] == 'M_R_prior' and param['Rp_prior_type'] != 'M_R_prior':
+                param['M-R_Fe'] = interp1d(M_R_Fe[:, 1], M_R_Fe[:, 0])
+                param['M-R_H2O'] = interp1d(M_R_H2O[:, 1], M_R_H2O[:, 0])
             else:
                 pass
     #  Load Mie Calculation Results
@@ -2452,72 +2459,62 @@ def add_noise(param, data, noise_model=0):
     return spectrum
 
 
-def Mp_prior(param, cube, rp_value=None):
+def Mp_Rp_prior(param, parameter, cube, rp_value=None, mp_value=None):
     """
-    Prior function for planetary mass
+    Prior function for planetary mass and radius
 
     Parameters
     ----------
     param : dict
         dictionary of settings.
     cube : float
-        Mass value to be converted
+        Unit-cube value to be converted.
+    parameter : str
+        Parameter to evaluate. Choose between ``'Mp'`` and ``'Rp'``.
     rp_value : float, optional
-        Radius value to be used in the Radius-Mass diagram
-
-    Returns
-    -------
-    Mp_value : float
-        mass value to be evaluated according to the appropriate mass prior.
-    """
-
-    if rp_value is None:
-        if param['Mp_err'] is None:
-            Mp_value = (cube * (param['Mp_range'][1] - param['Mp_range'][0])) + param['Mp_range'][0]  # ignorant prior
-        elif param['Mp_err'] is not None and param['Mp_prior_type'] == 'gaussian':
-            Mp_range = np.linspace(param['Mp_range'][0], param['Mp_range'][1], num=10000, endpoint=True)
-            Mp_cdf = sp.stats.norm.cdf(Mp_range, param['Mp_orig'], param['Mp_err'])
-            Mp_cdf = np.array([0.0] + list(Mp_cdf) + [1.0])
-            Mp_range = np.array([Mp_range[0]] + list(Mp_range) + [Mp_range[-1]])
-            Mp_pri = interp1d(Mp_cdf, Mp_range)
-            Mp_value = Mp_pri(cube)
-    else:
-        Mp_value = (cube * (param['R-M_Fe'](rp_value) - param['R-M_H2O'](rp_value))) + param['R-M_H2O'](rp_value)
-
-    return Mp_value
-
-
-def Rp_prior(param, cube, mp_value=None):
-    """
-    Prior function for radius
-
-    Parameters
-    ----------
-    param : dict
-        dictionary of settings.
-    cube : array
-        values used to select Rp.
+        Radius value to be used in the Mass-Radius diagram.
     mp_value : float, optional
-        Mass value to be used in the Mass-Radius diagram
+        Mass value to be used in the Mass-Radius diagram.
+
 
     Returns
     -------
-    cube : array
-        values of Rp.
+    float
+        Mass or radius value evaluated according to the requested prior.
     """
 
-    if mp_value is None:
-        if param['Rp_err'] is None:
-            Rp_value = (cube * (param['Rp_range'][1] - param['Rp_range'][0])) + param['Rp_range'][0]  # ignorant prior
-        elif param['Rp_err'] is not None:
-            Rp_range = np.linspace(param['Rp_range'][0], param['Rp_range'][1], num=1000)
-            Rp_cdf = sp.stats.norm.cdf(Rp_range, param['Rp'], param['Rp_err'])
-            Rp_pri = interp1d(Rp_cdf, Rp_range)
-            Rp_value = Rp_pri(cube)
-    else:
-        Rp_value = (cube * (param['M-R_H2O'](mp_value) - param['M-R_Fe'](mp_value))) + param['M-R_Fe'](mp_value)
+    if parameter == 'Mp':
+        if rp_value is None:
+            if param['Mp_err'] is None:
+                return linear_prior(param, 'Mp', cube)
+            if param['Mp_prior_type'] == 'gaussian':
+                return gaussian_prior(param, 'Mp', cube)
+        else:
+            return (cube * (param['M-R_Fe'](rp_value) - param['M-R_H2O'](rp_value))) + param['M-R_H2O'](rp_value)
 
-    return Rp_value
+    if parameter == 'Rp':
+        if mp_value is None:
+            if param['Rp_err'] is None:
+                return linear_prior(param, 'Rp', cube)
+            if param['Rp_prior_type'] == 'gaussian':
+                return gaussian_prior(param, 'Rp', cube)
+        else:
+            return (cube * (param['M-R_Fe'](mp_value) - param['M-R_H2O'](mp_value))) + param['M-R_H2O'](mp_value)
+
+    raise ValueError("parameter must be either 'Mp' or 'Rp'")
+
+
+def linear_prior(param, parameter, cube):
+    return (cube * (param[parameter + '_range'][1] - param[parameter + '_range'][0])) + param[parameter + '_range'][0]
+
+
+def gaussian_prior(param, parameter, cube):
+    range_array = np.linspace(param[parameter + '_range'][0], param[parameter + '_range'][1], num=10000, endpoint=True)
+    cdf = sp.stats.norm.cdf(range_array, param[parameter + '_orig'], param[parameter + '_err'])
+    cdf = np.array([0.0] + list(cdf) + [1.0])
+    range_array = np.array([range_array[0]] + list(range_array) + [range_array[-1]])
+    pri = interp1d(cdf, range_array)
+    return pri(cube)
 
 
 def clean_c_files(directory):

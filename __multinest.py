@@ -262,23 +262,23 @@ class MULTINEST:
                 par += 1
 
             if self.param['fit_Mp'] and self.param['fit_Rp']:
-                if self.param['Rp_prior_type'] != 'R_M_prior' and self.param['Mp_prior_type'] != 'M_R_prior':
-                    cube[par] = Mp_prior(self.param, cube[par])  # Mass prior - independent
-                    cube[par + 1] = Rp_prior(self.param, cube[par + 1])  # Radius prior - independent
+                if self.param['Rp_prior_type'] != 'M_R_prior' and self.param['Mp_prior_type'] != 'M_R_prior':
+                    cube[par] = Mp_Rp_prior(self.param, 'Mp', cube[par])  # Mass prior - independent or gaussian
+                    cube[par + 1] = Mp_Rp_prior(self.param, 'Rp', cube[par + 1])  # Radius prior - independent
                     par += 2
-                elif self.param['Rp_prior_type'] != 'R_M_prior' and self.param['Mp_prior_type'] == 'M_R_prior':
-                    cube[par] = Mp_prior(self.param, cube[par])  # Mass prior - independent
-                    cube[par + 1] = Rp_prior(self.param, cube[par + 1], mp_value=cube[par])  # Radius prior - 2D prior
+                elif self.param['Rp_prior_type'] == 'M_R_prior' and self.param['Mp_prior_type'] != 'M_R_prior':
+                    cube[par] = Mp_Rp_prior(self.param, 'Mp', cube[par])  # Mass prior - independent or gaussian
+                    cube[par + 1] = Mp_Rp_prior(self.param, 'Rp', cube[par + 1], mp_value=cube[par])  # Radius prior - 2D prior
                     par += 2
-                elif self.param['Rp_prior_type'] == 'R_M_prior' and self.param['Mp_prior_type'] != 'M_R_prior':
-                    cube[par + 1] = Rp_prior(self.param, cube[par + 1])  # Radius prior - independent
-                    cube[par] = Mp_prior(self.param, cube[par], rp_value=cube[par + 1])  # Mass prior - 2D prior
+                elif self.param['Rp_prior_type'] != 'M_R_prior' and self.param['Mp_prior_type'] == 'M_R_prior':
+                    cube[par + 1] = Mp_Rp_prior(self.param, 'Rp', cube[par + 1])  # Radius prior - independent
+                    cube[par] = Mp_Rp_prior(self.param, 'Mp', cube[par], rp_value=cube[par + 1])  # Mass prior - 2D prior
                     par += 2
             elif self.param['fit_Mp'] and not self.param['fit_Rp']:
-                cube[par] = Mp_prior(self.param, cube[par])  # Mass prior
+                cube[par] = Mp_Rp_prior(self.param, 'Mp', cube[par])  # Mass prior
                 par += 1
             elif self.param['fit_Rp'] and not self.param['fit_Mp']:
-                cube[par] = Rp_prior(self.param, cube[par])  # Radius prior
+                cube[par] = Mp_Rp_prior(self.param, 'Rp', cube[par])  # Radius prior
                 par += 1
 
             if self.param['fit_p_size']:
@@ -290,12 +290,7 @@ class MULTINEST:
                     if self.param['phi_err'] is None: 
                         cube[par] = (cube[par] * (self.param['phi_range'][1] - self.param['phi_range'][0])) + self.param['phi_range'][0]  # uniform prior between   0  :  180   -> deg
                     else:
-                        phi_range = np.linspace(self.param['phi_range'][0], self.param['phi_range'][1], num=10000, endpoint=True)                      # gaussian prior -> phi, phase angle
-                        phi_cdf = sp.stats.norm.cdf(phi_range, self.param['phi_orig'], self.param['phi_err'])
-                        phi_cdf = np.array([0.0] + list(phi_cdf) + [1.0])
-                        phi_range = np.array([phi_range[0]] + list(phi_range) + [phi_range[-1]])
-                        phi_pri = interp1d(phi_cdf, phi_range)
-                        cube[par] = phi_pri(cube[par])
+                        cube[par] = gaussian_prior(self.param, 'phi', cube[par])  # gaussian prior -> phi, phase angle
                     par += 1
                 else:
                     for _ in range(0, self.param['obs_numb']):

@@ -1,5 +1,6 @@
-## [3.0.0] - 04/07/26
+## [3.0.0] - 04/10/26
 - Added phase-angle prior support: setting `phi_err` now applies a Gaussian prior centered on the input `phi`.
+- Updated rocky-planet mass/radius prior handling: the merged `Mp_Rp_prior()` path now distinguishes mass and radius explicitly, so `Mp` and `Rp` priors can behave differently depending on whether they use independent, Gaussian, or mass-radius-coupled priors. You can set either `Rp_prior_type` or `Mp_prior_type` to `M_R_prior` to use mass-radius-coupled priors.
 - The original forward model has been translated into a full Python implementation. Both C and Python implementations are available. 
 - Added a Python implementation of the reflected-light rocky radiative-transfer core, keeping the atmospheric/profile and cloud-optics data flow in memory while preserving the C solver physics (two-stream Eddington reflection, Rayleigh/CIA/cloud terms, and 9x9 disk integration).
 - Runtime performances greately improved due to the Python implementation.
