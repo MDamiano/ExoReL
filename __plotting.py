@@ -3,6 +3,7 @@ import sys
 import copy
 import math
 import json
+import itertools
 import contextlib
 import functools
 import numpy as np
@@ -12,6 +13,7 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from astropy import constants as const
 import arviz as az
+from scipy.interpolate import interp1d
 
 from .__utils import find_nearest, model_finalizzation, temp_profile, reso_range
 # from .__forward import FORWARD_MODEL, FORWARD_DATASET, FORWARD_AI
@@ -580,7 +582,82 @@ def plot_chemistry(param, solutions=0):
     plt.close()
 
 
-def plot_surface_albedo(param, solutions=0):
+def _surface_albedo_sigma_slice(param, sigma):
+    """Return the surface-albedo sigma values in retrieval order."""
+    sigma = np.abs(np.asarray(sigma, dtype=float))
+
+    start = 0
+    if param['fit_p0'] and param['gas_par_space'] != 'partial_pressure':
+        start += 1
+    if param['fit_wtr_cld'] and param['PT_profile_type'] == 'isothermal':
+        start += 3
+    if param['fit_amm_cld'] and param['PT_profile_type'] == 'isothermal':
+        start += 3
+    start += len(param['fit_molecules'])
+
+    n_albedo = int(param['surface_albedo_parameters'])
+    stop = start + n_albedo
+    if sigma.ndim != 1 or sigma.size < stop:
+        return None
+
+    return sigma[start:stop]
+
+
+def _surface_albedo_step_function(wavelength, albedo_values, lambda_values):
+    """Evaluate the piecewise-constant surface albedo model on a wavelength grid."""
+    step_albedo = np.zeros_like(wavelength, dtype=float)
+
+    x1 = float(lambda_values[0])
+    a1 = float(albedo_values[0])
+    a2 = float(albedo_values[1])
+
+    step_albedo[wavelength < x1] = a1
+    if len(albedo_values) == 2:
+        step_albedo[wavelength >= x1] = a2
+    else:
+        x2 = float(lambda_values[1])
+        a3 = float(albedo_values[2])
+        step_albedo[(wavelength >= x1) & (wavelength < x2)] = a2
+        step_albedo[wavelength >= x2] = a3
+
+    return step_albedo
+
+
+def _surface_albedo_1sigma_envelope(param, wavelength, sigma):
+    """Build a 1σ envelope by exploring all +/- sigma parameter combinations."""
+    sigma = _surface_albedo_sigma_slice(param, sigma)
+    if sigma is None:
+        return None, None
+
+    if param['surface_albedo_parameters'] == int(3):
+        base_albedo = np.array([param['Ag1'], param['Ag2']], dtype=float)
+        base_lambda = np.array([param['Ag_x1']], dtype=float)
+        albedo_sigma = sigma[:2]
+        lambda_sigma = sigma[2:]
+    elif param['surface_albedo_parameters'] == int(5):
+        base_albedo = np.array([param['Ag1'], param['Ag2'], param['Ag3']], dtype=float)
+        base_lambda = np.array([param['Ag_x1'], param['Ag_x2']], dtype=float)
+        albedo_sigma = sigma[:3]
+        lambda_sigma = sigma[3:]
+    else:
+        return None, None
+
+    curves = []
+    low_wl = float(param['min_wl'])
+    high_wl = float(param['max_wl'])
+
+    for signs in itertools.product((-1.0, 1.0), repeat=len(sigma)):
+        signs = np.asarray(signs, dtype=float)
+        test_albedo = np.clip(base_albedo + (signs[:len(base_albedo)] * albedo_sigma), 0.0, 1.0)
+        test_lambda = np.clip(base_lambda + (signs[len(base_albedo):] * lambda_sigma), low_wl, high_wl)
+        test_lambda = np.maximum.accumulate(test_lambda)
+        curves.append(_surface_albedo_step_function(wavelength, test_albedo, test_lambda))
+
+    curves = np.asarray(curves, dtype=float)
+    return np.nanmin(curves, axis=0), np.nanmax(curves, axis=0)
+
+
+def plot_surface_albedo(param, solutions=0, sigma=None):
     """Plot the retrieved piecewise-constant surface albedo function.
 
     Parameters
@@ -590,6 +667,9 @@ def plot_surface_albedo(param, solutions=0):
       (optional when 3-parameter), `Ag1`, `Ag2`, `Ag3` (optional when
       3-parameter), `min_wl`, `max_wl`, and `out_dir`.
     - solutions: Optional integer used to suffix the output filename.
+    - sigma: Optional full retrieval sigma vector for the active solution. When
+      provided, the surface albedo panel uses the corresponding 1σ albedo and
+      transition uncertainties for shading.
 
     Behavior
     - Builds a wavelength array in [`min_wl`, `max_wl`] and renders a step
@@ -606,17 +686,53 @@ def plot_surface_albedo(param, solutions=0):
         x2 = param['Ag_x2'] + 0.0  # wavelength cutoffs in microns
         a3 = param['Ag3'] + 0.0  # albedo values for each region
 
+    surface_sigma = _surface_albedo_sigma_slice(param, sigma)
+    if param['surface_albedo_parameters'] == int(3):
+        albedo_sigma = [None, None] if surface_sigma is None else list(surface_sigma[:2])
+        lambda_sigma = [None] if surface_sigma is None else list(surface_sigma[2:])
+    elif param['surface_albedo_parameters'] == int(5):
+        albedo_sigma = [None, None, None] if surface_sigma is None else list(surface_sigma[:3])
+        lambda_sigma = [None, None] if surface_sigma is None else list(surface_sigma[3:])
+
+    def _adaptive_decimals(err, min_decimals=2, max_decimals=8):
+        if err is None:
+            return min_decimals
+        err = abs(float(err))
+        if err == 0.0:
+            return min_decimals
+        decimals = min_decimals
+        while round(err, decimals) == 0.0 and decimals < max_decimals:
+            decimals += 1
+        return decimals
+
+    def _fmt_pm(value, err, unit=''):
+        decimals = _adaptive_decimals(err)
+        val_txt = f'{float(value):.{decimals}f}'
+        if err is None:
+            return val_txt + unit
+        return f'{val_txt} ± {float(err):.{decimals}f}{unit}'
+
+    def _vertical_annotate(text, x_pos, y_pos, y_offset, text_x=None):
+        if text_x is None:
+            text_x = x_pos
+        ax.annotate(
+            text,
+            xy=(x_pos, y_pos),
+            xytext=(text_x, y_pos + y_offset),
+            ha='center',
+            va='bottom' if y_offset >= 0.0 else 'top',
+            fontsize=12,
+            arrowprops=dict(facecolor='black', shrink=0.05, width=1.5, headwidth=8),
+        )
+
     # Create data for plotting
     wavelength = np.linspace(param['min_wl'], param['max_wl'], 1000)  # x-axis: wavelength in microns
 
     # Create the step function
-    step_albedo = np.zeros_like(wavelength)
-    step_albedo[wavelength < x1] = a1
     if param['surface_albedo_parameters'] == int(3):
-        step_albedo[wavelength >= x1] = a2
+        step_albedo = _surface_albedo_step_function(wavelength, [a1, a2], [x1])
     elif param['surface_albedo_parameters'] == int(5):
-        step_albedo[(wavelength >= x1) & (wavelength < x2)] = a2
-        step_albedo[wavelength >= x2] = a3
+        step_albedo = _surface_albedo_step_function(wavelength, [a1, a2, a3], [x1, x2])
 
     # Create a high-quality figure
     fig, ax = plt.subplots(figsize=(8, 5), dpi=150)
@@ -624,29 +740,22 @@ def plot_surface_albedo(param, solutions=0):
     # Plot with enhanced styling
     ax.plot(wavelength, step_albedo, linewidth=3, color='#ff7f0e', label='Retrieved surface albedo function')
 
-    # Fill areas under curves for visual enhancement
-    ax.fill_between(wavelength, 0, step_albedo, alpha=0.3, color='#ff7f0e')
+    # Shade the 1σ retrieval region instead of filling down to y=0.
+    shade_low, shade_high = _surface_albedo_1sigma_envelope(param, wavelength, sigma)
+    if shade_low is not None and shade_high is not None:
+        ax.fill_between(
+            wavelength,
+            shade_low,
+            shade_high,
+            alpha=0.25,
+            color='#ff7f0e',
+            label=r'1$\sigma$ retrieval region',
+        )
 
     # Add vertical lines at transition points
     ax.axvline(x=x1, color='#9467bd', linestyle='--', linewidth=1.5, alpha=0.7, label=f'Transition $\\lambda_1$: {np.round(x1,2)} $\\mu$m')
     if param['surface_albedo_parameters'] == int(5):
         ax.axvline(x=x2, color='#d62728', linestyle='--', linewidth=1.5, alpha=0.7, label=f'Transition $\\lambda_2$: {np.round(x2,2)} $\\mu$m')
-
-    # Annotations for step values
-    ax.annotate(f'a$_1$ = {np.round(a1,2)}', xy=((param['min_wl'] + x1) / 2, a1), xytext=((param['min_wl'] + x1) / 2, a1 + 0.04),
-                arrowprops=dict(facecolor='black', shrink=0.05, width=1.5, headwidth=8),
-                fontsize=12)
-    if param['surface_albedo_parameters'] == int(3):
-        ax.annotate(f'a$_2$ = {np.round(a2, 2)}', xy=((x1 + param['max_wl']) / 2, a2), xytext=((x1 + param['max_wl']) / 2, a2 + 0.04),
-                    arrowprops=dict(facecolor='black', shrink=0.05, width=1.5, headwidth=8),
-                    fontsize=12)
-    elif param['surface_albedo_parameters'] == int(5):
-        ax.annotate(f'a$_2$ = {np.round(a2,2)}', xy=((x1 + x2) / 2, a2), xytext=((x1 + x2) / 2, a2 + 0.04),
-                    arrowprops=dict(facecolor='black', shrink=0.05, width=1.5, headwidth=8),
-                    fontsize=12)
-        ax.annotate(f'a$_3$ = {np.round(a3,2)}', xy=((x2 + param['max_wl']) / 2, a3), xytext=((x2 + param['max_wl']) / 2, a3 + 0.04),
-                    arrowprops=dict(facecolor='black', shrink=0.05, width=1.5, headwidth=8),
-                    fontsize=12)
 
     # Enhance the axes and labels
     ax.set_xlabel('Wavelength [$\\mu$m]', fontsize=14, fontweight='bold')
@@ -654,9 +763,62 @@ def plot_surface_albedo(param, solutions=0):
 
     # Set axis limits with a bit of padding
     if param['surface_albedo_parameters'] == int(3):
-        ax.set_ylim(-0.02, np.max([a1, a2]) + 0.1)
+        ylim_top = np.max([a1, a2]) + 0.1
     elif param['surface_albedo_parameters'] == int(5):
-        ax.set_ylim(-0.02, np.max([a1, a2, a3]) + 0.1)
+        ylim_top = np.max([a1, a2, a3]) + 0.1
+    if shade_high is not None:
+        ylim_top = max(ylim_top, float(np.nanmax(shade_high)) + 0.1)
+    ax.set_ylim(-0.02, ylim_top)
+
+    # Annotations for step values and transition wavelengths.
+    y_span = ax.get_ylim()[1] - ax.get_ylim()[0]
+    seg_offset = max(0.04, 0.10 * y_span)
+    lambda_text_y = ax.get_ylim()[0] + (0.07 * y_span)
+    lambda_target_y = ax.get_ylim()[0] + (0.26 * y_span)
+    micron_unit = ' $\\mu$m'
+
+    _vertical_annotate(
+        f'a$_1$ = {_fmt_pm(a1, albedo_sigma[0])}',
+        (param['min_wl'] + x1) / 2,
+        a1,
+        seg_offset,
+    )
+    if param['surface_albedo_parameters'] == int(3):
+        _vertical_annotate(
+            f'a$_2$ = {_fmt_pm(a2, albedo_sigma[1])}',
+            (x1 + param['max_wl']) / 2,
+            a2,
+            seg_offset,
+        )
+    elif param['surface_albedo_parameters'] == int(5):
+        _vertical_annotate(
+            f'a$_2$ = {_fmt_pm(a2, albedo_sigma[1])}',
+            (x1 + x2) / 2,
+            a2,
+            seg_offset,
+        )
+        _vertical_annotate(
+            f'a$_3$ = {_fmt_pm(a3, albedo_sigma[2])}',
+            (x2 + param['max_wl']) / 2,
+            a3,
+            seg_offset,
+        )
+
+    _vertical_annotate(
+        f'$\\lambda_1$ = {_fmt_pm(x1, lambda_sigma[0], unit=micron_unit)}',
+        x1,
+        lambda_target_y,
+        lambda_text_y - lambda_target_y,
+        text_x=x1 - (0.04 * (param['max_wl'] - param['min_wl'])) if param['surface_albedo_parameters'] == int(5) else x1,
+    )
+    if param['surface_albedo_parameters'] == int(5):
+        _vertical_annotate(
+            f'$\\lambda_2$ = {_fmt_pm(x2, lambda_sigma[1], unit=micron_unit)}',
+            x2,
+            lambda_target_y,
+            lambda_text_y - lambda_target_y,
+            text_x=x2 + (0.04 * (param['max_wl'] - param['min_wl'])),
+        )
 
     # Add a grid for better readability
     ax.grid(True, linestyle='--', alpha=0.3)
@@ -885,6 +1047,191 @@ def plot_PT_profile(mnest, bestfit_cube, solutions=0):
 
     fig.tight_layout()
     fig.savefig(mnest.param['out_dir'] + f'PT_profile_sol{solutions}.pdf')
+    plt.close(fig)
+
+
+def _mass_radius_sigma(param, sigma):
+    """Return the fitted Mp/Rp sigma values from the retrieval vector."""
+    sigma = None if sigma is None else np.abs(np.asarray(sigma, dtype=float))
+
+    if sigma is None or sigma.ndim != 1:
+        return None, None
+
+    idx = 0
+    if param['fit_p0'] and param['gas_par_space'] != 'partial_pressure':
+        idx += 1
+    if param['fit_wtr_cld'] and param['PT_profile_type'] == 'isothermal':
+        idx += 3
+    if param['fit_amm_cld'] and param['PT_profile_type'] == 'isothermal':
+        idx += 3
+    idx += len(param['fit_molecules'])
+
+    if param['fit_ag']:
+        idx += int(param['surface_albedo_parameters'])
+
+    if param['fit_T']:
+        if param['PT_profile_type'] == 'isothermal':
+            idx += 1
+        elif param['PT_profile_type'] == 'parametric':
+            idx += 3
+            if param['fit_Tint']:
+                idx += 1
+
+    if param['fit_cld_frac']:
+        idx += 1
+
+    if param['fit_g']:
+        idx += 1
+
+    mp_sigma = None
+    rp_sigma = None
+    if param['fit_Mp']:
+        if sigma.size <= idx:
+            return None, None
+        mp_sigma = float(sigma[idx])
+        idx += 1
+    if param['fit_Rp']:
+        if sigma.size <= idx:
+            return mp_sigma, None
+        rp_sigma = float(sigma[idx])
+
+    return mp_sigma, rp_sigma
+
+
+def plot_mass_radius(mnest, cube, solutions=0, sigma=None):
+    """Plot the retrieved rocky-planet mass-radius location and fitted uncertainties."""
+    if not mnest.param['rocky']:
+        return
+
+    _apply_plot_style()
+    mnest.cube_to_param(cube)
+
+    M_R_Fe = np.loadtxt(mnest.param['pkg_dir'] + 'forward_mod/Data/Fe_mass_radius_jup.dat')
+    M_R_H2O = np.loadtxt(mnest.param['pkg_dir'] + 'forward_mod/Data/H2O_mass_radius_jup.dat')
+
+    mjup_to_mearth = const.M_jup.value / const.M_earth.value
+    rjup_to_rearth = const.R_jup.value / const.R_earth.value
+
+    m_fe_earth = M_R_Fe[:, 0] * mjup_to_mearth
+    r_fe_earth = M_R_Fe[:, 1] * rjup_to_rearth
+    m_h2o_earth = M_R_H2O[:, 0] * mjup_to_mearth
+    r_h2o_earth = M_R_H2O[:, 1] * rjup_to_rearth
+
+    planet_mass_earth = mnest.param['Mp'] * mjup_to_mearth
+    planet_radius_earth = mnest.param['Rp'] * rjup_to_rearth
+
+    mp_sigma, rp_sigma = _mass_radius_sigma(mnest.param, sigma)
+    mass_err_earth = None if (not mnest.param['fit_Mp'] or mp_sigma is None) else mp_sigma * mjup_to_mearth
+    radius_err_earth = None if (not mnest.param['fit_Rp'] or rp_sigma is None) else rp_sigma * rjup_to_rearth
+
+    mass_min = max(m_fe_earth.min(), m_h2o_earth.min())
+    mass_max = min(m_fe_earth.max(), m_h2o_earth.max())
+    mass_grid = np.logspace(np.log10(mass_min), np.log10(mass_max), 512)
+    mass_grid = np.clip(mass_grid, mass_min, mass_max)
+
+    r_fe_grid = interp1d(
+        m_fe_earth,
+        r_fe_earth,
+        bounds_error=False,
+        fill_value=(r_fe_earth[0], r_fe_earth[-1]),
+    )(mass_grid)
+    r_h2o_grid = interp1d(
+        m_h2o_earth,
+        r_h2o_earth,
+        bounds_error=False,
+        fill_value=(r_h2o_earth[0], r_h2o_earth[-1]),
+    )(mass_grid)
+    fill_mask = r_h2o_grid > r_fe_grid
+
+    fig, ax = plt.subplots(figsize=(7.0, 5.5), dpi=150)
+
+    # Build a smooth composition gradient from iron-rich (gray) to water-rich (blue).
+    n_shades = 64
+    color_fe = np.array([0.72, 0.74, 0.78, 0.85])
+    color_h2o = np.array([0.57, 0.76, 0.95, 0.88])
+    delta_r = r_h2o_grid - r_fe_grid
+    for idx in range(n_shades):
+        frac_lo = idx / n_shades
+        frac_hi = (idx + 1) / n_shades
+        y1 = r_fe_grid + (frac_lo * delta_r)
+        y2 = r_fe_grid + (frac_hi * delta_r)
+        shade = color_fe + ((idx + 0.5) / n_shades) * (color_h2o - color_fe)
+        ax.fill_between(
+            mass_grid,
+            y1,
+            y2,
+            where=fill_mask,
+            interpolate=True,
+            color=shade,
+            linewidth=0.0,
+            zorder=1,
+        )
+
+    ax.plot(m_fe_earth, r_fe_earth, color='#111111', linewidth=1.6, zorder=3)
+    ax.plot(m_h2o_earth, r_h2o_earth, color='#157eff', linewidth=1.6, zorder=3)
+    ax.errorbar(
+        planet_mass_earth,
+        planet_radius_earth,
+        xerr=mass_err_earth,
+        yerr=radius_err_earth,
+        fmt='o',
+        color='#d62728',
+        markerfacecolor='#d62728',
+        markeredgecolor='#7f1d1d',
+        ecolor='#d62728',
+        elinewidth=1.4,
+        capsize=3.0,
+        markersize=3,
+        label='Retrieved planet',
+        zorder=4,
+    )
+
+    ax.set_xscale('log')
+    ax.set_xlim(0.05, 120.0)
+    ax.set_ylim(0.125, 2.25)
+    ax.set_xlabel(r'M$_p$ [M$_\oplus$]')
+    ax.set_ylabel(r'R$_p$ [R$_\oplus$]')
+    ax.grid(False)
+
+    ax.xaxis.set_major_locator(ticker.LogLocator(base=10.0))
+    ax.xaxis.set_minor_locator(ticker.LogLocator(base=10.0, subs=np.arange(2, 10) * 0.1))
+    ax.xaxis.set_minor_formatter(ticker.NullFormatter())
+    ax.yaxis.set_major_locator(ticker.MultipleLocator(0.25))
+    ax.yaxis.set_minor_locator(ticker.AutoMinorLocator(5))
+    ax.tick_params(axis='both', which='major', direction='in', length=6, width=1.0, top=True, right=True)
+    ax.tick_params(axis='both', which='minor', direction='in', length=3, width=0.8, top=True, right=True)
+
+    h2o_curve_x = 1.9
+    fe_curve_x = 38.0
+    h2o_curve_y = float(interp1d(mass_grid, r_h2o_grid, bounds_error=False, fill_value='extrapolate')(h2o_curve_x))
+    fe_curve_y = float(interp1d(mass_grid, r_fe_grid, bounds_error=False, fill_value='extrapolate')(fe_curve_x))
+
+    ax.annotate(
+        '100% H$_2$O',
+        xy=(h2o_curve_x, h2o_curve_y),
+        xytext=(1.75, 1.95),
+        color='#157eff',
+        fontsize=12,
+        rotation=63,
+        ha='left',
+        va='center',
+        bbox=dict(boxstyle='round,pad=0.14', facecolor='white', edgecolor='none', alpha=0.88),
+    )
+    ax.annotate(
+        '100% Fe',
+        xy=(fe_curve_x, fe_curve_y),
+        xytext=(50.0, 1.98),
+        color='#111111',
+        fontsize=12,
+        rotation=48,
+        ha='left',
+        va='center',
+        bbox=dict(boxstyle='round,pad=0.14', facecolor='white', edgecolor='none', alpha=0.88),
+    )
+    ax.legend(frameon=False, loc='lower right')
+
+    fig.tight_layout()
+    fig.savefig(mnest.param['out_dir'] + f'Nest_mass_radius_sol{solutions}.pdf')
     plt.close(fig)
 
 

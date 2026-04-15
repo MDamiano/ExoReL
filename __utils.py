@@ -2486,7 +2486,7 @@ def Mp_Rp_prior(param, parameter, cube, rp_value=None, mp_value=None):
     if parameter == 'Mp':
         if rp_value is None:
             if param['Mp_err'] is None:
-                return linear_prior(param, 'Mp', cube)
+                return uniform_prior(param, 'Mp', cube)
             if param['Mp_prior_type'] == 'gaussian':
                 return gaussian_prior(param, 'Mp', cube)
         else:
@@ -2495,7 +2495,7 @@ def Mp_Rp_prior(param, parameter, cube, rp_value=None, mp_value=None):
     if parameter == 'Rp':
         if mp_value is None:
             if param['Rp_err'] is None:
-                return linear_prior(param, 'Rp', cube)
+                return uniform_prior(param, 'Rp', cube)
             if param['Rp_prior_type'] == 'gaussian':
                 return gaussian_prior(param, 'Rp', cube)
         else:
@@ -2504,7 +2504,7 @@ def Mp_Rp_prior(param, parameter, cube, rp_value=None, mp_value=None):
     raise ValueError("parameter must be either 'Mp' or 'Rp'")
 
 
-def linear_prior(param, parameter, cube):
+def uniform_prior(param, parameter, cube):
     return (cube * (param[parameter + '_range'][1] - param[parameter + '_range'][0])) + param[parameter + '_range'][0]
 
 

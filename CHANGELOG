@@ -1,4 +1,6 @@
-## [3.0.0] - 04/10/26
+## [3.0.0] - 04/15/26
+- Added `uniform_prior()` and `gaussian_prior()` in `__utils.py` to centralize linear unit-cube to parameter-range prior transforms.
+- Refactored `MULTINEST.run_retrieval().prior()` to use `uniform_prior()` and `gaussian_prior()` for standard bounded priors while keeping the existing Gaussian, modified-CLR, mass-radius-coupled, and offset albedo special cases unchanged.
 - Added phase-angle prior support: setting `phi_err` now applies a Gaussian prior centered on the input `phi`.
 - Updated rocky-planet mass/radius prior handling: the merged `Mp_Rp_prior()` path now distinguishes mass and radius explicitly, so `Mp` and `Rp` priors can behave differently depending on whether they use independent, Gaussian, or mass-radius-coupled priors. You can set either `Rp_prior_type` or `Mp_prior_type` to `M_R_prior` to use mass-radius-coupled priors.
 - The original forward model has been translated into a full Python implementation. Both C and Python implementations are available. 
