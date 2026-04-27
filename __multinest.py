@@ -419,35 +419,34 @@ class MULTINEST:
             np.savetxt(self.param['out_dir'] + 'data_spectrum.dat', data_spec)
 
             ### PRODUCE PLOTS FROM HERE ###
-            if self.param['plot_models']:
-                cube = np.ones((len(s['modes'][0]['maximum a posterior']), mds))
-                for i in range(0, mds):
-                    cube[:, i] = list(s['modes'][i]['maximum a posterior'])
+            cube = np.ones((len(s['modes'][0]['maximum a posterior']), mds))
+            for i in range(0, mds):
+                cube[:, i] = list(s['modes'][i]['maximum a posterior'])
 
-                    if is_root:
-                        print(f"\nPlotting solution {i + 1} of {mds} with log-evidence: {s['modes'][i]['local log-evidence']:.2f}\n")
+                if is_root:
+                    print(f"\nPlotting solution {i + 1} of {mds} with log-evidence: {s['modes'][i]['local log-evidence']:.2f}\n")
 
-                    plot_nest_spec(self, cube[:, i], solutions=i)
-                    plot_chemistry(self.param, solutions=i)
-                    if self.param['rocky']:
-                        plot_mass_radius(self, cube[:, i], solutions=i, sigma=s['modes'][i]['sigma'])
-                    if self.param['surface_albedo_parameters'] > 1:
-                        plot_surface_albedo(self.param, solutions=i, sigma=s['modes'][i]['sigma'])
+                plot_nest_spec(self, cube[:, i], solutions=i)
+                plot_chemistry(self.param, solutions=i)
+                if self.param['rocky']:
+                    plot_mass_radius(self, cube[:, i], solutions=i, sigma=s['modes'][i]['sigma'])
+                if self.param['surface_albedo_parameters'] > 1:
+                    plot_surface_albedo(self.param, solutions=i, sigma=s['modes'][i]['sigma'])
 
-                    if os.path.exists(self.param['out_dir'] + f'random_temp_samples_sol{i}.dat') and self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
-                        plot_PT_profile(self, cube[:, i], solutions=i)
-                    else:
-                        if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
-                            print('\nTo plot P-T profiles, the calculation of the temperatures samples must be enabled (calc_likelihood_data = True).')
-                    
-                    if self.param['plot_contribution'] and self.param['obs_numb'] is None:
-                        plot_contribution(self, cube[:, i], solutions=i)
+                if os.path.exists(self.param['out_dir'] + f'random_temp_samples_sol{i}.dat') and self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
+                    plot_PT_profile(self, cube[:, i], solutions=i)
+                else:
+                    if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
+                        print('\nTo plot P-T profiles, the calculation of the temperatures samples must be enabled (calc_likelihood_data = True).')
+                
+                if self.param['plot_contribution'] and self.param['obs_numb'] is None:
+                    plot_contribution(self, cube[:, i], solutions=i)
 
-                    if os.path.exists(self.param['out_dir'] + f'loglike_per_datapoint_sol{i}.dat') and os.path.exists(self.param['out_dir'] + f'parameters_samples_sol{i}.dat') and self.param['plot_elpd_stats']:
-                        elpd_loo_stats(self, parameters, solutions=i)
-                    else:
-                        if self.param['plot_elpd_stats']:
-                            print('\nTo plot elpd statistics, the calculation of the likelihood per data point must be enabled (calc_likelihood_data = True).') 
+                if os.path.exists(self.param['out_dir'] + f'loglike_per_datapoint_sol{i}.dat') and os.path.exists(self.param['out_dir'] + f'parameters_samples_sol{i}.dat') and self.param['plot_elpd_stats']:
+                    elpd_loo_stats(self, parameters, solutions=i)
+                else:
+                    if self.param['plot_elpd_stats']:
+                        print('\nTo plot elpd statistics, the calculation of the likelihood per data point must be enabled (calc_likelihood_data = True).') 
 
             if self.param['plot_posterior']:
                 # Delegate posterior plotting to centralized plotting module

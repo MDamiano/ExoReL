@@ -101,7 +101,6 @@ def default_parameters():
     param['wl_native'] = False  # use the opacity wl grid for the output
     param['mol_custom_wl'] = False  # use a custom wl grid for the output
     param['filter_multi_solutions'] = False  # whether to filter low Bayesian evidence solutions
-    param['plot_models'] = False  # whether to plot spectrum, surface, and atmospheric chemistry graphs
     param['plot_contribution'] = False  # whether to plot the spectral contribution of the individual gases
     param['plot_posterior'] = False  # whether to plot the marginalized posterior distribution functions
     param['corner_selected_params'] = None  # list of parameter indices to plot in the corner plot
