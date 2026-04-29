@@ -1,3 +1,13 @@
+## [3.0.1] - 04/29/26
+- Expanded `GEN_DATASET` parity with `CREATE_SPECTRUM`: sampled dataset parameters now round-trip through cleaned CSV column names, higher-precision CSV output, isothermal temperature ranges trigger the correct opacity-temperature handling, parametric P-T sampled values are applied consistently, and fractional H2O/NH3 cloud mixing now compares cloudy and clear columns correctly.
+- Added mixed rocky/gaseous dataset generation in `GEN_DATASET`: datasets can classify each row by sampled planet mass (`Mp < 0.06 Mj` is rocky, otherwise gaseous), force VMR notation for mixed datasets, zero gaseous surface albedos while preserving surface breakpoints, apply gaseous pressure constraints per row, and record an `is_gaseous` column plus metadata.
+- Improved VMR gas-fill dataset output: when `gas_fill` is used, `dataset.csv` now appends a derived log10 filler column such as `H2_filler` or `N2_filler`, while sample JSON payloads retain the linear filler VMR used by the forward model.
+- Changed `GEN_DATASET` cloud-fraction sampling to linear space: `cld_frac_range` is now interpreted directly as `[0, 1]` rather than log10 space, with validation against unphysical sampled values.
+- Added dataset-level noise/errorbar support: `GEN_DATASET` can sample fixed or ranged `snr`, call `add_noise(..., noise_model=0)`, honor `gaussian_noise`, and write per-sample errorbars when `add_noise=True`.
+- Updated `sample_xxxxxxx.json` structure to group generated observables under `data`, using `{"data": {"spectrum": [...], "errorbars": [...]}, "parameters": {...}}`; the `errorbars` key is present as `null` when noise is disabled.
+- Added `random_seed` support for reproducible `GEN_DATASET` design matrices, with `seed` accepted as an alias; the seed controls random sampling and Sobol scrambling and is recorded in `dataset_meta.json`.
+- Fixed parametric double-cloud handling in `cloud_pos()` so condensable VMRs that have already become pressure profiles are handled safely for subsequent cloud species.
+
 ## [3.0.0] - 04/15/26
 - Added `uniform_prior()` and `gaussian_prior()` in `__utils.py` to centralize linear unit-cube to parameter-range prior transforms.
 - Refactored `MULTINEST.run_retrieval().prior()` to use `uniform_prior()` and `gaussian_prior()` for standard bounded priors while keeping the existing Gaussian, modified-CLR, mass-radius-coupled, and offset albedo special cases unchanged.

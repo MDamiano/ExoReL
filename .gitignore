@@ -220,3 +220,4 @@ tests/
 .vscode
 AGENTS.md
 output/
+scripts/

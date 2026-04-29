@@ -88,6 +88,7 @@ def default_parameters():
     param['obs_numb'] = None  # Number of observations to be taken into account during retrieval
     param['optimizer'] = None  # Which optimizer to use during retrieval. 'multinest' is the only possibility currently
     param['gen_dataset_mode'] = False
+    param['random_seed'] = None  # Random seed for GEN_DATASET design matrix generation
 
     #### [MULTINEST_PAR] ####
     param['multimodal'] = True
@@ -618,11 +619,19 @@ def cloud_pos(param, condensed_gas='H2O'):
                 psat = waterpressure(param['T'])
             elif short_name == 'amm':
                 psat = ammoniapressure(param['T'])
+            base_profile = np.asarray(param['vmr_' + condensed_gas], dtype=float)
+            if base_profile.ndim == 0:
+                base_profile = np.full(len(P), float(base_profile))
+            elif base_profile.size == len(param['P_standard']):
+                base_profile = base_profile[:len(P)].astype(float, copy=True)
+            elif base_profile.size != len(P):
+                raise ValueError(f"vmr_{condensed_gas} size does not match the active pressure grid.")
             mix = np.empty((len(P)))
-            # assuming water vmr is limited by saturation pressure:
-            mix[-1] = np.nanmin([psat[-1]/P[-1], param['vmr_' + condensed_gas]])
+            # The condensable abundance may already be a pressure profile if
+            # another cloud species was processed earlier.
+            mix[-1] = np.nanmin([psat[-1] / P[-1], base_profile[-1]])
             for i in range(len(P)-2, -1, -1):
-                mix[i] = np.nanmin([psat[i]/P[i], mix[i+1]])
+                mix[i] = np.nanmin([psat[i] / P[i], base_profile[i], mix[i+1]])
         else:
             base_profile = np.asarray(param['vmr_' + condensed_gas], dtype=float)
             if base_profile.ndim == 0:
@@ -1183,7 +1192,7 @@ def take_star_spectrum(param, plot=False):
     try:
         param['Loggs'] += 0.0
     except (KeyError, TypeError):
-        param['Loggs'] = round(np.log(274.20011166 * param['Ms'] / (param['Rs'] ** 2.)), 1)
+        param['Loggs'] = round(np.log10(274.20011166 * param['Ms'] / (param['Rs'] ** 2.)), 1)
 
     logg = [int(i) for i in str(param['Loggs']) if i.isdigit()]
     if 0 <= logg[1] <= 2:
