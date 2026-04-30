@@ -113,6 +113,111 @@ def dataset_header_columns(par, include_planet_class=False, filler_column=None):
     return columns
 
 
+def compact_dataset_samples(out_dir):
+    sample_files = []
+    for name in os.listdir(out_dir):
+        if name.startswith('sample_') and name.endswith('.json'):
+            try:
+                sample_index = int(name[len('sample_'):-len('.json')])
+            except ValueError:
+                continue
+            sample_files.append((sample_index, os.path.join(out_dir, name)))
+
+    if not sample_files:
+        return None
+
+    sample_files.sort(key=lambda item: item[0])
+
+    spectra = []
+    errorbars = []
+    indexes = []
+    wavelength = None
+    have_errorbars = None
+    n_wavelengths = None
+
+    for expected_file_index, path in sample_files:
+        with open(path, 'r') as f:
+            record = json.load(f)
+
+        record_index = int(record['index'])
+        if record_index != expected_file_index:
+            raise ValueError(
+                f"Sample filename/index mismatch: {os.path.basename(path)} contains index {record_index}."
+            )
+
+        data = record.get('data')
+        if data is None or 'spectrum' not in data or 'errorbars' not in data:
+            raise ValueError(f"Sample file {os.path.basename(path)} does not contain the expected data dictionary.")
+
+        spectrum = np.asarray(data['spectrum'], dtype=float)
+        if spectrum.ndim != 1:
+            raise ValueError(f"Spectrum in {os.path.basename(path)} must be one-dimensional.")
+        if n_wavelengths is None:
+            n_wavelengths = spectrum.size
+        elif spectrum.size != n_wavelengths:
+            raise ValueError(f"Spectrum length mismatch in {os.path.basename(path)}.")
+        sample_wavelength = data.get('wavelength')
+        if sample_wavelength is not None:
+            sample_wavelength = np.asarray(sample_wavelength, dtype=float)
+            if sample_wavelength.ndim != 1 or sample_wavelength.size != spectrum.size:
+                raise ValueError(f"Wavelength length mismatch in {os.path.basename(path)}.")
+            if wavelength is None:
+                wavelength = sample_wavelength
+            elif not np.array_equal(wavelength, sample_wavelength):
+                raise ValueError(f"Wavelength grid mismatch in {os.path.basename(path)}.")
+
+        sample_errorbars = data['errorbars']
+        sample_has_errorbars = sample_errorbars is not None
+        if have_errorbars is None:
+            have_errorbars = sample_has_errorbars
+        elif sample_has_errorbars != have_errorbars:
+            raise ValueError("Either all compacted samples must have errorbars or none of them should.")
+
+        spectra.append(spectrum)
+        if sample_has_errorbars:
+            err = np.asarray(sample_errorbars, dtype=float)
+            if err.ndim != 1 or err.size != n_wavelengths:
+                raise ValueError(f"Errorbar length mismatch in {os.path.basename(path)}.")
+            errorbars.append(err)
+        indexes.append(record_index)
+
+    index_to_row = {idx: row for row, idx in enumerate(sorted(indexes))}
+    D = np.empty((len(indexes), n_wavelengths), dtype=float)
+    E = np.empty((len(indexes), n_wavelengths), dtype=float) if have_errorbars else None
+    for idx, spectrum, err in zip(indexes, spectra, errorbars if have_errorbars else [None] * len(indexes)):
+        row = index_to_row[idx]
+        D[row, :] = spectrum
+        if have_errorbars:
+            E[row, :] = err
+
+    spectra_path = os.path.join(out_dir, 'dataset_spectra.npx')
+    with open(spectra_path, 'wb') as f:
+        np.save(f, D, allow_pickle=False)
+
+    if wavelength is not None:
+        np.savetxt(os.path.join(out_dir, 'wavelength.dat'), wavelength)
+
+    errorbars_path = os.path.join(out_dir, 'dataset_errorbars.npx')
+    if have_errorbars:
+        with open(errorbars_path, 'wb') as f:
+            np.save(f, E, allow_pickle=False)
+    elif os.path.isfile(errorbars_path):
+        os.remove(errorbars_path)
+
+    for _, path in sample_files:
+        os.remove(path)
+
+    return {
+        'spectra_file': 'dataset_spectra.npx',
+        'errorbars_file': 'dataset_errorbars.npx' if have_errorbars else None,
+        'wavelength_file': 'wavelength.dat' if wavelength is not None else None,
+        'n_compacted_samples': int(D.shape[0]),
+        'n_wavelengths': int(D.shape[1]),
+        'index_start': int(min(indexes)),
+        'index_end': int(max(indexes)),
+    }
+
+
 class GEN_DATASET:
     def __init__(self, par):
         self.param = copy.deepcopy(par)
@@ -549,6 +654,7 @@ class GEN_DATASET:
                     'index': int((start_index if 'start_index' in locals() else 0) + i),
                     'wavelength': self.param['wave_file'],
                     'data': {
+                        'wavelength': np.asarray(wl, dtype=float).tolist(),
                         'spectrum': np.asarray(model, dtype=float).tolist(),
                         'errorbars': (
                             np.asarray(errorbars, dtype=float).tolist()
@@ -568,6 +674,22 @@ class GEN_DATASET:
                 with open(fname, 'w') as f:
                     json.dump(record, f, separators=(',', ':'), ensure_ascii=False)
 
+            if MPIimport:
+                MPI.COMM_WORLD.Barrier()
+
+            if rank == 0:
+                compact_meta = compact_dataset_samples(self.param['out_dir'])
+                if compact_meta is not None:
+                    meta_path = os.path.join(self.param['out_dir'], 'dataset_meta.json')
+                    if os.path.isfile(meta_path):
+                        with open(meta_path, 'r') as f:
+                            meta = json.load(f)
+                    else:
+                        meta = {}
+                    meta.update(compact_meta)
+                    with open(meta_path, 'w') as f:
+                        json.dump(meta, f, separators=(',', ':'))
+            
             # Guard against improper exit
             if MPIimport:
                 MPI.COMM_WORLD.Barrier()

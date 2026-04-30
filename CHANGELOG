@@ -5,6 +5,7 @@
 - Changed `GEN_DATASET` cloud-fraction sampling to linear space: `cld_frac_range` is now interpreted directly as `[0, 1]` rather than log10 space, with validation against unphysical sampled values.
 - Added dataset-level noise/errorbar support: `GEN_DATASET` can sample fixed or ranged `snr`, call `add_noise(..., noise_model=0)`, honor `gaussian_noise`, and write per-sample errorbars when `add_noise=True`.
 - Updated `sample_xxxxxxx.json` structure to group generated observables under `data`, using `{"data": {"spectrum": [...], "errorbars": [...]}, "parameters": {...}}`; the `errorbars` key is present as `null` when noise is disabled.
+- Added end-of-run `GEN_DATASET` compaction: after all MPI ranks finish writing samples, rank 0 consolidates spectra into `dataset_spectra.npx`, consolidates available errorbars into `dataset_errorbars.npx`, saves the shared wavelength grid as `wavelength.dat`, records the compacted output metadata, and removes the individual `sample_xxxxxxx.json` files.
 - Added `random_seed` support for reproducible `GEN_DATASET` design matrices, with `seed` accepted as an alias; the seed controls random sampling and Sobol scrambling and is recorded in `dataset_meta.json`.
 - Fixed parametric double-cloud handling in `cloud_pos()` so condensable VMRs that have already become pressure profiles are handled safely for subsequent cloud species.
 
