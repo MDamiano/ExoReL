@@ -103,6 +103,71 @@ def vmr_filler_column(param):
     return None
 
 
+def vmr_filler_values_for_design(X_scaled, param, csv_param_columns):
+    if vmr_filler_column(param) is None:
+        return None
+
+    sampled_gas_columns = [
+        csv_param_columns.index(mol)
+        for mol in param['fit_molecules']
+        if mol in csv_param_columns and mol != param['gas_fill']
+    ]
+    if sampled_gas_columns:
+        filler_values = 1.0 - np.sum(10.0 ** X_scaled[:, sampled_gas_columns], axis=1)
+    else:
+        filler_values = np.ones(X_scaled.shape[0])
+
+    filler_values = np.maximum(0.0, filler_values).reshape(-1, 1)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        return np.log10(filler_values)
+
+
+def finite_dataset_row_mask(X_scaled, param, par):
+    finite = np.all(np.isfinite(X_scaled), axis=1)
+    csv_param_columns = [dataset_column_name(str(p)) for p in par]
+    filler_values = vmr_filler_values_for_design(X_scaled, param, csv_param_columns)
+    if filler_values is not None:
+        finite &= np.all(np.isfinite(filler_values), axis=1)
+    return finite
+
+
+def replace_nonfinite_dataset_rows(X_scaled, param, par, lower, upper, draw_unit_samples):
+    finite = finite_dataset_row_mask(X_scaled, param, par)
+    bad_rows = np.flatnonzero(~finite)
+    if bad_rows.size == 0:
+        return X_scaled, 0
+
+    max_attempts = int(param.get('dataset_resample_max_attempts', 1000))
+    if max_attempts < 1:
+        raise ValueError("'dataset_resample_max_attempts' must be >= 1.")
+
+    replaced = 0
+    attempts = 0
+    X_clean = X_scaled.copy()
+    while bad_rows.size > 0 and attempts < max_attempts:
+        attempts += 1
+        X_candidates = sp.stats.qmc.scale(draw_unit_samples(int(bad_rows.size)), lower, upper)
+        candidate_finite = finite_dataset_row_mask(X_candidates, param, par)
+        good_candidates = X_candidates[candidate_finite]
+        if good_candidates.size == 0:
+            continue
+
+        n_replace = min(bad_rows.size, good_candidates.shape[0])
+        X_clean[bad_rows[:n_replace]] = good_candidates[:n_replace]
+        replaced += n_replace
+        bad_rows = bad_rows[n_replace:]
+
+    if bad_rows.size > 0:
+        raise ValueError(
+            "Unable to replace non-finite GEN_DATASET rows after "
+            f"{max_attempts} attempts. Check sampled ranges, especially VMR "
+            "bounds with gas_fill, because the sampled gases may leave no "
+            "finite filler abundance."
+        )
+
+    return X_clean, replaced
+
+
 def dataset_header_columns(par, include_planet_class=False, filler_column=None):
     columns = ['index']
     if include_planet_class:
@@ -240,12 +305,22 @@ class GEN_DATASET:
                 sampler = sp.stats.qmc.Sobol(d=npar, scramble=True, seed=random_seed)
                 # Best practice: draw 2**m points
                 X = sampler.random_base2(m=int(np.ceil(np.log2(self.param['n_spectra']))))
+
+                def draw_unit_samples(n):
+                    return sampler.random(n)
             
             else:
                 if random_seed is None:
                     X = np.random.random((self.param['n_spectra'], npar))
+
+                    def draw_unit_samples(n):
+                        return np.random.random((n, npar))
                 else:
-                    X = np.random.RandomState(random_seed).random_sample((self.param['n_spectra'], npar))
+                    rng = np.random.RandomState(random_seed)
+                    X = rng.random_sample((self.param['n_spectra'], npar))
+
+                    def draw_unit_samples(n):
+                        return rng.random_sample((n, npar))
 
             # Scale samples to parameter bounds using ranges in self.param
             lower, upper = [], []
@@ -282,6 +357,16 @@ class GEN_DATASET:
                 print(f"Mixed planet classes enabled: Mp < {PLANET_CLASS_MASS_THRESHOLD_MJ} Mj is rocky, otherwise gaseous.")
             print("Columns mapping (index, parameter, lower, upper):\n" + "\n".join(lines))
             X_scaled = sp.stats.qmc.scale(X, lower, upper)
+            X_scaled, n_resampled_nonfinite_rows = replace_nonfinite_dataset_rows(
+                X_scaled,
+                self.param,
+                par,
+                lower,
+                upper,
+                draw_unit_samples,
+            )
+            if n_resampled_nonfinite_rows > 0:
+                print(f"Replaced {n_resampled_nonfinite_rows} non-finite dataset design rows.")
 
             # Build the design matrix header (rank 0 only). Actual CSV write happens later.
             header = ','.join(dataset_header_columns(par, include_planet_class, filler_column))
@@ -350,20 +435,7 @@ class GEN_DATASET:
             idx = (np.arange(nrows, dtype=np.int64) + start_index).reshape(-1, 1)
             csv_param_columns = [dataset_column_name(str(p)) for p in par]
             filler_column = vmr_filler_column(self.param)
-            filler_values = None
-            if filler_column is not None:
-                sampled_gas_columns = [
-                    csv_param_columns.index(mol)
-                    for mol in self.param['fit_molecules']
-                    if mol in csv_param_columns and mol != self.param['gas_fill']
-                ]
-                if sampled_gas_columns:
-                    filler_values = 1.0 - np.sum(10.0 ** X_scaled[:, sampled_gas_columns], axis=1)
-                else:
-                    filler_values = np.ones(nrows)
-                filler_values = np.maximum(0.0, filler_values).reshape(-1, 1)
-                with np.errstate(divide='ignore'):
-                    filler_values = np.log10(filler_values)
+            filler_values = vmr_filler_values_for_design(X_scaled, self.param, csv_param_columns)
 
             if self.param.get('mixed_planet_class', False):
                 csv_values = X_scaled.copy()
@@ -407,6 +479,7 @@ class GEN_DATASET:
                 'planet_class_mass_threshold_Mj': PLANET_CLASS_MASS_THRESHOLD_MJ if self.param.get('mixed_planet_class', False) else None,
                 'random_seed': dataset_random_seed(self.param),
                 'ExoReL_version': str(__version__),
+                'n_resampled_nonfinite_rows': int(n_resampled_nonfinite_rows) if 'n_resampled_nonfinite_rows' in locals() else 0,
             }
             with open(os.path.join(self.param['out_dir'], 'dataset_meta.json'), 'w') as f:
                 json.dump(meta, f, separators=(',', ':'))
