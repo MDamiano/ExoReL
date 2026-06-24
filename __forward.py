@@ -690,7 +690,7 @@ class RADIATIVE_TRANSFER_C:
                        'double **xx, **xx1, **xx2, **xx3, **xx4;\n',
                        'double TransOptD[zbin+1][NLAMBDA], RefOptD[zbin+1][NLAMBDA];\n',
                        # /*double H2CIA[zbin+1][NLAMBDA], H2HeCIA[zbin+1][NLAMBDA], N2CIA[zbin+1][NLAMBDA], CO2CIA[zbin+1][NLAMBDA];*/\n',
-                       'double H2H2CIA[zbin+1][NLAMBDA], H2HeCIA[zbin+1][NLAMBDA], H2HCIA[zbin+1][NLAMBDA], N2H2CIA[zbin+1][NLAMBDA], N2N2CIA[zbin+1][NLAMBDA], CO2CO2CIA[zbin+1][NLAMBDA], O2O2CIA[zbin+1][NLAMBDA];\n',
+                       'double H2H2CIA[zbin+1][NLAMBDA], H2HeCIA[zbin+1][NLAMBDA], H2HCIA[zbin+1][NLAMBDA], N2H2CIA[zbin+1][NLAMBDA], N2N2CIA[zbin+1][NLAMBDA], CO2CO2CIA[zbin+1][NLAMBDA], O2O2CIA[zbin+1][NLAMBDA], O2N2CIA[zbin+1][NLAMBDA];\n',
                        'double cH2O[zbin+1][NLAMBDA], aH2O[zbin+1][NLAMBDA], gH2O[zbin+1][NLAMBDA];\n',
                        'double cNH3[zbin+1][NLAMBDA], aNH3[zbin+1][NLAMBDA], gNH3[zbin+1][NLAMBDA];\n',
 
@@ -2168,7 +2168,7 @@ class RADIATIVE_TRANSFER_PYTHON:
         n_wavelength = wavelength_nm.size
         output = {}
 
-        for label in ['H2H2', 'H2He', 'H2H', 'N2H2', 'N2N2', 'CO2CO2', 'O2O2']:
+        for label in ['H2H2', 'H2He', 'H2H', 'N2H2', 'N2N2', 'CO2CO2', 'O2O2', 'O2N2']:
             table = tables.get(label)
             if table is None or temp_grid.size == 0:
                 output[label] = np.zeros((n_layers, n_wavelength), dtype=float)
@@ -2364,6 +2364,7 @@ class RADIATIVE_TRANSFER_PYTHON:
         wa += cia_terms['N2N2'] * xx[:, 55][:, np.newaxis] * xx[:, 55][:, np.newaxis]
         wa += cia_terms['CO2CO2'] * xx[:, 52][:, np.newaxis] * xx[:, 52][:, np.newaxis]
         wa += cia_terms['O2O2'] * xx[:, 54][:, np.newaxis] * xx[:, 54][:, np.newaxis]
+        wa += cia_terms['O2N2'] * xx[:, 54][:, np.newaxis] * xx[:, 55][:, np.newaxis]
 
         cloud_wavelength = np.asarray(cloud_optics['wavelength_nm'], dtype=float)
         def _resample_cloud_term(values):

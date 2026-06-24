@@ -1,4 +1,5 @@
-## [3.0.1] - 04/29/26
+## [3.0.1] - 06/24/26
+- Added O2-N2 CIA support across the Python and C reflected-light forward paths, including table loading, interpolation, and absorption-opacity terms.
 - Expanded `GEN_DATASET` parity with `CREATE_SPECTRUM`: sampled dataset parameters now round-trip through cleaned CSV column names, higher-precision CSV output, isothermal temperature ranges trigger the correct opacity-temperature handling, parametric P-T sampled values are applied consistently, and fractional H2O/NH3 cloud mixing now compares cloudy and clear columns correctly.
 - Added mixed rocky/gaseous dataset generation in `GEN_DATASET`: datasets can classify each row by sampled planet mass (`Mp < 0.06 Mj` is rocky, otherwise gaseous), force VMR notation for mixed datasets, zero gaseous surface albedos while preserving surface breakpoints, apply gaseous pressure constraints per row, and record an `is_gaseous` column plus metadata.
 - Improved VMR gas-fill dataset output: when `gas_fill` is used, `dataset.csv` now appends a derived log10 filler column such as `H2_filler` or `N2_filler`, while sample JSON payloads retain the linear filler VMR used by the forward model.

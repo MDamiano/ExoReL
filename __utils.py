@@ -1453,6 +1453,7 @@ def load_cia(param):
         'N2N2': 'N2-N2_CIA.dat',
         'CO2CO2': 'CO2-CO2_CIA.dat',
         'O2O2': 'O2-O2_CIA.dat',
+        'O2N2': 'O2-N2_CIA.dat',
     }
 
     cia_tables = {}
