@@ -28,6 +28,7 @@ def default_parameters():
     param['Tirr'] = 394.109  # Irradiation Temperature at 1 AU related to the Sun case [K]
     param['Tint'] = 110.0  # Intrinsic (internal) Temperature [K]
     param['phi'] = None  # Phase angle [deg]
+    param['phi_err'] = None  # Phase angle error [deg]
     param['P0'] = None  # Surface pressure [Pa]
     param['Ag'] = None  # Surface albedo
 
@@ -42,8 +43,8 @@ def default_parameters():
 
     #### [MODEL_PAR] ####
     param['physics_model'] = 'radiative_transfer'  # choose between 'radiative_transfer', 'dataset', or 'AI_model'
-    param['physics_model_code_language'] = 'C' # choose between 'C' and 'Python'
-    param['opac_data'] = '10k'  # spectral resolution of the opacities
+    param['physics_model_code_language'] = 'Python' # choose between 'C' and 'Python'
+    param['opac_data'] = '2k'  # spectral resolution of the opacities
     param['opac_dir'] = None  # directory containing the opacities (this folder will have subdirectories for different spectral resolutions)
     param['use_float32'] = True  # whether or not to use float32 or float64 for the opacities precision
     param['gaseous_planet'] = False  # whether the planet is gaseous or rocky. If False, the surface pressure and albedo will be included in the model and can be fit during retrieval
@@ -65,8 +66,8 @@ def default_parameters():
     param['fit_Rp'] = False  # whether to fit the planetary radius during retrieval
     param['fit_T'] = False  # whether to fit the planetary temperature during retrieval
     param['PT_profile_type'] = 'isothermal'  # type of PT profile to use. Possibilities: isothermal, parametric
-    param['Rp_prior_type'] = 'independent'  # type of prior function for the planetary radius. Possibilities: independent, M_R_prior, R_M_prior, random_error
-    param['Mp_prior_type'] = 'independent'  # type of prior function for the planetary mass. Possibilities: independent, M_R_prior, R_M_prior, random_error
+    param['Rp_prior_type'] = None  # type of prior function for the planetary radius. Possibilities: independent, M_R_prior
+    param['Mp_prior_type'] = None  # type of prior function for the planetary mass. Possibilities: independent, M_R_prior, gaussian
 
     param['fit_wtr_cld'] = False  # whether to include and fit water cloud position during retrieval
     param['wtr_cld_type'] = 'liquid'  # type of water cloud to consider. Choose between 'liquid', 'ice', and 'mixed'
@@ -87,6 +88,7 @@ def default_parameters():
     param['obs_numb'] = None  # Number of observations to be taken into account during retrieval
     param['optimizer'] = None  # Which optimizer to use during retrieval. 'multinest' is the only possibility currently
     param['gen_dataset_mode'] = False
+    param['random_seed'] = None  # Random seed for GEN_DATASET design matrix generation
 
     #### [MULTINEST_PAR] ####
     param['multimodal'] = True
@@ -100,7 +102,6 @@ def default_parameters():
     param['wl_native'] = False  # use the opacity wl grid for the output
     param['mol_custom_wl'] = False  # use a custom wl grid for the output
     param['filter_multi_solutions'] = False  # whether to filter low Bayesian evidence solutions
-    param['plot_models'] = False  # whether to plot spectrum, surface, and atmospheric chemistry graphs
     param['plot_contribution'] = False  # whether to plot the spectral contribution of the individual gases
     param['plot_posterior'] = False  # whether to plot the marginalized posterior distribution functions
     param['corner_selected_params'] = None  # list of parameter indices to plot in the corner plot
@@ -227,8 +228,14 @@ def setup_param_dict(param):
     else:
         param['rocky'] = True
 
+    if param['fit_Rp'] and param['Rp'] is not None and param['Rp_err'] is not None:
+        param['Rp_orig'] = param['Rp'] + 0.0
+
     if param['Mp'] is not None:
         param['Mp_orig'] = param['Mp'] + 0.0
+
+    if param['fit_phi'] and param['phi'] is not None and param['phi_err'] is not None:
+        param['phi_orig'] = param['phi'] + 0.0
 
     if param['gas_fill'] == 'N2':
         param['fit_N2'] = False
@@ -612,12 +619,28 @@ def cloud_pos(param, condensed_gas='H2O'):
                 psat = waterpressure(param['T'])
             elif short_name == 'amm':
                 psat = ammoniapressure(param['T'])
+            base_profile = np.asarray(param['vmr_' + condensed_gas], dtype=float)
+            if base_profile.ndim == 0:
+                base_profile = np.full(len(P), float(base_profile))
+            elif base_profile.size == len(param['P_standard']):
+                base_profile = base_profile[:len(P)].astype(float, copy=True)
+            elif base_profile.size != len(P):
+                raise ValueError(f"vmr_{condensed_gas} size does not match the active pressure grid.")
             mix = np.empty((len(P)))
-            # assuming water vmr is limited by saturation pressure:
-            mix[-1] = np.nanmin([psat[-1]/P[-1], param['vmr_' + condensed_gas]])
+            # The condensable abundance may already be a pressure profile if
+            # another cloud species was processed earlier.
+            mix[-1] = np.nanmin([psat[-1] / P[-1], base_profile[-1]])
             for i in range(len(P)-2, -1, -1):
-                mix[i] = np.nanmin([psat[i]/P[i], mix[i+1]])
+                mix[i] = np.nanmin([psat[i] / P[i], base_profile[i], mix[i+1]])
         else:
+            base_profile = np.asarray(param['vmr_' + condensed_gas], dtype=float)
+            if base_profile.ndim == 0:
+                base_profile = np.full(len(param['P']), float(base_profile))
+            elif base_profile.size == len(param['P_standard']):
+                base_profile = base_profile[:len(param['P'])].astype(float, copy=True)
+            elif base_profile.size != len(param['P']):
+                raise ValueError(f"vmr_{condensed_gas} size does not match the active pressure grid.")
+
             # if param['Pw_top'] > param['P'][-1]:
             if param['P' + initial_letter + '_top'] > param['P'][-1] or (param['P' + initial_letter + '_top'] + param['cld' + initial_letter + '_depth']) > param['P'][-1]:
                 no_cloud = True
@@ -625,31 +648,31 @@ def cloud_pos(param, condensed_gas='H2O'):
                 no_cloud = False
 
             if not no_cloud:
-                pos_cld = int(find_nearest(param['P_standard'], param['P' + initial_letter + '_top']))
+                pos_cld = int(find_nearest(param['P'], param['P' + initial_letter + '_top']))
 
-                if (param['cld' + initial_letter + '_depth'] + param['P_standard'][pos_cld]) > param['P_standard'][-1]:
-                    param['cld' + initial_letter + '_depth'] = param['P_standard'][-1] - param['P_standard'][pos_cld]
+                if (param['cld' + initial_letter + '_depth'] + param['P'][pos_cld]) > param['P'][-1]:
+                    param['cld' + initial_letter + '_depth'] = param['P'][-1] - param['P'][pos_cld]
 
-                pbot = int(find_nearest(param['P_standard'], (param['cld' + initial_letter + '_depth'] + param['P_standard'][pos_cld])))
+                pbot = int(find_nearest(param['P'], (param['cld' + initial_letter + '_depth'] + param['P'][pos_cld])))
 
                 depth_layers = pbot - pos_cld
                 if depth_layers == 0:
-                    return np.ones((len(param['P']))) * param['vmr_' + condensed_gas]
+                    return base_profile
                 else:
                     pass
 
-                mix = np.ones((len(param['P_standard']))) * (param['CR_' + condensed_gas] * param['vmr_' + condensed_gas])
-                d = (np.log10(param['vmr_' + condensed_gas]) - np.log10(param['CR_' + condensed_gas] * param['vmr_' + condensed_gas])) / depth_layers
-                for i in range(0, len(mix)):
+                mix_scale = np.ones(len(param['P'])) * param['CR_' + condensed_gas]
+                d = -np.log10(param['CR_' + condensed_gas]) / depth_layers
+                for i in range(0, len(mix_scale)):
                     if i <= pos_cld:
                         pass
                     elif pos_cld < i <= pos_cld + depth_layers:
-                        mix[i] = 10. ** (np.log10(mix[i - 1]) + d)
+                        mix_scale[i] = 10. ** (np.log10(mix_scale[i - 1]) + d)
                     elif i > pos_cld + depth_layers:
-                        mix[i] = mix[i - 1]
-                mix = mix[:len(param['P'])]
+                        mix_scale[i] = mix_scale[i - 1]
+                mix = base_profile * mix_scale
             else:
-                mix = np.ones((len(param['P']))) * param['vmr_' + condensed_gas]
+                mix = base_profile
     else:
         mix = np.ones((len(param['P']))) * param['vmr_' + condensed_gas]
 
@@ -657,55 +680,76 @@ def cloud_pos(param, condensed_gas='H2O'):
 
 
 def adjust_VMR(param, all_gases=True, condensed_gas='H2O'):
-    if all_gases:
-        if param['gas_fill'] is None:
-            n_gases = len(param['fit_molecules']) - 1
-            mol_to_determine = param['fit_molecules'][1:]
+    def _profile_for(mol, size):
+        values = np.asarray(param['vmr_' + mol], dtype=float)
+        if values.ndim == 0:
+            return np.full(size, float(values))
+        return values.astype(float, copy=True)
+
+    if condensed_gas is None:
+        if param['gas_fill'] is not None:
+            gas_to_consider = param['fit_molecules'] + [param['gas_fill']]
         else:
-            n_gases = len(param['fit_molecules'])
-            mol_to_determine = param['fit_molecules'][1:]
-            mol_to_determine.append(param['gas_fill'])
+            gas_to_consider = param['fit_molecules']
 
-        ratios = []
-        for mol in mol_to_determine[1:]:
-            ratios.append(param['vmr_' + mol_to_determine[0]] / param['vmr_' + mol])
-
-        matrx = np.ones((n_gases, n_gases))
-        for i in range(0, len(matrx[:-1, 0])):
-            for j in range(1, len(matrx[0, :])):
-                if i + 1 == j:
-                    matrx[i, j] = -ratios[i]
-                else:
-                    matrx[i, j] = 0.0
-
-        res = np.zeros(n_gases)
-        for mol in mol_to_determine:
-            param['vmr_' + mol] = np.zeros(len(param['vmr_' + condensed_gas]))
-
-        for i in range(0, len(param['vmr_' + condensed_gas])):
-            res[-1] = 1.0 - param['vmr_' + condensed_gas][i]
-            v_m_r = np.linalg.solve(matrx, res)
-            for m, mol in enumerate(mol_to_determine):
-                param['vmr_' + mol][i] = v_m_r[m]
+        for mol in gas_to_consider:
+            param['vmr_' + mol] = np.ones((len(param['P']))) * param['vmr_' + mol]
 
     else:
-        if param['gas_fill'] is None:
-            if 'H2' in param['fit_molecules']:
-                considered_fill = 'H2'
-            elif 'N2' in param['fit_molecules'] and 'H2' not in param['fit_molecules']:
-                considered_fill = 'N2'
-        else:
-            considered_fill = param['gas_fill']
-
-        v_m_r = np.zeros(len(param['vmr_' + condensed_gas]))
-        for mol in param['fit_molecules']:
-            if mol == condensed_gas or mol == considered_fill:
-                pass
+        if all_gases:
+            if param['gas_fill'] is None:
+                mol_to_determine = [mol for mol in param['fit_molecules'] if mol != condensed_gas]
             else:
-                param['vmr_' + mol] = np.ones(len(param['vmr_' + condensed_gas])) * param['vmr_' + mol]
-                v_m_r += param['vmr_' + mol]
+                mol_to_determine = [mol for mol in param['fit_molecules'] if mol != condensed_gas]
+                mol_to_determine.append(param['gas_fill'])
 
-        param['vmr_' + considered_fill] = np.ones(len(param['vmr_' + condensed_gas])) - v_m_r - param['vmr_' + condensed_gas]
+            n_gases = len(mol_to_determine)
+            if n_gases == 0:
+                return param
+
+            condensed_profile = np.atleast_1d(np.asarray(param['vmr_' + condensed_gas], dtype=float))
+            source_profiles = {mol: _profile_for(mol, condensed_profile.size) for mol in mol_to_determine}
+            for mol, values in source_profiles.items():
+                if values.size != condensed_profile.size:
+                    raise ValueError(f"vmr_{mol} size does not match vmr_{condensed_gas}.")
+                param['vmr_' + mol] = np.zeros(condensed_profile.size)
+
+            for i in range(condensed_profile.size):
+                current = np.array([source_profiles[mol][i] for mol in mol_to_determine], dtype=float)
+                v_m_r = np.zeros(n_gases)
+                remaining_vmr = 1.0 - condensed_profile[i]
+
+                positive = np.isfinite(current) & (current > 0.0)
+                if np.any(positive):
+                    v_m_r[positive] = remaining_vmr * current[positive] / np.sum(current[positive])
+                else:
+                    if param['gas_fill'] in mol_to_determine:
+                        fill_idx = mol_to_determine.index(param['gas_fill'])
+                    else:
+                        fill_idx = 0
+                    v_m_r[fill_idx] = remaining_vmr
+
+                for m, mol in enumerate(mol_to_determine):
+                    param['vmr_' + mol][i] = v_m_r[m]
+
+        else:
+            if param['gas_fill'] is None:
+                if 'H2' in param['fit_molecules']:
+                    considered_fill = 'H2'
+                elif 'N2' in param['fit_molecules'] and 'H2' not in param['fit_molecules']:
+                    considered_fill = 'N2'
+            else:
+                considered_fill = param['gas_fill']
+
+            v_m_r = np.zeros(len(param['vmr_' + condensed_gas]))
+            for mol in param['fit_molecules']:
+                if mol == condensed_gas or mol == considered_fill:
+                    pass
+                else:
+                    param['vmr_' + mol] = np.ones(len(param['vmr_' + condensed_gas])) * param['vmr_' + mol]
+                    v_m_r += param['vmr_' + mol]
+
+            param['vmr_' + considered_fill] = np.ones(len(param['vmr_' + condensed_gas])) - v_m_r - param['vmr_' + condensed_gas]
 
     if not param['rocky'] and (param['H2_He_ratio'] > 0):
         param['vmr_He'] = param['vmr_' + param['gas_fill']] * (1.0 - param['H2_He_ratio'])
@@ -830,7 +874,7 @@ def ranges(param):
         elif param['surface_albedo_parameters'] == int(3):
             for surf_alb in [1, 2]:
                 param['ag' + str(surf_alb) + '_range'] = [0.0, 1.0]  # Surface albedo
-            param['ag_x1_range'] = [0.4, 1.0]  # wavelength cut-off albedo
+            param['ag_x1_range'] = [0.4, 1.8]  # wavelength cut-off albedo
         elif param['surface_albedo_parameters'] == int(5):
             for surf_alb in [1, 2, 3]:
                 param['ag' + str(surf_alb) + '_range'] = [0.0, 1.0]  # Surface albedo
@@ -858,16 +902,24 @@ def ranges(param):
                 param['Mp_range'] = [0.000032, 0.06]                                     # Planet mass 0.01 to 19 Earth masses
                 param['Rp_range'] = [0.044607088905052314, 0.8921417781010462]          # Planet radius - 0.5 to 10 Earth radii
             elif (param['Rp_prior_type'] is None or param['Rp_prior_type'] == 'independent') and param['Mp_prior_type'] == 'gaussian':
-                param['Mp_range'] = [param['Mp_orig'] - (5.0 * param['Mp_err']), param['Mp_orig'] + (5.0 * param['Mp_err'])]
-                if param['Mp_orig'] - (5.0 * param['Mp_err']) < 0.000032:
-                    param['Mp_range'][0] = 0.000032
-                if param['Mp_orig'] + (5.0 * param['Mp_err']) > 0.06:
-                    param['Mp_range'][1] = 0.06
+                param['Mp_range'] = [max(0.000032, param['Mp_orig'] - (5.0 * param['Mp_err'])), min(0.06, param['Mp_orig'] + (5.0 * param['Mp_err']))]
                 param['Rp_range'] = [0.044607088905052314, 0.8921417781010462]  # Planet radius - 0.5 to 10 Earth radii
-            elif param['Rp_prior_type'] == 'R_M_prior' and param['Mp_prior_type'] != 'M_R_prior':
-                param['Rp_range'] = [0.05174422312986068, 0.19627119118223021]          # 0.58 to 2.2 Earth radii
-            elif param['Mp_prior_type'] == 'M_R_prior' and param['Rp_prior_type'] != 'R_M_prior':
-                param['Mp_range'] = [0.000032, 0.06292703731012286]                      # 0.01 to 20 Earth masses
+            elif param['Rp_prior_type'] == 'M_R_prior':
+                if param['Mp_prior_type'] is None or param['Mp_prior_type'] == 'independent':
+                    param['Mp_range'] = [0.000032, 0.06292703731012286]                   # 0.01 to 20 Earth masses
+                elif param['Mp_prior_type'] == 'gaussian':
+                    param['Mp_range'] = [max(0.000032, param['Mp_orig'] - (5.0 * param['Mp_err'])), min(0.06292703731012286, param['Mp_orig'] + (5.0 * param['Mp_err']))]
+                elif param['Mp_prior_type'] == 'M_R_prior':
+                    raise ValueError("Both Mp_prior_type and Rp_prior_type cannot be 'M_R_prior' when fitting both Mp and Rp.")
+            elif param['Mp_prior_type'] == 'M_R_prior':
+                if param['Rp_prior_type'] is None or param['Rp_prior_type'] == 'independent':
+                    param['Rp_range'] = [0.05174422312986068, 0.19627119118223021]          # 0.58 to 2.2 Earth radii
+                elif param['Rp_prior_type'] == 'gaussian':
+                    param['Rp_range'] = [max(0.05174422312986068, param['Rp_orig'] - (5.0 * param['Rp_err'])), min(0.19627119118223021, param['Rp_orig'] + (5.0 * param['Rp_err']))]
+                elif param['Rp_prior_type'] == 'M_R_prior':
+                    raise ValueError("Both Mp_prior_type and Rp_prior_type cannot be 'M_R_prior' when fitting both Mp and Rp.")
+        elif param['fit_Rp'] and param['Rp_prior_type'] == 'M_R_prior' and not param['fit_Mp'] and param['Mp'] is not None:
+            param['Rp_range'] = [param['M-R_Fe'](param['Mp']), param['M-R_H2O'](param['Mp'])]
         elif param['fit_Mp'] and not param['fit_Rp']:
             param['Mp_range'] = [0.000032, 0.06]                                         # Planet mass 0.01 to 19 Earth masses
         elif param['fit_Rp'] and not param['fit_Mp']:
@@ -899,7 +951,10 @@ def ranges(param):
         param['crnh3_range'] = [-7.0, 0.0]      # Condensation Ratio NH3
 
     if param['fit_phi']:
-        param['phi_range'] = [0.0, 180.0]       # Phase Angle
+        if param['phi_err'] is not None:
+            param['phi_range'] = [max(0.0, param['phi_orig'] - (5.0 * param['phi_err'])), min(180.0, param['phi_orig'] + (5.0 * param['phi_err']))]
+        else:
+            param['phi_range'] = [0.0, 180.0]       # Phase Angle
 
     return param
 
@@ -1137,7 +1192,7 @@ def take_star_spectrum(param, plot=False):
     try:
         param['Loggs'] += 0.0
     except (KeyError, TypeError):
-        param['Loggs'] = round(np.log(274.20011166 * param['Ms'] / (param['Rs'] ** 2.)), 1)
+        param['Loggs'] = round(np.log10(274.20011166 * param['Ms'] / (param['Rs'] ** 2.)), 1)
 
     logg = [int(i) for i in str(param['Loggs']) if i.isdigit()]
     if 0 <= logg[1] <= 2:
@@ -1239,61 +1294,60 @@ def pre_load_variables(param):
 
     if param['rocky']:
     # Mass-Radius diagram
-        if param['fit_Mp'] and param['fit_Rp']:
-            if param['Rp_prior_type'] == 'R_M_prior':
-                M_R_Fe = np.loadtxt(param['pkg_dir'] + 'forward_mod/Data/Fe_mass_radius_jup.dat')
-                M_R_H2O = np.loadtxt(param['pkg_dir'] + 'forward_mod/Data/H2O_mass_radius_jup.dat')
-                param['R-M_Fe'] = interp1d(M_R_Fe[:, 1], M_R_Fe[:, 0])
-                param['R-M_H2O'] = interp1d(M_R_H2O[:, 1], M_R_H2O[:, 0])
-            elif param['Mp_prior_type'] == 'M_R_prior':
-                M_R_Fe = np.loadtxt(param['pkg_dir'] + 'forward_mod/Data/Fe_mass_radius_jup.dat')
-                M_R_H2O = np.loadtxt(param['pkg_dir'] + 'forward_mod/Data/H2O_mass_radius_jup.dat')
+        if param['fit_Mp'] or param['fit_Rp']:
+            M_R_Fe = np.loadtxt(param['pkg_dir'] + 'forward_mod/Data/Fe_mass_radius_jup.dat')
+            M_R_H2O = np.loadtxt(param['pkg_dir'] + 'forward_mod/Data/H2O_mass_radius_jup.dat')
+            if param['Rp_prior_type'] == 'M_R_prior' and param['Mp_prior_type'] != 'M_R_prior':
                 param['M-R_Fe'] = interp1d(M_R_Fe[:, 0], M_R_Fe[:, 1])
                 param['M-R_H2O'] = interp1d(M_R_H2O[:, 0], M_R_H2O[:, 1])
+            elif param['Mp_prior_type'] == 'M_R_prior' and param['Rp_prior_type'] != 'M_R_prior':
+                param['M-R_Fe'] = interp1d(M_R_Fe[:, 1], M_R_Fe[:, 0])
+                param['M-R_H2O'] = interp1d(M_R_H2O[:, 1], M_R_H2O[:, 0])
             else:
                 pass
     #  Load Mie Calculation Results
     if param['fit_wtr_cld']:
+        fldr_cld_fl = 'forward_mod/cloud_files/'
         if param['wtr_cld_type'] == 'liquid':
-            data = np.loadtxt(param['pkg_dir'] + 'forward_mod/CrossPlnt/Cross_water_wavelength_250916.dat')
+            data = np.loadtxt(param['pkg_dir'] + fldr_cld_fl + 'Cross_water_wavelength_250916.dat')
             param['H2OL_r'] = data[:, 0]  # zero-order radius, in micron
             param['H2OL_c'] = data[:, 1:]  # cross-section per droplet, in cm2
-            data = np.loadtxt(param['pkg_dir'] + 'forward_mod/CrossPlnt/Albedo_water_wavelength_250916.dat')
+            data = np.loadtxt(param['pkg_dir'] + fldr_cld_fl + 'Albedo_water_wavelength_250916.dat')
             param['H2OL_a'] = data[:, 1:]
-            data = np.loadtxt(param['pkg_dir'] + 'forward_mod/CrossPlnt/Geo_water_wavelength_250916.dat')
+            data = np.loadtxt(param['pkg_dir'] + fldr_cld_fl + 'Geo_water_wavelength_250916.dat')
             param['H2OL_g'] = data[:, 1:]
         elif param['wtr_cld_type'] == 'ice':
-            data = np.loadtxt(param['pkg_dir'] + 'forward_mod/CrossPlnt/Cross_ice_wavelength_250916.dat')
+            data = np.loadtxt(param['pkg_dir'] + fldr_cld_fl + 'Cross_ice_wavelength_250916.dat')
             param['H2OL_r'] = data[:, 0]  # zero-order radius, in micron
             param['H2OL_c'] = data[:, 1:]  # cross-section per droplet, in cm2
-            data = np.loadtxt(param['pkg_dir'] + 'forward_mod/CrossPlnt/Albedo_ice_wavelength_250916.dat')
+            data = np.loadtxt(param['pkg_dir'] + fldr_cld_fl + 'Albedo_ice_wavelength_250916.dat')
             param['H2OL_a'] = data[:, 1:]
-            data = np.loadtxt(param['pkg_dir'] + 'forward_mod/CrossPlnt/Geo_ice_wavelength_250916.dat')
+            data = np.loadtxt(param['pkg_dir'] + fldr_cld_fl + 'Geo_ice_wavelength_250916.dat')
             param['H2OL_g'] = data[:, 1:]
         elif param['wtr_cld_type'] == 'mixed' and param['PT_profile_type'] == 'parametric':
-            data = np.loadtxt(param['pkg_dir'] + 'forward_mod/CrossPlnt/Cross_water_wavelength_250916.dat')
+            data = np.loadtxt(param['pkg_dir'] + fldr_cld_fl + 'Cross_water_wavelength_250916.dat')
             param['H2OL_r'] = data[:, 0]  # zero-order radius, in micron
             param['H2OL_c_liquid'] = data[:, 1:]  # cross-section per droplet, in cm2
-            data = np.loadtxt(param['pkg_dir'] + 'forward_mod/CrossPlnt/Cross_ice_wavelength_250916.dat')
+            data = np.loadtxt(param['pkg_dir'] + fldr_cld_fl + 'Cross_ice_wavelength_250916.dat')
             param['H2OL_c_ice'] = data[:, 1:]  # cross-section per droplet, in cm2
 
-            data = np.loadtxt(param['pkg_dir'] + 'forward_mod/CrossPlnt/Albedo_water_wavelength_250916.dat')
+            data = np.loadtxt(param['pkg_dir'] + fldr_cld_fl + 'Albedo_water_wavelength_250916.dat')
             param['H2OL_a_liquid'] = data[:, 1:]
-            data = np.loadtxt(param['pkg_dir'] + 'forward_mod/CrossPlnt/Albedo_ice_wavelength_250916.dat')
+            data = np.loadtxt(param['pkg_dir'] + fldr_cld_fl + 'Albedo_ice_wavelength_250916.dat')
             param['H2OL_a_ice'] = data[:, 1:]
 
-            data = np.loadtxt(param['pkg_dir'] + 'forward_mod/CrossPlnt/Geo_water_wavelength_250916.dat')
+            data = np.loadtxt(param['pkg_dir'] + fldr_cld_fl + 'Geo_water_wavelength_250916.dat')
             param['H2OL_g_liquid'] = data[:, 1:]
-            data = np.loadtxt(param['pkg_dir'] + 'forward_mod/CrossPlnt/Geo_ice_wavelength_250916.dat')
+            data = np.loadtxt(param['pkg_dir'] + fldr_cld_fl + 'Geo_ice_wavelength_250916.dat')
             param['H2OL_g_ice'] = data[:, 1:]
     
     if param['fit_amm_cld']:
-        data = np.loadtxt(param['pkg_dir'] + 'forward_mod/CrossPlnt/Cross_ammonia_wavelength_250916.dat')
+        data = np.loadtxt(param['pkg_dir'] + fldr_cld_fl + 'Cross_ammonia_wavelength_250916.dat')
         param['NH3_r'] = data[:, 0]  # zero-order radius, in micron
         param['NH3_c'] = data[:, 1:]  # cross-section per droplet, in cm2
-        data = np.loadtxt(param['pkg_dir'] + 'forward_mod/CrossPlnt/Albedo_ammonia_wavelength_250916.dat')
+        data = np.loadtxt(param['pkg_dir'] + fldr_cld_fl + 'Albedo_ammonia_wavelength_250916.dat')
         param['NH3_a'] = data[:, 1:]
-        data = np.loadtxt(param['pkg_dir'] + 'forward_mod/CrossPlnt/Geo_ammonia_wavelength_250916.dat')
+        data = np.loadtxt(param['pkg_dir'] + fldr_cld_fl + 'Geo_ammonia_wavelength_250916.dat')
         param['NH3_g'] = data[:, 1:]
 
     return param
@@ -1390,7 +1444,7 @@ def load_cia(param):
             table['wavelength'] = target_wl_nm.copy()
             table['values'] = np.ascontiguousarray(resampled)
 
-    cia_dir = param['pkg_dir'] + 'forward_mod/Cross3/N2_FullT_LowRes/'
+    cia_dir = param['pkg_dir'] + 'forward_mod/opac/cia/'
     cia_files = {
         'H2H2': 'H2-H2_CIA.dat',
         'H2He': 'H2-He_CIA.dat',
@@ -1399,6 +1453,7 @@ def load_cia(param):
         'N2N2': 'N2-N2_CIA.dat',
         'CO2CO2': 'CO2-CO2_CIA.dat',
         'O2O2': 'O2-O2_CIA.dat',
+        'O2N2': 'O2-N2_CIA.dat',
     }
 
     cia_tables = {}
@@ -1463,7 +1518,7 @@ def load_cia(param):
         param['cia']['temperature_grid'] = np.array([target_T], dtype=cia_temp.dtype)
 
     if 'opacw' in param:
-        target_wl_nm = np.asarray(param['opacw'][0], dtype=float) * 1e6
+        target_wl_nm = np.asarray(param['opacw'][0], dtype=float) * 1e9
         _resample_cia_to_opacity_grid(param['cia']['tables'], target_wl_nm)
 
     return param
@@ -1561,7 +1616,12 @@ def load_cross(param, for_plotting=False):
         else:
             opac_dir = param['pkg_dir'] + 'forward_mod/opac/' + param['opac_data'] + '/'
 
-        for idx, mol in enumerate(param['fit_molecules'] + [param['gas_fill']]):
+        molecules = param['fit_molecules']
+        gas_fill = param['gas_fill']
+        if gas_fill is not None:
+            molecules = molecules + [gas_fill]
+
+        for idx, mol in enumerate(molecules):
             if idx == 0:
                 param['opact'], param['opacp'], param['opacw'], param['opac' + mol.lower()] = _readcross(opac_dir + 'opac' + mol + '.dat')
             else:
@@ -1590,10 +1650,14 @@ def load_cross(param, for_plotting=False):
             strtT = 0
             endT = len(param['opact'][0])
 
-        endP = find_nearest(param['opacp'][0], np.log10(param['P_standard'][-1]))
+        endP = find_nearest(param['opacp'][0], param['P_standard'][-1])
         param['opacp'] = (param['opacp'][0][:endP+1]).reshape(1,-1)
         
-        for mol in param['fit_molecules'] + [param['gas_fill']]:
+        molecules = param['fit_molecules']
+        gas_fill = param['gas_fill']
+        if gas_fill is not None:
+            molecules = molecules + [gas_fill]
+        for mol in molecules:
             param['opac' + mol.lower()] = param['opac' + mol.lower()][:endP + 1, strtT:endT + 1, strt:end]
 
     return param
@@ -1742,6 +1806,220 @@ def write_stats_summary_files(param, prefix, multinest_stats, n_fitted_parameter
 
         # MultiNest chain column 2 is -2*ln(L); best fit minimizes this column.
         return float(-0.5 * np.min(finite))
+
+    def _bpics_from_chain_file(file_path, n_params):
+        """Calculates the simplified Bayesian Predictive Information Criterion
+        (BPICs) described in Ando (2011) for the given sample log-likelihoods
+        and number of parameters. Models with a lower BPICS are preferred.
+
+        Citation: Ando (2011), DOI 10.1080/01966324.2011.10737798
+
+        Args:
+            logl_samples: The natural log of the likelihood of posterior draws
+                from an MCMC run of the model.
+            n_params: The number of parameters for the model.
+            log_weights: The weights of the samples given, mainly for nested
+                sampling posteriors. For equally weighted samples, leave as
+                None.
+
+        Returns:
+            The computed BPICS as a float.
+        """
+        # Ando (2011) , DOI 10.1080/01966324.2011.10737798
+        if not os.path.isfile(file_path):
+            return None
+
+        try:
+            data = np.loadtxt(file_path)
+        except (OSError, ValueError):
+            return None
+
+        if data.ndim == 1:
+            if len(data) < 2:
+                return None
+            try:
+                logl_samples = np.array([-0.5 * float(data[1])], dtype=float)
+            except (TypeError, ValueError):
+                return None
+            weights = None
+            if len(data) >= 1:
+                try:
+                    sample_weight = float(data[0])
+                except (TypeError, ValueError):
+                    sample_weight = np.nan
+                if np.isfinite(sample_weight) and sample_weight > 0.0:
+                    weights = np.array([sample_weight], dtype=float)
+        else:
+            if data.shape[1] < 2:
+                return None
+            try:
+                logl_samples = -0.5 * np.asarray(data[:, 1], dtype=float)
+            except (TypeError, ValueError):
+                return None
+            try:
+                weights = np.asarray(data[:, 0], dtype=float)
+            except (TypeError, ValueError):
+                weights = None
+
+        finite = np.isfinite(logl_samples)
+        if weights is not None:
+            finite &= np.isfinite(weights) & (weights > 0.0)
+
+        logl_samples = logl_samples[finite]
+        if logl_samples.size == 0:
+            return None
+
+        if weights is not None:
+            weights = weights[finite]
+            weight_sum = np.sum(weights)
+            if not np.isfinite(weight_sum) or weight_sum <= 0.0:
+                weights = None
+            else:
+                weights = weights / weight_sum
+
+        mean_logl = np.average(logl_samples, weights=weights)
+        if not np.isfinite(mean_logl):
+            return None
+
+        return float((-2.0 * mean_logl) + (2.0 * float(n_params)))
+
+    def _dic_from_chain_file(file_path):
+        """Calculates the Deviance Information Criterion (DIC) for the given
+        sample log-likelihoods, using the Ando (2011) variant and the Gelman
+        (2014) number of effective parameters formula. Models with lower DIC
+        are preferred.
+
+        Args:
+            logl_samples: The natural log of the likelihood of posterior draws
+                from the MCMC run.
+
+        Returns:
+            The computed DIC as a float.
+        """
+        # Ando (2011); Gelman (2014)
+        if not os.path.isfile(file_path):
+            return None
+
+        try:
+            data = np.loadtxt(file_path)
+        except (OSError, ValueError):
+            return None
+
+        if data.ndim == 1:
+            if len(data) < 2:
+                return None
+            try:
+                logl_samples = np.array([-0.5 * float(data[1])], dtype=float)
+            except (TypeError, ValueError):
+                return None
+            weights = None
+            if len(data) >= 1:
+                try:
+                    sample_weight = float(data[0])
+                except (TypeError, ValueError):
+                    sample_weight = np.nan
+                if np.isfinite(sample_weight) and sample_weight > 0.0:
+                    weights = np.array([sample_weight], dtype=float)
+        else:
+            if data.shape[1] < 2:
+                return None
+            try:
+                logl_samples = -0.5 * np.asarray(data[:, 1], dtype=float)
+            except (TypeError, ValueError):
+                return None
+            try:
+                weights = np.asarray(data[:, 0], dtype=float)
+            except (TypeError, ValueError):
+                weights = None
+
+        finite = np.isfinite(logl_samples)
+        if weights is not None:
+            finite &= np.isfinite(weights) & (weights > 0.0)
+
+        logl_samples = logl_samples[finite]
+        if logl_samples.size == 0:
+            return None
+
+        if weights is not None:
+            weights = weights[finite]
+            weight_sum = np.sum(weights)
+            if not np.isfinite(weight_sum) or weight_sum <= 0.0:
+                weights = None
+            else:
+                weights = weights / weight_sum
+
+        mean_logl = np.average(logl_samples, weights=weights)
+        if not np.isfinite(mean_logl):
+            return None
+
+        if weights is None:
+            p_d = 2.0 * np.var(logl_samples)
+        else:
+            variance = np.average((logl_samples - mean_logl) ** 2, weights=weights)
+            p_d = 2.0 * variance
+
+        dic = (-2.0 * mean_logl) + (3.0 * p_d)
+        if not np.isfinite(dic):
+            return None
+
+        return float(dic)
+
+    def _waic_from_pointwise_logl_file(file_path, n_expected_points=None):
+        """Compute the WAIC from a saved pointwise log-likelihood array.
+
+        Pointwise log-likelihood values are not usually recorded by MCMC codes,
+        so they must be preserved explicitly. In Dynesty, this can be done by
+        setting ``blob=True`` in the sampler initialization and modifying the
+        likelihood function to return both the summed and pointwise values. The
+        pointwise log-likelihood can then be retrieved from the results object's
+        ``blob`` attribute. EMCEE has a similar mechanism.
+
+        Citation: Watanabe (2010) [no DOI]
+
+        Args:
+            file_path: Path to the saved pointwise log-likelihood array.
+            n_expected_points: Optional expected number of data points used to
+                infer whether the loaded array should be transposed.
+
+        Returns:
+            The WAIC statistic for the model, or ``None`` if it cannot be
+            computed from the file contents.
+        """
+        # Watanabe (2010)
+        if not os.path.isfile(file_path):
+            return None
+
+        try:
+            pointwise_logl = np.loadtxt(file_path)
+        except (OSError, ValueError):
+            return None
+
+        pointwise_logl = np.asarray(pointwise_logl, dtype=float)
+        if pointwise_logl.ndim != 2:
+            return None
+        if pointwise_logl.shape[0] == 0 or pointwise_logl.shape[1] == 0:
+            return None
+
+        # ExoReL stores likelihood samples as (n_samples, n_points).
+        if n_expected_points is not None:
+            if pointwise_logl.shape[1] == int(n_expected_points):
+                pass
+            elif pointwise_logl.shape[0] == int(n_expected_points):
+                pointwise_logl = pointwise_logl.T
+
+        finite_cols = np.all(np.isfinite(pointwise_logl), axis=0)
+        pointwise_logl = pointwise_logl[:, finite_cols]
+        if pointwise_logl.shape[1] == 0:
+            return None
+
+        n_samples = pointwise_logl.shape[0]
+        fit_term = sp.special.logsumexp(pointwise_logl, axis=0, b=(1.0 / float(n_samples)))
+        penalty_term = np.var(pointwise_logl, axis=0)
+        waic = -2.0 * (np.sum(fit_term) - np.sum(penalty_term))
+        if not np.isfinite(waic):
+            return None
+
+        return float(waic)
     
     def _lnl_hat_per_mode_from_post_separate(post_separate_path):
         if not os.path.isfile(post_separate_path):
@@ -1880,6 +2158,30 @@ def write_stats_summary_files(param, prefix, multinest_stats, n_fitted_parameter
         if lnl_hat is not None:
             lnl_hat = float(lnl_hat)
 
+        waic = _waic_from_pointwise_logl_file(
+            param['out_dir'] + f'loglike_per_datapoint_sol{mode_idx}.dat',
+            n_expected_points=n_data_points,
+        )
+        if waic is None and param.get('filter_multi_solutions', False):
+            waic = _waic_from_pointwise_logl_file(
+                param['out_dir'] + f'loglike_per_datapoint_sol{mode_pos}.dat',
+                n_expected_points=n_data_points,
+            )
+        if waic is None:
+            waic = np.nan
+
+        bpics = _bpics_from_chain_file(prefix + f'solution{mode_idx}.txt', n_fit)
+        if bpics is None and len(modes) == 1:
+            bpics = _bpics_from_chain_file(prefix + '.txt', n_fit)
+        if bpics is None:
+            bpics = np.nan
+
+        dic = _dic_from_chain_file(prefix + f'solution{mode_idx}.txt')
+        if dic is None and len(modes) == 1:
+            dic = _dic_from_chain_file(prefix + '.txt')
+        if dic is None:
+            dic = np.nan
+
         chi_square = _chi_square_from_best_fit_file(param, param['out_dir'] + f'Best_fit_sol{mode_idx}.dat')
         if chi_square is None and param.get('filter_multi_solutions', False):
             # In filtered runs, best-fit files can be indexed by filtered order.
@@ -1921,7 +2223,10 @@ def write_stats_summary_files(param, prefix, multinest_stats, n_fitted_parameter
         txt_lines.append(f'ln Z               = {_summary_float_str(ln_z)} +- {_summary_float_str(ln_z_err)}')
         txt_lines.append(f'AIC                = {_summary_float_str(aic)}')
         txt_lines.append(f'AICc               = {_summary_float_str(aicc)}')
+        txt_lines.append(f'WAIC               = {_summary_float_str(waic)}')
         txt_lines.append(f'BIC                = {_summary_float_str(bic)}')
+        txt_lines.append(f'DIC                = {_summary_float_str(dic)}')
+        txt_lines.append(f'BPICs              = {_summary_float_str(bpics)}')
         txt_lines.append('')
         txt_lines.append('##################################################')
         txt_lines.append('')
@@ -1937,7 +2242,10 @@ def write_stats_summary_files(param, prefix, multinest_stats, n_fitted_parameter
             'ln_Z_error': _safe_json_number(ln_z_err),
             'AIC': _safe_json_number(aic),
             'AICc': _safe_json_number(aicc),
+            'WAIC': _safe_json_number(waic),
             'BIC': _safe_json_number(bic),
+            'DIC': _safe_json_number(dic),
+            'BPICs': _safe_json_number(bpics),
             'max_log_likelihood': _safe_json_number(lnl_hat),
         }
 
@@ -2160,72 +2468,62 @@ def add_noise(param, data, noise_model=0):
     return spectrum
 
 
-def Mp_prior(param, cube, rp_value=None):
+def Mp_Rp_prior(param, parameter, cube, rp_value=None, mp_value=None):
     """
-    Prior function for planetary mass
+    Prior function for planetary mass and radius
 
     Parameters
     ----------
     param : dict
         dictionary of settings.
     cube : float
-        Mass value to be converted
+        Unit-cube value to be converted.
+    parameter : str
+        Parameter to evaluate. Choose between ``'Mp'`` and ``'Rp'``.
     rp_value : float, optional
-        Radius value to be used in the Radius-Mass diagram
-
-    Returns
-    -------
-    Mp_value : float
-        mass value to be evaluated according to the appropriate mass prior.
-    """
-
-    if rp_value is None:
-        if param['Mp_err'] is None:
-            Mp_value = (cube * (param['Mp_range'][1] - param['Mp_range'][0])) + param['Mp_range'][0]  # ignorant prior
-        elif param['Mp_err'] is not None and param['Mp_prior_type'] == 'gaussian':
-            Mp_range = np.linspace(param['Mp_range'][0], param['Mp_range'][1], num=10000, endpoint=True)
-            Mp_cdf = sp.stats.norm.cdf(Mp_range, param['Mp_orig'], param['Mp_err'])
-            Mp_cdf = np.array([0.0] + list(Mp_cdf) + [1.0])
-            Mp_range = np.array([Mp_range[0]] + list(Mp_range) + [Mp_range[-1]])
-            Mp_pri = interp1d(Mp_cdf, Mp_range)
-            Mp_value = Mp_pri(cube)
-    else:
-        Mp_value = (cube * (param['R-M_Fe'](rp_value) - param['R-M_H2O'](rp_value))) + param['R-M_H2O'](rp_value)
-
-    return Mp_value
-
-
-def Rp_prior(param, cube, mp_value=None):
-    """
-    Prior function for radius
-
-    Parameters
-    ----------
-    param : dict
-        dictionary of settings.
-    cube : array
-        values used to select Rp.
+        Radius value to be used in the Mass-Radius diagram.
     mp_value : float, optional
-        Mass value to be used in the Mass-Radius diagram
+        Mass value to be used in the Mass-Radius diagram.
+
 
     Returns
     -------
-    cube : array
-        values of Rp.
+    float
+        Mass or radius value evaluated according to the requested prior.
     """
 
-    if mp_value is None:
-        if param['Rp_err'] is None:
-            Rp_value = (cube * (param['Rp_range'][1] - param['Rp_range'][0])) + param['Rp_range'][0]  # ignorant prior
-        elif param['Rp_err'] is not None:
-            Rp_range = np.linspace(param['Rp_range'][0], param['Rp_range'][1], num=1000)
-            Rp_cdf = sp.stats.norm.cdf(Rp_range, param['Rp'], param['Rp_err'])
-            Rp_pri = interp1d(Rp_cdf, Rp_range)
-            Rp_value = Rp_pri(cube)
-    else:
-        Rp_value = (cube * (param['M-R_H2O'](mp_value) - param['M-R_Fe'](mp_value))) + param['M-R_Fe'](mp_value)
+    if parameter == 'Mp':
+        if rp_value is None:
+            if param['Mp_err'] is None:
+                return uniform_prior(param, 'Mp', cube)
+            if param['Mp_prior_type'] == 'gaussian':
+                return gaussian_prior(param, 'Mp', cube)
+        else:
+            return (cube * (param['M-R_Fe'](rp_value) - param['M-R_H2O'](rp_value))) + param['M-R_H2O'](rp_value)
 
-    return Rp_value
+    if parameter == 'Rp':
+        if mp_value is None:
+            if param['Rp_err'] is None:
+                return uniform_prior(param, 'Rp', cube)
+            if param['Rp_prior_type'] == 'gaussian':
+                return gaussian_prior(param, 'Rp', cube)
+        else:
+            return (cube * (param['M-R_Fe'](mp_value) - param['M-R_H2O'](mp_value))) + param['M-R_H2O'](mp_value)
+
+    raise ValueError("parameter must be either 'Mp' or 'Rp'")
+
+
+def uniform_prior(param, parameter, cube):
+    return (cube * (param[parameter + '_range'][1] - param[parameter + '_range'][0])) + param[parameter + '_range'][0]
+
+
+def gaussian_prior(param, parameter, cube):
+    range_array = np.linspace(param[parameter + '_range'][0], param[parameter + '_range'][1], num=10000, endpoint=True)
+    cdf = sp.stats.norm.cdf(range_array, param[parameter + '_orig'], param[parameter + '_err'])
+    cdf = np.array([0.0] + list(cdf) + [1.0])
+    range_array = np.array([range_array[0]] + list(range_array) + [range_array[-1]])
+    pri = interp1d(cdf, range_array)
+    return pri(cube)
 
 
 def clean_c_files(directory):

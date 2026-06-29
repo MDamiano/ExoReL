@@ -47,6 +47,18 @@ class CREATE_SPECTRUM:
         self.param = par_and_calc(self.param)
         self.param = load_input_spectrum(self.param)
 
+        self.param['fit_molecules'] = []
+        sumb = 0.0
+        for mol in self.param['supported_molecules']:
+            try:
+                if self.param['vmr_' + mol] != 0.0:
+                    self.param['fit_molecules'].append(mol)
+                    sumb += self.param['vmr_' + mol]
+            except KeyError:
+                pass
+        if self.param['gas_fill'] is not None:
+            self.param['vmr_' + self.param['gas_fill']] = 1.0 - sumb
+
         if not self.param['albedo_calc'] and not self.param['fp_over_fs']:
             self.param = take_star_spectrum(self.param)
         self.param = pre_load_variables(self.param)
@@ -82,20 +94,6 @@ class CREATE_SPECTRUM:
             pass
         else:
             raise RuntimeError("Please define two among planetary radius, mass, or gravity. I cannot complete the calculation otherwise.")
-
-        self.param['fit_molecules'] = []
-        sumb = 0.0
-        for mol in self.param['supported_molecules']:
-            try:
-                if self.param['vmr_' + mol] != 0.0:
-                    self.param['fit_molecules'].append(mol)
-                    sumb += self.param['vmr_' + mol]
-            except KeyError:
-                pass
-        if self.param['gas_fill'] is not None:
-            self.param['vmr_' + self.param['gas_fill']] = 1.0 - sumb
-        else:
-            pass
 
         if self.param['verbose']:
             if self.param['fit_wtr_cld'] and self.param['PT_profile_type'] == 'isothermal':
@@ -164,11 +162,15 @@ class CREATE_SPECTRUM:
 
         wl, model = forward(self.param, retrieval_mode=self.param['ret_mode'], albedo_calc=self.param['albedo_calc'], fp_over_fs=self.param['fp_over_fs'], canc_metadata=self.canc_metadata)
 
-        if self.param['cld_frac'] != 1.0 and self.param['fit_wtr_cld']:
+        if self.param['cld_frac'] != 1.0 and (self.param['fit_wtr_cld'] or self.param['fit_amm_cld']):
+            fit_wtr_cld = self.param['fit_wtr_cld']
+            fit_amm_cld = self.param['fit_amm_cld']
             self.param['fit_wtr_cld'] = False
+            self.param['fit_amm_cld'] = False
             self.param['ret_mode'] = True
             model_no_cld = forward(self.param, retrieval_mode=self.param['ret_mode'], albedo_calc=self.param['albedo_calc'], fp_over_fs=self.param['fp_over_fs'], canc_metadata=self.canc_metadata)
-            self.param['fit_wtr_cld'] = True
+            self.param['fit_wtr_cld'] = fit_wtr_cld
+            self.param['fit_amm_cld'] = fit_amm_cld
             self.param['ret_mode'] = False
             model = (self.param['cld_frac'] * model) + ((1.0 - self.param['cld_frac']) * model_no_cld)
 

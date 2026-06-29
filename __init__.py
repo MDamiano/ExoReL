@@ -1,5 +1,5 @@
-__version__ = '2.7.3'
-__fmod_version__ = '2.7'
+__version__ = '3.0.1'
+__fmod_version__ = '3.0'
 
 import os
 import shutil
@@ -35,7 +35,7 @@ def _ensure_required_data():
         return
 
     # Attempt to download the full folder from Google Drive via gdown
-    drive_forward_mod = "1QdFk_8BPjgGA8V8ZtjHUkFInt6qCa-mb"
+    drive_forward_mod = "16eKd2Dlefi4Hclzkp5k5A2fos5ou0VY8"
     drive_PHO_STELLAR_MODEL = "1ypxxofMwHYeHEx1eFKVWWWVEaaoNmdho"
     try:
         import gdown  # type: ignore
@@ -61,21 +61,38 @@ def _ensure_required_data():
         # use_cookies=False avoids interactive confirmation for public files.
         for i in missing:
             if i == "forward_mod":
-                gdown.download(id=drive_forward_mod, output=pkg_dir)
-                with zipfile.ZipFile(pkg_dir + i + ".zip", 'r') as zip_ref:
+                downloaded_zip = gdown.download(id=drive_forward_mod, output=pkg_dir, use_cookies=False)
+                if not downloaded_zip:
+                    raise RuntimeError("Download failed for forward_mod archive.")
+                with zipfile.ZipFile(downloaded_zip, 'r') as zip_ref:
                     zip_ref.extractall(pkg_dir)
-                os.remove(pkg_dir + "forward_mod.zip")
+                with os.scandir(pkg_dir) as entries:
+                    for entry in entries:
+                        if entry.is_file() and entry.name.startswith("forward_mod") and entry.name.endswith(".zip"):
+                            os.remove(entry.path)
             elif i == "PHO_STELLAR_MODEL":
-                gdown.download(id=drive_PHO_STELLAR_MODEL, output=pkg_dir)
-                with zipfile.ZipFile(pkg_dir + i + ".zip", 'r') as zip_ref:
+                downloaded_zip = gdown.download(id=drive_PHO_STELLAR_MODEL, output=pkg_dir, use_cookies=False)
+                if not downloaded_zip:
+                    raise RuntimeError("Download failed for PHO_STELLAR_MODEL archive.")
+                with zipfile.ZipFile(downloaded_zip, 'r') as zip_ref:
                     zip_ref.extractall(pkg_dir)
-                os.remove(pkg_dir + "PHO_STELLAR_MODEL.zip")
+                if os.path.isfile(downloaded_zip):
+                    os.remove(downloaded_zip)
+        
+        if not os.path.isdir(forward_mod_path):
+            with os.scandir(pkg_dir) as entries:
+                for entry in entries:
+                    if not entry.is_dir() or not entry.name.startswith("forward_mod"):
+                        continue
+                    if entry.name != "forward_mod":
+                        os.rename(entry.path, forward_mod_path)
+                    break
 
         os.system("rm -rf " + pkg_dir + "__MACOSX")
 
     except Exception as e:  # pragma: no cover - network dependent
         raise RuntimeError(
-            "Failed to download required data folders from Google Drive. "
+            f"Failed to download required data folders from Google Drive: {e}"
         ) from e
 
     # Validate again after download

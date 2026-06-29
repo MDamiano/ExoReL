@@ -198,18 +198,18 @@ class MULTINEST:
         def prior(cube, ndim, nparams):
             par = 0
             if self.param['fit_p0'] and self.param['gas_par_space'] != 'partial_pressure':
-                cube[par] = (cube[par] * (self.param['p0_range'][1] - self.param['p0_range'][0])) + self.param['p0_range'][0]  # uniform prior between   3  :  11    -> P0, surface pressure
+                cube[par] = uniform_prior(self.param, 'p0', cube[par])  # uniform prior between   3  :  11    -> P0, surface pressure
                 par += 1
             if self.param['fit_wtr_cld'] and self.param['PT_profile_type'] == 'isothermal':
-                cube[par] = (cube[par] * (self.param['ptopw_range'][1] - self.param['ptopw_range'][0])) + self.param['ptopw_range'][0]  # uniform prior between   0  :  8     -> P H2O cloud top [Pa]
-                cube[par + 1] = (cube[par + 1] * (self.param['dcldw_range'][1] - self.param['dcldw_range'][0])) + self.param['dcldw_range'][0]  # uniform prior between   0  :  8.5   -> D H2O cloud [Pa]
-                cube[par + 2] = (cube[par + 2] * (self.param['crh2o_range'][1] - self.param['crh2o_range'][0])) + self.param['crh2o_range'][0]  # uniform prior between -12  :  0     -> CR H2O
+                cube[par] = uniform_prior(self.param, 'ptopw', cube[par])  # uniform prior between   0  :  8     -> P H2O cloud top [Pa]
+                cube[par + 1] = uniform_prior(self.param, 'dcldw', cube[par + 1])  # uniform prior between   0  :  8.5   -> D H2O cloud [Pa]
+                cube[par + 2] = uniform_prior(self.param, 'crh2o', cube[par + 2])  # uniform prior between -12  :  0     -> CR H2O
                 par += 3
 
             if self.param['fit_amm_cld'] and self.param['PT_profile_type'] == 'isothermal':
-                cube[par] = cube[par] * (self.param['ptopa_range'][1] - self.param['ptopa_range'][0]) + self.param['ptopa_range'][0]  # uniform prior between   0  :  8     -> P NH3 cloud top [Pa]
-                cube[par + 1] = cube[par + 1] * (self.param['dclda_range'][1] - self.param['dclda_range'][0]) + self.param['dclda_range'][0]  # uniform prior between   0  :  8.5   -> D H2O cloud [Pa]
-                cube[par + 2] = cube[par + 2] * (self.param['crnh3_range'][1] - self.param['crnh3_range'][0]) + self.param['crnh3_range'][0]  # uniform prior between -12  :  0     -> CR NH3
+                cube[par] = uniform_prior(self.param, 'ptopa', cube[par])  # uniform prior between   0  :  8     -> P NH3 cloud top [Pa]
+                cube[par + 1] = uniform_prior(self.param, 'dclda', cube[par + 1])  # uniform prior between   0  :  8.5   -> D H2O cloud [Pa]
+                cube[par + 2] = uniform_prior(self.param, 'crnh3', cube[par + 2])  # uniform prior between -12  :  0     -> CR NH3
                 par += 3
 
             for mol in self.param['fit_molecules']:
@@ -217,81 +217,84 @@ class MULTINEST:
                     if self.param['mod_prior']:
                         cube[par] = ppf[find_nearest(ppf[:, 0], cube[par]), 1]  # modified prior for clr
                     else:
-                        cube[par] = (cube[par] * (self.param['clr' + mol + '_range'][1] - self.param['clr' + mol + '_range'][0])) + self.param['clr' + mol + '_range'][0]  # uniform clr prior between -25 : 25
+                        cube[par] = uniform_prior(self.param, 'clr' + mol, cube[par])  # uniform clr prior between -25 : 25
                 elif self.param['gas_par_space'] == 'volume_mixing_ratio' or self.param['gas_par_space'] == 'vmr':
-                    cube[par] = (cube[par] * (self.param['vmr' + mol + '_range'][1] - self.param['vmr' + mol + '_range'][0])) + self.param['vmr' + mol + '_range'][0]  # uniform vmr prior between -12 : 0
+                    cube[par] = uniform_prior(self.param, 'vmr' + mol, cube[par])  # uniform vmr prior between -12 : 0
                 elif self.param['gas_par_space'] == 'partial_pressure':
-                    cube[par] = (cube[par] * (self.param['pp' + mol + '_range'][1] - self.param['pp' + mol + '_range'][0])) + self.param['pp' + mol + '_range'][0]  # uniform partial pressure prior between -10 : 10
+                    cube[par] = uniform_prior(self.param, 'pp' + mol, cube[par])  # uniform partial pressure prior between -10 : 10
                 par += 1
 
             if self.param['fit_ag']:
                 if self.param['surface_albedo_parameters'] == int(1):
-                    cube[par] = (cube[par] * (self.param['ag_range'][1] - self.param['ag_range'][0])) + self.param['ag_range'][0]  # uniform prior between   0.0  :  0.5     -> Ag, surface albedo
+                    cube[par] = uniform_prior(self.param, 'ag', cube[par])  # uniform prior between   0.0  :  0.5     -> Ag, surface albedo
                     par += 1
                 elif self.param['surface_albedo_parameters'] == int(3):
                     for surf_alb in [1, 2]:
-                        cube[par + (surf_alb - 1)] = (cube[par + (surf_alb - 1)] * (self.param['ag' + str(surf_alb) + '_range'][1] - self.param['ag' + str(surf_alb) + '_range'][0])) + self.param['ag' + str(surf_alb) + '_range'][0]
-                    cube[par + surf_alb] = (cube[par + surf_alb] * (self.param['ag_x1_range'][1] - self.param['ag_x1_range'][0])) + self.param['ag_x1_range'][0]
+                        cube[par + (surf_alb - 1)] = uniform_prior(self.param, 'ag' + str(surf_alb), cube[par + (surf_alb - 1)])
+                    cube[par + surf_alb] = uniform_prior(self.param, 'ag_x1', cube[par + surf_alb])
                     par += 3
                 elif self.param['surface_albedo_parameters'] == int(5):
                     for surf_alb in [1, 2, 3]:
-                        cube[par + (surf_alb - 1)] = (cube[par + (surf_alb - 1)] * (self.param['ag' + str(surf_alb) + '_range'][1] - self.param['ag' + str(surf_alb) + '_range'][0])) + self.param['ag' + str(surf_alb) + '_range'][0]
-                    cube[par + surf_alb] = (cube[par + surf_alb] * (self.param['ag_x1_range'][1] - self.param['ag_x1_range'][0])) + self.param['ag_x1_range'][0]
-                    cube[par + surf_alb + 1] = cube[par + surf_alb] + (cube[par + surf_alb + 1] * (self.param['ag_x2_range'][1] - self.param['ag_x2_range'][0])) + self.param['ag_x2_range'][0]
+                        cube[par + (surf_alb - 1)] = uniform_prior(self.param, 'ag' + str(surf_alb), cube[par + (surf_alb - 1)])
+                    cube[par + surf_alb] = uniform_prior(self.param, 'ag_x1', cube[par + surf_alb])
+                    cube[par + surf_alb + 1] = cube[par + surf_alb] + uniform_prior(self.param, 'ag_x2', cube[par + surf_alb + 1])
                     par += 5
 
             if self.param['fit_T']:
                 if self.param['PT_profile_type'] == 'isothermal':
-                    cube[par] = (cube[par] * (self.param['tp_range'][1] - self.param['tp_range'][0])) + self.param['tp_range'][0]  # uniform prior between   0  :  700   -> Tp, planetary temperature
+                    cube[par] = uniform_prior(self.param, 'tp', cube[par])  # uniform prior between   0  :  700   -> Tp, planetary temperature
                     par += 1
                 elif self.param['PT_profile_type'] == 'parametric':
-                    cube[par] = (cube[par] * (self.param['kappa_th_range'][1] - self.param['kappa_th_range'][0])) + self.param['kappa_th_range'][0]  # log uniform prior between 1e-10 : 1e0 -> kappa_th, thermal radiation opacity
-                    cube[par + 1] = (cube[par + 1] * (self.param['gamma_range'][1] - self.param['gamma_range'][0])) + self.param['gamma_range'][0]  # log uniform prior between   1e-10 : 1e10   -> gamma, ratio visible opacity : kappa_th
-                    cube[par + 2] = (cube[par + 2] * (self.param['beta_range'][1] - self.param['beta_range'][0])) + self.param['beta_range'][0]  # uniform prior between   0 : 2   -> beta, scaling factor for T_equilibrium
+                    cube[par] = uniform_prior(self.param, 'kappa_th', cube[par])  # log uniform prior between 1e-10 : 1e0 -> kappa_th, thermal radiation opacity
+                    cube[par + 1] = uniform_prior(self.param, 'gamma', cube[par + 1])  # log uniform prior between   1e-10 : 1e10   -> gamma, ratio visible opacity : kappa_th
+                    cube[par + 2] = uniform_prior(self.param, 'beta', cube[par + 2])  # uniform prior between   0 : 2   -> beta, scaling factor for T_equilibrium
                     par += 3
                     if self.param['fit_Tint']:
-                        cube[par] = (cube[par] * (self.param['Tint_range'][1] - self.param['Tint_range'][0])) + self.param['Tint_range'][0]  # uniform prior between   0 : 300   -> Tint, internal temperature
+                        cube[par] = uniform_prior(self.param, 'Tint', cube[par])  # uniform prior between   0 : 300   -> Tint, internal temperature
                         par += 1
 
             if self.param['fit_cld_frac']:
-                cube[par] = (cube[par] * (self.param['cld_frac_range'][1] - self.param['cld_frac_range'][0])) + self.param['cld_frac_range'][0]  # uniform prior between   -3.0  :  0.0     -> Log(clf_frac), cloud fraction
+                cube[par] = uniform_prior(self.param, 'cld_frac', cube[par])  # uniform prior between   -3.0  :  0.0     -> Log(clf_frac), cloud fraction
                 par += 1
 
             if self.param['fit_g']:
-                cube[par] = (cube[par] * (self.param['gp_range'][1] - self.param['gp_range'][0])) + self.param['gp_range'][0]  # uniform prior between   1.0  :  6   -> g [cm/s2]
+                cube[par] = uniform_prior(self.param, 'gp', cube[par])  # uniform prior between   1.0  :  6   -> g [cm/s2]
                 par += 1
 
             if self.param['fit_Mp'] and self.param['fit_Rp']:
-                if self.param['Rp_prior_type'] != 'R_M_prior' and self.param['Mp_prior_type'] != 'M_R_prior':
-                    cube[par] = Mp_prior(self.param, cube[par])  # Mass prior - independent
-                    cube[par + 1] = Rp_prior(self.param, cube[par + 1])  # Radius prior - independent
+                if self.param['Rp_prior_type'] != 'M_R_prior' and self.param['Mp_prior_type'] != 'M_R_prior':
+                    cube[par] = Mp_Rp_prior(self.param, 'Mp', cube[par])  # Mass prior - independent or gaussian
+                    cube[par + 1] = Mp_Rp_prior(self.param, 'Rp', cube[par + 1])  # Radius prior - independent
                     par += 2
-                elif self.param['Rp_prior_type'] != 'R_M_prior' and self.param['Mp_prior_type'] == 'M_R_prior':
-                    cube[par] = Mp_prior(self.param, cube[par])  # Mass prior - independent
-                    cube[par + 1] = Rp_prior(self.param, cube[par + 1], mp_value=cube[par])  # Radius prior - 2D prior
+                elif self.param['Rp_prior_type'] == 'M_R_prior' and self.param['Mp_prior_type'] != 'M_R_prior':
+                    cube[par] = Mp_Rp_prior(self.param, 'Mp', cube[par])  # Mass prior - independent or gaussian
+                    cube[par + 1] = Mp_Rp_prior(self.param, 'Rp', cube[par + 1], mp_value=cube[par])  # Radius prior - 2D prior
                     par += 2
-                elif self.param['Rp_prior_type'] == 'R_M_prior' and self.param['Mp_prior_type'] != 'M_R_prior':
-                    cube[par + 1] = Rp_prior(self.param, cube[par + 1])  # Radius prior - independent
-                    cube[par] = Mp_prior(self.param, cube[par], rp_value=cube[par + 1])  # Mass prior - 2D prior
+                elif self.param['Rp_prior_type'] != 'M_R_prior' and self.param['Mp_prior_type'] == 'M_R_prior':
+                    cube[par + 1] = Mp_Rp_prior(self.param, 'Rp', cube[par + 1])  # Radius prior - independent
+                    cube[par] = Mp_Rp_prior(self.param, 'Mp', cube[par], rp_value=cube[par + 1])  # Mass prior - 2D prior
                     par += 2
             elif self.param['fit_Mp'] and not self.param['fit_Rp']:
-                cube[par] = Mp_prior(self.param, cube[par])  # Mass prior
+                cube[par] = Mp_Rp_prior(self.param, 'Mp', cube[par])  # Mass prior
                 par += 1
             elif self.param['fit_Rp'] and not self.param['fit_Mp']:
-                cube[par] = Rp_prior(self.param, cube[par])  # Radius prior
+                cube[par] = Mp_Rp_prior(self.param, 'Rp', cube[par])  # Radius prior
                 par += 1
 
             if self.param['fit_p_size']:
-                cube[par] = (cube[par] * (self.param['p_size_range'][1] - self.param['p_size_range'][0])) + self.param['p_size_range'][0]  # Particle size uniform prior
+                cube[par] = uniform_prior(self.param, 'p_size', cube[par])  # Particle size uniform prior
                 par += 1
 
             if self.param['fit_phi']:
                 if self.param['obs_numb'] is None:
-                    cube[par] = (cube[par] * (self.param['phi_range'][1] - self.param['phi_range'][0])) + self.param['phi_range'][0]  # uniform prior between   0  :  180   -> deg
+                    if self.param['phi_err'] is None: 
+                        cube[par] = uniform_prior(self.param, 'phi', cube[par])  # uniform prior between   0  :  180   -> deg
+                    else:
+                        cube[par] = gaussian_prior(self.param, 'phi', cube[par])  # gaussian prior -> phi, phase angle
                     par += 1
                 else:
-                    for obse in range(0, self.param['obs_numb']):
-                        cube[par] = (cube[par] * (self.param['phi_range'][1] - self.param['phi_range'][0])) + self.param['phi_range'][0]  # uniform prior between   0  :  180   -> deg
+                    for _ in range(0, self.param['obs_numb']):
+                        cube[par] = uniform_prior(self.param, 'phi', cube[par])  # uniform prior between   0  :  180   -> deg
                         par += 1
 
         def loglike(cube, ndim, nparams):
@@ -416,30 +419,34 @@ class MULTINEST:
             np.savetxt(self.param['out_dir'] + 'data_spectrum.dat', data_spec)
 
             ### PRODUCE PLOTS FROM HERE ###
-            if self.param['plot_models']:
-                cube = np.ones((len(s['modes'][0]['maximum a posterior']), mds))
-                for i in range(0, mds):
-                    cube[:, i] = list(s['modes'][i]['maximum a posterior'])
+            cube = np.ones((len(s['modes'][0]['maximum a posterior']), mds))
+            for i in range(0, mds):
+                cube[:, i] = list(s['modes'][i]['maximum a posterior'])
 
-                    plot_nest_spec(self, cube[:, i], solutions=i)
-                    plot_chemistry(self.param, solutions=i)
-                    if self.param['surface_albedo_parameters'] > 1:
-                        plot_surface_albedo(self.param, solutions=i)
+                if is_root:
+                    print(f"\nPlotting solution {i + 1} of {mds} with log-evidence: {s['modes'][i]['local log-evidence']:.2f}\n")
 
-                    if os.path.exists(self.param['out_dir'] + f'random_temp_samples_sol{i}.dat') and self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
-                        plot_PT_profile(self, cube[:, i], solutions=i)
-                    else:
-                        if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
-                            print('\nTo plot P-T profiles, the calculation of the temperatures samples must be enabled (calc_likelihood_data = True).')
-                    
-                    if self.param['plot_contribution'] and self.param['obs_numb'] is None:
-                        plot_contribution(self, cube[:, i], solutions=i)
+                plot_nest_spec(self, cube[:, i], solutions=i)
+                plot_chemistry(self.param, solutions=i)
+                if self.param['rocky']:
+                    plot_mass_radius(self, cube[:, i], solutions=i, sigma=s['modes'][i]['sigma'])
+                if self.param['surface_albedo_parameters'] > 1:
+                    plot_surface_albedo(self.param, solutions=i, sigma=s['modes'][i]['sigma'])
 
-                    if os.path.exists(self.param['out_dir'] + f'loglike_per_datapoint_sol{i}.dat') and os.path.exists(self.param['out_dir'] + f'parameters_samples_sol{i}.dat') and self.param['plot_elpd_stats']:
-                        elpd_loo_stats(self, parameters, solutions=i)
-                    else:
-                        if self.param['plot_elpd_stats']:
-                            print('\nTo plot elpd statistics, the calculation of the likelihood per data point must be enabled (calc_likelihood_data = True).') 
+                if os.path.exists(self.param['out_dir'] + f'random_temp_samples_sol{i}.dat') and self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
+                    plot_PT_profile(self, cube[:, i], solutions=i)
+                else:
+                    if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
+                        print('\nTo plot P-T profiles, the calculation of the temperatures samples must be enabled (calc_likelihood_data = True).')
+                
+                if self.param['plot_contribution'] and self.param['obs_numb'] is None:
+                    plot_contribution(self, cube[:, i], solutions=i)
+
+                if os.path.exists(self.param['out_dir'] + f'loglike_per_datapoint_sol{i}.dat') and os.path.exists(self.param['out_dir'] + f'parameters_samples_sol{i}.dat') and self.param['plot_elpd_stats']:
+                    elpd_loo_stats(self, parameters, solutions=i)
+                else:
+                    if self.param['plot_elpd_stats']:
+                        print('\nTo plot elpd statistics, the calculation of the likelihood per data point must be enabled (calc_likelihood_data = True).') 
 
             if self.param['plot_posterior']:
                 # Delegate posterior plotting to centralized plotting module
@@ -559,8 +566,6 @@ class MULTINEST:
                     par += 1
         else:
             pass
-        
-        self.param['T'] = temp_profile(self.param)
 
         if self.param['fit_cld_frac']:
             self.param['cld_frac'] = (10.0 ** cube[par])  # Cloud fraction
@@ -604,8 +609,7 @@ class MULTINEST:
         if self.param['fit_phi']:
             self.param['phi'] = cube[par + n_obs] * math.pi / 180.  # phi
 
-        if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
-            self.param['T'] = temp_profile(self.param)
+        self.param['T'] = temp_profile(self.param)
         if self.param['fit_amm_cld']:
             self.param['vmr_NH3'] = cloud_pos(self.param, condensed_gas='NH3')
             self.param = adjust_VMR(self.param, all_gases=self.param['adjust_VMR_gases'], condensed_gas='NH3')
@@ -652,8 +656,9 @@ class MULTINEST:
         temp_min, temp_max = self.param['min_wl'] + 0.0, self.param['max_wl'] + 0.0
         self.param['min_wl'] = min(self.param['spectrum']['wl'])
         self.param['max_wl'] = max(self.param['spectrum']['wl'])
-        self.param['start_c_wl_grid'] = find_nearest(self.param['wl_C_grid'], self.param['min_wl']) - 35
-        self.param['stop_c_wl_grid'] = find_nearest(self.param['wl_C_grid'], self.param['max_wl']) + 35
+        if self.param['physics_model_code_language'] == 'C':
+            self.param['start_c_wl_grid'] = find_nearest(self.param['wl_C_grid'], self.param['min_wl']) - 35
+            self.param['stop_c_wl_grid'] = find_nearest(self.param['wl_C_grid'], self.param['max_wl']) + 35
 
         distributions = []
 

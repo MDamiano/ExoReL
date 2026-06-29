@@ -12,7 +12,6 @@ class RADIATIVE_TRANSFER_C:
         self.canc_metadata = canc_metadata
         self.hazes_calc = param['hazes']
         self.c_code_directory = self.package_dir + 'forward_mod/'
-        self.matlab_code_directory = self.c_code_directory + 'PlanetModel/'
         try:
             self.working_dir = param['wkg_dir']
         except KeyError:
@@ -59,24 +58,25 @@ class RADIATIVE_TRANSFER_C:
         # Temperature profile
         T = self.param['T'] * np.ones(len(P)) # in K
 
-        # Cloud density calculation
-        cloudden = 1.0e-36 * np.ones(len(P))
-        for i in range(len(P) - 2, -1, -1):
-            cloudden[i] = max(abs(self.param['vmr_H2O'][i] - self.param['vmr_H2O'][i + 1]) * 0.018 * P[i] / const.R.value / T[i], 1e-25)  # kg/m^3, g/L
-
-        # Particle size calculation
-        particlesize = 1.0e-36 * np.ones(len(P))
-        if self.param['fit_p_size'] and self.param['p_size_type'] == 'constant':
-            particlesize = self.param['p_size'] * np.ones(len(P))
-        else:
+        if self.param['fit_wtr_cld'] and 'H2O' in self.param['fit_molecules']:
+            # Cloud density calculation
+            cloudden = 1.0e-36 * np.ones(len(P))
             for i in range(len(P) - 2, -1, -1):
-                r0, r1, r2, VP = particlesizef(g, T[i], P[i], self.param['mean_mol_weight'][i], self.param['mm']['H2O'], self.param['KE'], deltaP)
-                if self.param['fit_p_size'] and self.param['p_size_type'] == 'factor':
-                    particlesize[i] = r2 * self.param['p_size']
-                else:
-                    particlesize[i] = r2 + 0.0
+                cloudden[i] = max(abs(self.param['vmr_H2O'][i] - self.param['vmr_H2O'][i + 1]) * 0.018 * P[i] / const.R.value / T[i], 1e-25)  # kg/m^3, g/L
 
-        if self.param['fit_amm_cld']:
+            # Particle size calculation
+            particlesize = 1.0e-36 * np.ones(len(P))
+            if self.param['fit_p_size'] and self.param['p_size_type'] == 'constant':
+                particlesize = self.param['p_size'] * np.ones(len(P))
+            else:
+                for i in range(len(P) - 2, -1, -1):
+                    r0, _, r2, VP = particlesizef(g, T[i], P[i], self.param['mean_mol_weight'][i], self.param['mm']['H2O'], self.param['KE'], deltaP)
+                    if self.param['fit_p_size'] and self.param['p_size_type'] == 'factor':
+                        particlesize[i] = r2 * self.param['p_size']
+                    else:
+                        particlesize[i] = r2 + 0.0
+
+        if self.param['fit_amm_cld'] and 'NH3' in self.param['fit_molecules']:
             cloudden_nh3 = 1.0e-36 * np.ones(len(P))
             for i in range(len(P) - 2, -1, -1):
                 cloudden_nh3[i] = max(abs(self.param['vmr_NH3'][i] - self.param['vmr_NH3'][i + 1]) * 0.017 * P[i] / const.R.value / T[i], 1e-25)  # kg/m^3, g/L
@@ -87,20 +87,21 @@ class RADIATIVE_TRANSFER_C:
             else:
                 for i in range(len(P) - 2, -1, -1):
                     deltaP_nh3 = P[i] * abs(self.param['vmr_NH3'][i] - self.param['vmr_NH3'][i + 1])
-                    r0, r1, r2, VP = particlesizef(g, T[i], P[i], self.param['mean_mol_weight'][i], self.param['mm']['NH3'], self.param['KE'], deltaP_nh3)
+                    r0, _, r2, VP = particlesizef(g, T[i], P[i], self.param['mean_mol_weight'][i], self.param['mm']['NH3'], self.param['KE'], deltaP_nh3)
                     if self.param['fit_p_size'] and self.param['p_size_type'] == 'factor':
                         particlesize_nh3[i] = r2 * self.param['p_size']
                     else:
                         particlesize_nh3[i] = r2 + 0.0
-            
-            cloudden_nh3 = cloudden_nh3[::-1]
-            particlesize_nh3 = particlesize_nh3[::-1]
 
         # Calculate the height
         P = P[::-1]
         T = T[::-1]
-        cloudden = cloudden[::-1]
-        particlesize = particlesize[::-1]
+        if self.param['fit_wtr_cld'] and 'H2O' in self.param['fit_molecules']:
+            cloudden = cloudden[::-1]
+            particlesize = particlesize[::-1]
+        if self.param['fit_amm_cld'] and 'NH3' in self.param['fit_molecules']:
+            cloudden_nh3 = cloudden_nh3[::-1]
+            particlesize_nh3 = particlesize_nh3[::-1]
         MMM = self.param['mean_mol_weight'][::-1]
 
         # Atmospheric Composition
@@ -117,7 +118,15 @@ class RADIATIVE_TRANSFER_C:
 
         # Adaptive grid
         if self.param['use_adaptive_grid']:
-            idx_cloud_layers = np.where(np.diff(f['H2O']) != 0.0)[0] + 1
+            idx_cloud_sets = []
+            if self.param['fit_wtr_cld'] and 'H2O' in f:
+                idx_cloud_sets.append(np.where(np.diff(f['H2O']) != 0.0)[0] + 1)
+            if self.param['fit_amm_cld'] and 'NH3' in f:
+                idx_cloud_sets.append(np.where(np.diff(f['NH3']) != 0.0)[0] + 1)
+            if idx_cloud_sets:
+                idx_cloud_layers = np.unique(np.concatenate(idx_cloud_sets))
+            else:
+                idx_cloud_layers = np.array([], dtype=int)
             if len(idx_cloud_layers) > 0:
                 n_cloud_layers = int(round((self.param['n_layer'] + 1) / 3, 0))
                 n_above_layers = int(round((self.param['n_layer'] + 1 - n_cloud_layers) / 2, 0))
@@ -133,11 +142,14 @@ class RADIATIVE_TRANSFER_C:
             zz = np.linspace(Z[0], Z[-1], num=int(self.param['n_layer'] + 1), endpoint=True)
 
         if not self.retrieval:
-            np.savetxt(self.outdir + 'watermix.dat', f['H2O'])
-
-            np.savetxt(self.outdir + 'particlesize.dat', particlesize)
-
-            np.savetxt(self.outdir + 'cloudden.dat', cloudden)
+            if self.param['fit_wtr_cld']:
+                np.savetxt(self.outdir + 'watermix.dat', f['H2O'])
+                np.savetxt(self.outdir + 'particlesize.dat', particlesize)
+                np.savetxt(self.outdir + 'cloudden.dat', cloudden)
+            if self.param['fit_amm_cld']:
+                np.savetxt(self.outdir + 'ammoniamix.dat', f['NH3'])
+                np.savetxt(self.outdir + 'particlesize_nh3.dat', particlesize_nh3)
+                np.savetxt(self.outdir + 'cloudden_nh3.dat', cloudden_nh3)
 
             np.savetxt(self.outdir + 'P.dat', P)
             np.savetxt(self.outdir + 'T.dat', T)
@@ -159,11 +171,12 @@ class RADIATIVE_TRANSFER_C:
             tck = interp1d(Z, np.log(f[self.param['gas_fill']]))
             n[self.param['gas_fill']] = np.exp(tck(zl)) * nden
 
-        tck = interp1d(Z, np.log(cloudden))
-        cloudden = np.exp(tck(zl))
+        if self.param['fit_wtr_cld']:
+            tck = interp1d(Z, np.log(cloudden))
+            cloudden = np.exp(tck(zl))
 
-        tck = interp1d(Z, np.log(particlesize))
-        particlesize = np.exp(tck(zl))
+            tck = interp1d(Z, np.log(particlesize))
+            particlesize = np.exp(tck(zl))
 
         if self.param['fit_amm_cld']:
             tck = interp1d(Z, np.log(cloudden_nh3))
@@ -302,9 +315,10 @@ class RADIATIVE_TRANSFER_C:
                 file.write('\n')
 
         #    cloud output
-        cro_h2o = np.zeros((len(zl), 324))
-        alb_h2o = np.ones((len(zl), 324))
-        geo_h2o = np.zeros((len(zl), 324))
+        if self.param['fit_wtr_cld']:
+            cro_h2o = np.zeros((len(zl), 324))
+            alb_h2o = np.ones((len(zl), 324))
+            geo_h2o = np.zeros((len(zl), 324))
         
         if self.param['fit_amm_cld']:
             cro_nh3 = np.zeros((len(zl), 324))
@@ -314,45 +328,46 @@ class RADIATIVE_TRANSFER_C:
         #    opacity
         sig = 2
         for j in range(0, len(zl)):
-            r2 = particlesize[j]
-            if cloudden[j] < 1e-16:
-                pass
-            else:
-                r0 = r2 * np.exp(-np.log(sig) ** 2.)
-                if self.param['wtr_cld_type'] == 'mixed' and self.param['PT_profile_type'] == 'parametric':
-                    if tl[j] < 273.15: # ice
-                        VP = 4. * math.pi / 3. * ((r2 * 1.0e-6 * np.exp(0.5 * np.log(sig) ** 2.)) ** 3.) * 1.0e+6 * 0.92  # g
+            if self.param['fit_wtr_cld']:
+                r2 = particlesize[j]
+                if cloudden[j] < 1e-16:
+                    pass
+                else:
+                    r0 = r2 * np.exp(-np.log(sig) ** 2.)
+                    if self.param['wtr_cld_type'] == 'mixed' and self.param['PT_profile_type'] == 'parametric':
+                        if tl[j] < 273.15: # ice
+                            VP = 4. * math.pi / 3. * ((r2 * 1.0e-6 * np.exp(0.5 * np.log(sig) ** 2.)) ** 3.) * 1.0e+6 * 0.92  # g
+                            for indi in range(0, 324):
+                                tck = interp1d(np.log10(self.param['H2OL_r']), np.log10(self.param['H2OL_c_ice'][:, indi]))
+                                temporaneo = tck(np.log10(max(0.01, min(r0, 100))))
+                                cro_h2o[j, indi] = cloudden[j] / VP * 1.0e-3 * (10. ** temporaneo)  # cm-1
+                                tck = interp1d(np.log10(self.param['H2OL_r']), self.param['H2OL_a_ice'][:, indi])
+                                alb_h2o[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
+                                tck = interp1d(np.log10(self.param['H2OL_r']), self.param['H2OL_g_ice'][:, indi])
+                                geo_h2o[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
+                        else: # liquid
+                            VP = 4. * math.pi / 3. * ((r2 * 1.0e-6 * np.exp(0.5 * np.log(sig) ** 2.)) ** 3.) * 1.0e+6 * 1.0  # g
+                            for indi in range(0, 324):
+                                tck = interp1d(np.log10(self.param['H2OL_r']), np.log10(self.param['H2OL_c_liquid'][:, indi]))
+                                temporaneo = tck(np.log10(max(0.01, min(r0, 100))))
+                                cro_h2o[j, indi] = cloudden[j] / VP * 1.0e-3 * (10. ** temporaneo)  # cm-1
+                                tck = interp1d(np.log10(self.param['H2OL_r']), self.param['H2OL_a_liquid'][:, indi])
+                                alb_h2o[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
+                                tck = interp1d(np.log10(self.param['H2OL_r']), self.param['H2OL_g_liquid'][:, indi])
+                                geo_h2o[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
+                    else:  # liquid or ice
+                        if self.param['wtr_cld_type'] == 'liquid':  # liquid
+                            VP = 4. * math.pi / 3. * ((r2 * 1.0e-6 * np.exp(0.5 * np.log(sig) ** 2.)) ** 3.) * 1.0e+6 * 1.0  # g
+                        else:  # ice
+                            VP = 4. * math.pi / 3. * ((r2 * 1.0e-6 * np.exp(0.5 * np.log(sig) ** 2.)) ** 3.) * 1.0e+6 * 0.92  # g
                         for indi in range(0, 324):
-                            tck = interp1d(np.log10(self.param['H2OL_r']), np.log10(self.param['H2OL_c_ice'][:, indi]))
+                            tck = interp1d(np.log10(self.param['H2OL_r']), np.log10(self.param['H2OL_c'][:, indi]))
                             temporaneo = tck(np.log10(max(0.01, min(r0, 100))))
                             cro_h2o[j, indi] = cloudden[j] / VP * 1.0e-3 * (10. ** temporaneo)  # cm-1
-                            tck = interp1d(np.log10(self.param['H2OL_r']), self.param['H2OL_a_ice'][:, indi])
+                            tck = interp1d(np.log10(self.param['H2OL_r']), self.param['H2OL_a'][:, indi])
                             alb_h2o[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
-                            tck = interp1d(np.log10(self.param['H2OL_r']), self.param['H2OL_g_ice'][:, indi])
+                            tck = interp1d(np.log10(self.param['H2OL_r']), self.param['H2OL_g'][:, indi])
                             geo_h2o[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
-                    else: # liquid
-                        VP = 4. * math.pi / 3. * ((r2 * 1.0e-6 * np.exp(0.5 * np.log(sig) ** 2.)) ** 3.) * 1.0e+6 * 1.0  # g
-                        for indi in range(0, 324):
-                            tck = interp1d(np.log10(self.param['H2OL_r']), np.log10(self.param['H2OL_c_liquid'][:, indi]))
-                            temporaneo = tck(np.log10(max(0.01, min(r0, 100))))
-                            cro_h2o[j, indi] = cloudden[j] / VP * 1.0e-3 * (10. ** temporaneo)  # cm-1
-                            tck = interp1d(np.log10(self.param['H2OL_r']), self.param['H2OL_a_liquid'][:, indi])
-                            alb_h2o[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
-                            tck = interp1d(np.log10(self.param['H2OL_r']), self.param['H2OL_g_liquid'][:, indi])
-                            geo_h2o[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
-                else:  # liquid or ice
-                    if self.param['wtr_cld_type'] == 'liquid':  # liquid
-                        VP = 4. * math.pi / 3. * ((r2 * 1.0e-6 * np.exp(0.5 * np.log(sig) ** 2.)) ** 3.) * 1.0e+6 * 1.0  # g
-                    else:  # ice
-                        VP = 4. * math.pi / 3. * ((r2 * 1.0e-6 * np.exp(0.5 * np.log(sig) ** 2.)) ** 3.) * 1.0e+6 * 0.92  # g
-                    for indi in range(0, 324):
-                        tck = interp1d(np.log10(self.param['H2OL_r']), np.log10(self.param['H2OL_c'][:, indi]))
-                        temporaneo = tck(np.log10(max(0.01, min(r0, 100))))
-                        cro_h2o[j, indi] = cloudden[j] / VP * 1.0e-3 * (10. ** temporaneo)  # cm-1
-                        tck = interp1d(np.log10(self.param['H2OL_r']), self.param['H2OL_a'][:, indi])
-                        alb_h2o[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
-                        tck = interp1d(np.log10(self.param['H2OL_r']), self.param['H2OL_g'][:, indi])
-                        geo_h2o[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
             
             if self.param['fit_amm_cld']:
                 r2 = particlesize_nh3[j]
@@ -370,24 +385,24 @@ class RADIATIVE_TRANSFER_C:
                         tck = interp1d(np.log10(self.param['NH3_r']), self.param['NH3_g'][:, indi])
                         geo_nh3[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
 
+        if self.param['fit_wtr_cld']:
+            with open(self.outdir + 'cross_H2O.dat', 'w') as file:
+                for j in range(0, len(zl)):
+                    for indi in range(0, 324):
+                        file.write("{:.6e}".format(cro_h2o[j, indi]) + '\t')
+                    file.write('\n')
 
-        with open(self.outdir + 'cross_H2O.dat', 'w') as file:
-            for j in range(0, len(zl)):
-                for indi in range(0, 324):
-                    file.write("{:.6e}".format(cro_h2o[j, indi]) + '\t')
-                file.write('\n')
+            with open(self.outdir + 'albedo_H2O.dat', 'w') as file:
+                for j in range(0, len(zl)):
+                    for indi in range(0, 324):
+                        file.write("{:.6e}".format(alb_h2o[j, indi]) + '\t')
+                    file.write('\n')
 
-        with open(self.outdir + 'albedo_H2O.dat', 'w') as file:
-            for j in range(0, len(zl)):
-                for indi in range(0, 324):
-                    file.write("{:.6e}".format(alb_h2o[j, indi]) + '\t')
-                file.write('\n')
-
-        with open(self.outdir + 'geo_H2O.dat', 'w') as file:
-            for j in range(0, len(zl)):
-                for indi in range(0, 324):
-                    file.write("{:.6e}".format(geo_h2o[j, indi]) + '\t')
-                file.write('\n')
+            with open(self.outdir + 'geo_H2O.dat', 'w') as file:
+                for j in range(0, len(zl)):
+                    for indi in range(0, 324):
+                        file.write("{:.6e}".format(geo_h2o[j, indi]) + '\t')
+                    file.write('\n')
         
         if self.param['fit_amm_cld']:
             with open(self.outdir + 'cross_NH3.dat', 'w') as file:
@@ -409,7 +424,7 @@ class RADIATIVE_TRANSFER_C:
                     file.write('\n')
 
     def __run_structure(self):
-        os.chdir(self.matlab_code_directory)
+        os.chdir(self.c_code_directory)
         self.__atmospheric_structure()
         self.__surface_structure()
         os.chdir(self.working_dir)
@@ -446,18 +461,6 @@ class RADIATIVE_TRANSFER_C:
                       #
                       # Planet Temperature-Pressure Preofile
                       # '#define TPMODE               1\n',  # 1: import data from a ZTP list
-                      #                                      0: calculate TP profile from the parametized formula*/
-                      # '#define TPLIST               "Data/TP1986.dat"\n',
-                      # '#define PTOP                 1.0E-5\n',  # Pressure at the top of atmosphere in bar
-                      # '#define TTOP				    ' + str(self.param['Tp']) + '\n',  # Temperature at the top of atmosphere
-                      # '#define TSTR                 ' + str(self.param['Tp']) + '\n',  # Temperature at the top of stratosphere
-                      # '#define TINV                 0\n',  # set to 1 if there is a temperature inversion
-                      # '#define PSTR                 1.0E-1\n',  # Pressure at the top of stratosphere
-                      # '#define PMIDDLE				0\n',  # Pressure at the bottom of stratosphere
-                      # '#define TMIDDLE				' + str(self.param['Tp']) + '\n',  # Temperature at the bottom of stratosphere
-                      # '#define PBOTTOM				1.0E+0\n',  # Pressure at the bottom of stratosphere
-                      # '#define TBOTTOM				' + str(self.param['Tp']) + '\n',  # Temperature at the bottom of stratosphere
-                      # '#define PPOFFSET			    0.0\n',  # Pressure offset in log [Pa]
                       #
                       # Calculation Grids
                       # '#define zbin                 180\n',  # How many altitude bin?
@@ -556,7 +559,8 @@ class RADIATIVE_TRANSFER_C:
                       # Input choices for the infrared opacities
                       # Must be set to the same as the opacity code
                       #
-                      '#define CROSSHEADING         "Cross3/N2_FullT_LowRes/"\n',
+                      '#define CROSSHEADING         "opac/2k/"\n',
+                      '#define CIAHEADING           "opac/cia/"\n',
                       #
                       '#define NTEMP                20\n',  # Number of temperature points in grid
                       '#define TLOW                 100.0\n',  # Temperature range in K
@@ -638,6 +642,7 @@ class RADIATIVE_TRANSFER_C:
 
         c_core_file = ['#include <stdio.h>\n',
                        '#include <math.h>\n',
+                       '#include <stdbool.h>\n',
                        '#include <stdlib.h>\n',
                        '#include <string.h>\n',
 
@@ -685,7 +690,7 @@ class RADIATIVE_TRANSFER_C:
                        'double **xx, **xx1, **xx2, **xx3, **xx4;\n',
                        'double TransOptD[zbin+1][NLAMBDA], RefOptD[zbin+1][NLAMBDA];\n',
                        # /*double H2CIA[zbin+1][NLAMBDA], H2HeCIA[zbin+1][NLAMBDA], N2CIA[zbin+1][NLAMBDA], CO2CIA[zbin+1][NLAMBDA];*/\n',
-                       'double H2H2CIA[zbin+1][NLAMBDA], H2HeCIA[zbin+1][NLAMBDA], H2HCIA[zbin+1][NLAMBDA], N2H2CIA[zbin+1][NLAMBDA], N2N2CIA[zbin+1][NLAMBDA], CO2CO2CIA[zbin+1][NLAMBDA], O2O2CIA[zbin+1][NLAMBDA];\n',
+                       'double H2H2CIA[zbin+1][NLAMBDA], H2HeCIA[zbin+1][NLAMBDA], H2HCIA[zbin+1][NLAMBDA], N2H2CIA[zbin+1][NLAMBDA], N2N2CIA[zbin+1][NLAMBDA], CO2CO2CIA[zbin+1][NLAMBDA], O2O2CIA[zbin+1][NLAMBDA], O2N2CIA[zbin+1][NLAMBDA];\n',
                        'double cH2O[zbin+1][NLAMBDA], aH2O[zbin+1][NLAMBDA], gH2O[zbin+1][NLAMBDA];\n',
                        'double cNH3[zbin+1][NLAMBDA], aNH3[zbin+1][NLAMBDA], gNH3[zbin+1][NLAMBDA];\n',
 
@@ -1358,19 +1363,47 @@ class RADIATIVE_TRANSFER_C:
                        '    lll[0] = 400.0;\n',
                        '    for (i=1; i < 324; i++) {\n',
                        '        lll[i]=lll[i-1] * (1.0+1.0 / 200.0);\n',
-                       '    }\n',
+                       '    }\n']
 
-                       '    char outaer1[1024];\n',
-                       '    strcpy(outaer1, OUT_DIR);\n',
-                       '    strcat(outaer1, "cross_H2O.dat");\n',
-                       '    fim=fopen(outaer1,"r");\n',
-                       '    for (j=1; j<=zbin; j++) {\n',
-                       '        for (i=0; i < 324; i++) {fscanf(fim, "%le", ccc+i);}\n',
-                       '        for (i=' + str(iniz) + '; i<' + str(fine) + '; i++) {\n',
-                       '            Interpolation( & wavelength[i], 1, & cH2O[j][i], lll, ccc, 324, 2);\n',
-                       '        }\n',
-                       '    }\n',
-                       '    fclose(fim);\n']
+        if self.param['fit_wtr_cld']:
+            c_core_file += ['    char outaer1[1024];\n',
+                            '    strcpy(outaer1, OUT_DIR);\n',
+                            '    strcat(outaer1, "cross_H2O.dat");\n',
+                            '    fim=fopen(outaer1,"r");\n',
+                            '    for (j=1; j<=zbin; j++) {\n',
+                            '        for (i=0; i < 324; i++) {fscanf(fim, "%le", ccc+i);}\n',
+                            '        for (i=' + str(iniz) + '; i<' + str(fine) + '; i++) {\n',
+                            '            Interpolation( & wavelength[i], 1, & cH2O[j][i], lll, ccc, 324, 2);\n',
+                            '        }\n',
+                            '    }\n',
+                            '    fclose(fim);\n',
+
+                            '    char outaer3[1024];\n',
+                            '    strcpy(outaer3, OUT_DIR);\n',
+                            '    strcat(outaer3, "geo_H2O.dat");\n',
+                            '    fim = fopen(outaer3, "r");\n',
+                            '    for (j=1; j<=zbin; j++) {\n',
+                            '        for (i=0; i < 324; i++) {fscanf(fim, "%lf", ccc+i);}\n',
+                            '        for (i=' + str(iniz) + '; i<' + str(fine) + '; i++) {\n',
+                            '            Interpolation( & wavelength[i], 1, & gH2O[j][i], lll, ccc, 324, 2);\n',
+                            '        }\n',
+                            '    }\n',
+                            '    fclose(fim);\n',
+
+                            '    char outaer5[1024];\n',
+                            '    strcpy(outaer5, OUT_DIR);\n',
+                            '    strcat(outaer5, "albedo_H2O.dat");\n',
+                            '    fim = fopen(outaer5, "r");\n',
+                            '    for (j=1; j<=zbin; j++) {\n',
+                            '        for (i=0; i < 324; i++) {fscanf(fim, "%lf", ccc+i);}\n',
+                            '        for (i=' + str(iniz) + '; i<' + str(fine) + '; i++) {\n',
+                            '            Interpolation( & wavelength[i], 1, & aH2O[j][i], lll, ccc, 324, 2);\n',
+                            '        }\n',
+                            '    }\n',
+                            '    fclose(fim);\n'
+                            '    bool wtr_cld = true;\n']
+        else:
+            c_core_file += ['    bool wtr_cld = false;\n']
         
         if self.param['fit_amm_cld']:
             c_core_file += ['    char outaer2[1024];\n',
@@ -1383,22 +1416,9 @@ class RADIATIVE_TRANSFER_C:
                             '            Interpolation( & wavelength[i], 1, & cNH3[j][i], lll, ccc, 324, 2);\n',
                             '        }\n',
                             '    }\n',
-                            '    fclose(fim);\n']
+                            '    fclose(fim);\n',
 
-        c_core_file+= ['    char outaer3[1024];\n',
-                       '    strcpy(outaer3, OUT_DIR);\n',
-                       '    strcat(outaer3, "geo_H2O.dat");\n',
-                       '    fim = fopen(outaer3, "r");\n',
-                       '    for (j=1; j<=zbin; j++) {\n',
-                       '        for (i=0; i < 324; i++) {fscanf(fim, "%lf", ccc+i);}\n',
-                       '        for (i=' + str(iniz) + '; i<' + str(fine) + '; i++) {\n',
-                       '            Interpolation( & wavelength[i], 1, & gH2O[j][i], lll, ccc, 324, 2);\n',
-                       '        }\n',
-                       '    }\n',
-                       '    fclose(fim);\n']
-        
-        if self.param['fit_amm_cld']:
-            c_core_file += ['    char outaer4[1024];\n',
+                            '    char outaer4[1024];\n',
                             '    strcpy(outaer4, OUT_DIR);\n',
                             '    strcat(outaer4, "geo_NH3.dat");\n',
                             '    fim = fopen(outaer4, "r");\n',
@@ -1408,22 +1428,9 @@ class RADIATIVE_TRANSFER_C:
                             '            Interpolation( & wavelength[i], 1, & gNH3[j][i], lll, ccc, 324, 2);\n',
                             '        }\n',
                             '    }\n',
-                            '    fclose(fim);\n']
+                            '    fclose(fim);\n',
 
-        c_core_file+= ['    char outaer5[1024];\n',
-                       '    strcpy(outaer5, OUT_DIR);\n',
-                       '    strcat(outaer5, "albedo_H2O.dat");\n',
-                       '    fim = fopen(outaer5, "r");\n',
-                       '    for (j=1; j<=zbin; j++) {\n',
-                       '        for (i=0; i < 324; i++) {fscanf(fim, "%lf", ccc+i);}\n',
-                       '        for (i=' + str(iniz) + '; i<' + str(fine) + '; i++) {\n',
-                       '            Interpolation( & wavelength[i], 1, & aH2O[j][i], lll, ccc, 324, 2);\n',
-                       '        }\n',
-                       '    }\n',
-                       '    fclose(fim);\n']
-        
-        if self.param['fit_amm_cld']:
-            c_core_file += ['    char outaer6[1024];\n',
+                            '    char outaer6[1024];\n',
                             '    strcpy(outaer6, OUT_DIR);\n',
                             '    strcat(outaer6, "albedo_NH3.dat");\n',
                             '    fim = fopen(outaer6, "r");\n',
@@ -1433,7 +1440,10 @@ class RADIATIVE_TRANSFER_C:
                             '            Interpolation( & wavelength[i], 1, & aNH3[j][i], lll, ccc, 324, 2);\n',
                             '        }\n',
                             '    }\n',
-                            '    fclose(fim);\n']
+                            '    fclose(fim);\n',
+                            '    bool amm_cld = true;\n']
+        else:
+            c_core_file += ['    bool amm_cld = false;\n']
 
                        # Geometric Albedo 9-point Gauss Quadruture
         c_core_file+= ['    double cmiu[9]={-0.9681602395076261,-0.8360311073266358,-0.6133714327005904,-0.3242534234038089,0.0,0.3242534234038089,0.6133714327005904,0.8360311073266358,0.9681602395076261};\n',
@@ -1497,7 +1507,7 @@ class RADIATIVE_TRANSFER_C:
                        '                gmiu=gmiu0+0.0000001;\n',
                        '            }\n',
                        # printf("%f %f %f %f\n", lat[i], lon[j], gmiu0, gmiu);
-                       '            Reflection(xx1, T, stdcross, qysum, cross, crosst, uvrfile, gmiu0, gmiu, phase, rout, ' + str(iniz) + ', ' + str(fine) + ');\n',
+                       '            Reflection(xx1, T, stdcross, qysum, cross, crosst, uvrfile, gmiu0, gmiu, phase, rout, ' + str(iniz) + ', ' + str(fine) + ', wtr_cld, amm_cld);\n',
                        '            for (k=' + str(iniz) + '; k < ' + str(fine) + '; k++) {\n',
                        '                gal[k] += wmiu[i] * wmiu[j] * rout[k] * gmiu * cos(lat[i]) * latfactor1 * lonfactor1 / PI;\n',
                        '            }\n',
@@ -1623,7 +1633,7 @@ class RADIATIVE_TRANSFER_PYTHON:
         self.param = copy.deepcopy(param)
         self.hazes_calc = param['hazes']
         self._python_core_cache = {}
-        self.test = True
+        self.test = False
 
     def __surface_structure(self):
         test_verbose = bool(self.test)
@@ -1637,7 +1647,7 @@ class RADIATIVE_TRANSFER_PYTHON:
                 print(f"__surface_structure [{label}]: {now - _surface_timer_block:.3f}s")
                 _surface_timer_block = now
 
-        wl_grid = np.asarray(self.param['opacw'], dtype=float).reshape(-1)
+        wl_grid = np.asarray(self.param['opacw'], dtype=float).reshape(-1) * 1.0e6
         self.surf_alb = np.zeros(len(wl_grid))
         if self.param['surface_albedo_parameters'] == int(1):
             self.surf_alb += self.param['Ag']
@@ -1682,24 +1692,23 @@ class RADIATIVE_TRANSFER_PYTHON:
         # Temperature profile
         T = self.param['T'] * np.ones(len(P)) # in K
 
-        # Cloud density calculation
-        cloudden = 1.0e-36 * np.ones(len(P))
-        for i in range(len(P) - 2, -1, -1):
-            cloudden[i] = max(abs(self.param['vmr_H2O'][i] - self.param['vmr_H2O'][i + 1]) * 0.018 * P[i] / const.R.value / T[i], 1e-25)  # kg/m^3, g/L
-
-        # Particle size calculation
-        particlesize = 1.0e-36 * np.ones(len(P))
-        if self.param['fit_p_size'] and self.param['p_size_type'] == 'constant':
-            particlesize = self.param['p_size'] * np.ones(len(P))
-        else:
+        if self.param['fit_wtr_cld'] and 'H2O' in self.param['fit_molecules']:
+            cloudden = 1.0e-36 * np.ones(len(P))
             for i in range(len(P) - 2, -1, -1):
-                r0, r1, r2, VP = particlesizef(g, T[i], P[i], self.param['mean_mol_weight'][i], self.param['mm']['H2O'], self.param['KE'], deltaP)
-                if self.param['fit_p_size'] and self.param['p_size_type'] == 'factor':
-                    particlesize[i] = r2 * self.param['p_size']
-                else:
-                    particlesize[i] = r2 + 0.0
+                cloudden[i] = max(abs(self.param['vmr_H2O'][i] - self.param['vmr_H2O'][i + 1]) * 0.018 * P[i] / const.R.value / T[i], 1e-25)  # kg/m^3, g/L
 
-        if self.param['fit_amm_cld']:
+            particlesize = 1.0e-36 * np.ones(len(P))
+            if self.param['fit_p_size'] and self.param['p_size_type'] == 'constant':
+                particlesize = self.param['p_size'] * np.ones(len(P))
+            else:
+                for i in range(len(P) - 2, -1, -1):
+                    r0, _, r2, VP = particlesizef(g, T[i], P[i], self.param['mean_mol_weight'][i], self.param['mm']['H2O'], self.param['KE'], deltaP)
+                    if self.param['fit_p_size'] and self.param['p_size_type'] == 'factor':
+                        particlesize[i] = r2 * self.param['p_size']
+                    else:
+                        particlesize[i] = r2 + 0.0
+
+        if self.param['fit_amm_cld'] and 'NH3' in self.param['fit_molecules']:
             cloudden_nh3 = 1.0e-36 * np.ones(len(P))
             for i in range(len(P) - 2, -1, -1):
                 cloudden_nh3[i] = max(abs(self.param['vmr_NH3'][i] - self.param['vmr_NH3'][i + 1]) * 0.017 * P[i] / const.R.value / T[i], 1e-25)  # kg/m^3, g/L
@@ -1710,23 +1719,24 @@ class RADIATIVE_TRANSFER_PYTHON:
             else:
                 for i in range(len(P) - 2, -1, -1):
                     deltaP_nh3 = P[i] * abs(self.param['vmr_NH3'][i] - self.param['vmr_NH3'][i + 1])
-                    r0, r1, r2, VP = particlesizef(g, T[i], P[i], self.param['mean_mol_weight'][i], self.param['mm']['NH3'], self.param['KE'], deltaP_nh3)
+                    r0, _, r2, VP = particlesizef(g, T[i], P[i], self.param['mean_mol_weight'][i], self.param['mm']['NH3'], self.param['KE'], deltaP_nh3)
                     if self.param['fit_p_size'] and self.param['p_size_type'] == 'factor':
                         particlesize_nh3[i] = r2 * self.param['p_size']
                     else:
                         particlesize_nh3[i] = r2 + 0.0
-            
-            cloudden_nh3 = cloudden_nh3[::-1]
-            particlesize_nh3 = particlesize_nh3[::-1]
-        
+
         if test_verbose:
             _print_timing('cloud_density_and_particle_size')
 
         # Calculate the height
         P = P[::-1]
         T = T[::-1]
-        cloudden = cloudden[::-1]
-        particlesize = particlesize[::-1]
+        if self.param['fit_wtr_cld'] and 'H2O' in self.param['fit_molecules']:
+            cloudden = cloudden[::-1]
+            particlesize = particlesize[::-1]
+        if self.param['fit_amm_cld'] and 'NH3' in self.param['fit_molecules']:
+            cloudden_nh3 = cloudden_nh3[::-1]
+            particlesize_nh3 = particlesize_nh3[::-1]
         MMM = self.param['mean_mol_weight'][::-1]
 
         # Atmospheric Composition
@@ -1743,7 +1753,15 @@ class RADIATIVE_TRANSFER_PYTHON:
 
         # Adaptive grid
         if self.param['use_adaptive_grid']:
-            idx_cloud_layers = np.where(np.diff(f['H2O']) != 0.0)[0] + 1
+            idx_cloud_sets = []
+            if self.param['fit_wtr_cld'] and 'H2O' in f:
+                idx_cloud_sets.append(np.where(np.diff(f['H2O']) != 0.0)[0] + 1)
+            if self.param['fit_amm_cld'] and 'NH3' in f:
+                idx_cloud_sets.append(np.where(np.diff(f['NH3']) != 0.0)[0] + 1)
+            if idx_cloud_sets:
+                idx_cloud_layers = np.unique(np.concatenate(idx_cloud_sets))
+            else:
+                idx_cloud_layers = np.array([], dtype=int)
             if len(idx_cloud_layers) > 0:
                 n_cloud_layers = int(round((self.param['n_layer'] + 1) / 3, 0))
                 n_above_layers = int(round((self.param['n_layer'] + 1 - n_cloud_layers) / 2, 0))
@@ -1778,266 +1796,135 @@ class RADIATIVE_TRANSFER_PYTHON:
             tck = interp1d(Z, np.log(f[self.param['gas_fill']]))
             n[self.param['gas_fill']] = np.exp(tck(zl)) * nden
 
-        tck = interp1d(Z, np.log(cloudden))
-        cloudden = np.exp(tck(zl))
+        if self.param['fit_wtr_cld'] and 'H2O' in self.param['fit_molecules']:
+            tck = interp1d(Z, np.log(cloudden))
+            cloudden = np.exp(tck(zl))
 
-        tck = interp1d(Z, np.log(particlesize))
-        particlesize = np.exp(tck(zl))
+            tck = interp1d(Z, np.log(particlesize))
+            particlesize = np.exp(tck(zl))
 
-        if self.param['fit_amm_cld']:
+        if self.param['fit_amm_cld'] and 'NH3' in self.param['fit_molecules']:
             tck = interp1d(Z, np.log(cloudden_nh3))
             cloudden_nh3 = np.exp(tck(zl))
 
             tck = interp1d(Z, np.log(particlesize_nh3))
             particlesize_nh3 = np.exp(tck(zl))
 
-        self.species_to_num = self.mol_species_number()
-        #    Generate ConcentrationSTD.dat file
+        self.species_to_num = self.__mol_species_number()
         NSP = 111
-        with open(self.outdir + 'ConcentrationSTD.dat', 'w') as file:
-            file.write('z\t\tz0\t\tz1\t\tT\t\tP')
-            for i in range(1, NSP + 1):
-                file.write('\t\t' + str(i))
-            file.write('\n')
-            file.write('km\t\tkm\t\tkm\t\tK\t\tPa\n')
-            for j in range(0, len(zl)):
-                file.write("{:.6f}".format(zl[j]) + '\t\t' + "{:.6f}".format(z0[j]) + '\t\t' + "{:.6f}".format(z1[j]) + '\t\t' + "{:.6f}".format(tl[j]) + '\t\t' + "{:.6e}".format(pl[j]))
-                for i in range(1, NSP + 1):
-                    # H2O
-                    if i == 7 and 'H2O' in self.param['fit_molecules']:
-                        if self.param['contribution'] and self.param['mol_contr'] == 'H2O':
-                            file.write('\t\t' + "{:.6e}".format(n['H2O'][j]))
-                        elif self.param['contribution'] and self.param['mol_contr'] != 'H2O':
-                            file.write('\t\t' + "{:.6e}".format(0.0))
-                        else:
-                            file.write('\t\t' + "{:.6e}".format(n['H2O'][j]))
-
-                    # NH3
-                    elif i == 9 and 'NH3' in self.param['fit_molecules']:
-                        if self.param['contribution'] and self.param['mol_contr'] == 'NH3':
-                            file.write('\t\t' + "{:.6e}".format(n['NH3'][j]))
-                        elif self.param['contribution'] and self.param['mol_contr'] != 'NH3':
-                            file.write('\t\t' + "{:.6e}".format(0.0))
-                        else:
-                            file.write('\t\t' + "{:.6e}".format(n['NH3'][j]))
-
-                    # CH4
-                    elif i == 21 and 'CH4' in self.param['fit_molecules']:
-                        if self.param['contribution'] and self.param['mol_contr'] == 'CH4':
-                            file.write('\t\t' + "{:.6e}".format(n['CH4'][j]))
-                        elif self.param['contribution'] and self.param['mol_contr'] != 'CH4':
-                            file.write('\t\t' + "{:.6e}".format(0.0))
-                        else:
-                            file.write('\t\t' + "{:.6e}".format(n['CH4'][j]))
-
-                    # SO2
-                    elif i == 43 and 'SO2' in self.param['fit_molecules']:
-                        if self.param['contribution'] and self.param['mol_contr'] == 'SO2':
-                            file.write('\t\t' + "{:.6e}".format(n['SO2'][j]))
-                        elif self.param['contribution'] and self.param['mol_contr'] != 'SO2':
-                            file.write('\t\t' + "{:.6e}".format(0.0))
-                        else:
-                            file.write('\t\t' + "{:.6e}".format(n['SO2'][j]))
-
-                    # H2S
-                    elif i == 45 and 'H2S' in self.param['fit_molecules']:
-                        if self.param['contribution'] and self.param['mol_contr'] == 'H2S':
-                            file.write('\t\t' + "{:.6e}".format(n['H2S'][j]))
-                        elif self.param['contribution'] and self.param['mol_contr'] != 'H2S':
-                            file.write('\t\t' + "{:.6e}".format(0.0))
-                        else:
-                            file.write('\t\t' + "{:.6e}".format(n['H2S'][j]))
-
-                    # CO2
-                    elif i == 52 and 'CO2' in self.param['fit_molecules']:
-                        if self.param['contribution'] and self.param['mol_contr'] == 'CO2':
-                            file.write('\t\t' + "{:.6e}".format(n['CO2'][j]))
-                        elif self.param['contribution'] and self.param['mol_contr'] != 'CO2':
-                            file.write('\t\t' + "{:.6e}".format(0.0))
-                        else:
-                            file.write('\t\t' + "{:.6e}".format(n['CO2'][j]))
-
-                    # CO
-                    elif i == 20 and 'CO' in self.param['fit_molecules']:
-                        if self.param['contribution'] and self.param['mol_contr'] == 'CO':
-                            file.write('\t\t' + "{:.6e}".format(n['CO'][j]))
-                        elif self.param['contribution'] and self.param['mol_contr'] != 'CO':
-                            file.write('\t\t' + "{:.6e}".format(0.0))
-                        else:
-                            file.write('\t\t' + "{:.6e}".format(n['CO'][j]))
-
-                    # O2
-                    elif i == 54 and 'O2' in self.param['fit_molecules']:
-                        if self.param['contribution'] and self.param['mol_contr'] == 'O2':
-                            file.write('\t\t' + "{:.6e}".format(n['O2'][j]))
-                        elif self.param['contribution'] and self.param['mol_contr'] != 'O2':
-                            file.write('\t\t' + "{:.6e}".format(0.0))
-                        else:
-                            file.write('\t\t' + "{:.6e}".format(n['O2'][j]))
-
-                    # O3
-                    elif i == 2 and 'O3' in self.param['fit_molecules']:
-                        if self.param['contribution'] and self.param['mol_contr'] == 'O3':
-                            file.write('\t\t' + "{:.6e}".format(n['O3'][j]))
-                        elif self.param['contribution'] and self.param['mol_contr'] != 'O3':
-                            file.write('\t\t' + "{:.6e}".format(0.0))
-                        else:
-                            file.write('\t\t' + "{:.6e}".format(n['O3'][j]))
-
-                    # N2O
-                    elif i == 11 and 'N2O' in self.param['fit_molecules']:
-                        if self.param['contribution'] and self.param['mol_contr'] == 'N2O':
-                            file.write('\t\t' + "{:.6e}".format(n['N2O'][j]))
-                        elif self.param['contribution'] and self.param['mol_contr'] != 'N2O':
-                            file.write('\t\t' + "{:.6e}".format(0.0))
-                        else:
-                            file.write('\t\t' + "{:.6e}".format(n['N2O'][j]))
-
-                    # N2
-                    elif i == 55 and 'N2' in self.param['fit_molecules']:
-                        if self.param['contribution'] and self.param['mol_contr'] == 'N2':
-                            file.write('\t\t' + "{:.6e}".format(n['N2'][j]))
-                        elif self.param['contribution'] and self.param['mol_contr'] != 'N2':
-                            file.write('\t\t' + "{:.6e}".format(0.0))
-                        else:
-                            file.write('\t\t' + "{:.6e}".format(n['N2'][j]))
-                    elif i == 55 and self.param['gas_fill'] == 'N2':
-                        if self.param['contribution'] and self.param['mol_contr'] == 'N2':
-                            file.write('\t\t' + "{:.6e}".format(n['N2'][j]))
-                        elif self.param['contribution'] and self.param['mol_contr'] != 'N2':
-                            file.write('\t\t' + "{:.6e}".format(0.0))
-                        else:
-                            file.write('\t\t' + "{:.6e}".format(n['N2'][j]))
-
-                    # H2
-                    elif i == 53 and self.param['gas_fill'] == 'H2':
-                        if self.param['contribution'] and self.param['mol_contr'] == 'H2':
-                            file.write('\t\t' + "{:.6e}".format(n['H2'][j]))
-                        elif self.param['contribution'] and self.param['mol_contr'] != 'H2':
-                            file.write('\t\t' + "{:.6e}".format(0.0))
-                        else:
-                            file.write('\t\t' + "{:.6e}".format(n['H2'][j]))
-                    else:
-                        file.write('\t\t' + "{:.6e}".format(0.0))
-                file.write('\n')
+        xx_layers = np.zeros((len(zl), NSP + 1), dtype=float)
+        for mol_name, values in n.items():
+            std_num = self.species_to_num.get(mol_name)
+            if std_num is None:
+                continue
+            if self.param['contribution'] and self.param['mol_contr'] != mol_name:
+                continue
+            xx_layers[:, std_num] = values
 
         if test_verbose:
             _print_timing('profile_interpolation')
 
         #    cloud output
-        cro_h2o = np.zeros((len(zl), 324))
-        alb_h2o = np.ones((len(zl), 324))
-        geo_h2o = np.zeros((len(zl), 324))
-        
-        if self.param['fit_amm_cld']:
-            cro_nh3 = np.zeros((len(zl), 324))
-            alb_nh3 = np.ones((len(zl), 324))
-            geo_nh3 = np.zeros((len(zl), 324))
-
-        #    opacity
         sig = 2
-        for j in range(0, len(zl)):
-            r2 = particlesize[j]
-            if cloudden[j] < 1e-16:
-                pass
-            else:
-                r0 = r2 * np.exp(-np.log(sig) ** 2.)
-                if self.param['wtr_cld_type'] == 'mixed' and self.param['PT_profile_type'] == 'parametric':
-                    if tl[j] < 273.15: # ice
-                        VP = 4. * math.pi / 3. * ((r2 * 1.0e-6 * np.exp(0.5 * np.log(sig) ** 2.)) ** 3.) * 1.0e+6 * 0.92  # g
-                        for indi in range(0, 324):
-                            tck = interp1d(np.log10(self.param['H2OL_r']), np.log10(self.param['H2OL_c_ice'][:, indi]))
-                            temporaneo = tck(np.log10(max(0.01, min(r0, 100))))
-                            cro_h2o[j, indi] = cloudden[j] / VP * 1.0e-3 * (10. ** temporaneo)  # cm-1
-                            tck = interp1d(np.log10(self.param['H2OL_r']), self.param['H2OL_a_ice'][:, indi])
-                            alb_h2o[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
-                            tck = interp1d(np.log10(self.param['H2OL_r']), self.param['H2OL_g_ice'][:, indi])
-                            geo_h2o[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
-                    else: # liquid
-                        VP = 4. * math.pi / 3. * ((r2 * 1.0e-6 * np.exp(0.5 * np.log(sig) ** 2.)) ** 3.) * 1.0e+6 * 1.0  # g
-                        for indi in range(0, 324):
-                            tck = interp1d(np.log10(self.param['H2OL_r']), np.log10(self.param['H2OL_c_liquid'][:, indi]))
-                            temporaneo = tck(np.log10(max(0.01, min(r0, 100))))
-                            cro_h2o[j, indi] = cloudden[j] / VP * 1.0e-3 * (10. ** temporaneo)  # cm-1
-                            tck = interp1d(np.log10(self.param['H2OL_r']), self.param['H2OL_a_liquid'][:, indi])
-                            alb_h2o[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
-                            tck = interp1d(np.log10(self.param['H2OL_r']), self.param['H2OL_g_liquid'][:, indi])
-                            geo_h2o[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
-                else:  # liquid or ice
-                    if self.param['wtr_cld_type'] == 'liquid':  # liquid
-                        VP = 4. * math.pi / 3. * ((r2 * 1.0e-6 * np.exp(0.5 * np.log(sig) ** 2.)) ** 3.) * 1.0e+6 * 1.0  # g
-                    else:  # ice
-                        VP = 4. * math.pi / 3. * ((r2 * 1.0e-6 * np.exp(0.5 * np.log(sig) ** 2.)) ** 3.) * 1.0e+6 * 0.92  # g
-                    for indi in range(0, 324):
-                        tck = interp1d(np.log10(self.param['H2OL_r']), np.log10(self.param['H2OL_c'][:, indi]))
-                        temporaneo = tck(np.log10(max(0.01, min(r0, 100))))
-                        cro_h2o[j, indi] = cloudden[j] / VP * 1.0e-3 * (10. ** temporaneo)  # cm-1
-                        tck = interp1d(np.log10(self.param['H2OL_r']), self.param['H2OL_a'][:, indi])
-                        alb_h2o[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
-                        tck = interp1d(np.log10(self.param['H2OL_r']), self.param['H2OL_g'][:, indi])
-                        geo_h2o[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
-            
-            if self.param['fit_amm_cld']:
-                r2 = particlesize_nh3[j]
-                if cloudden_nh3[j] < 1e-16:
-                    pass
-                else:
-                    r0 = r2 * np.exp(-np.log(sig) ** 2.)  # micron
-                    VP = 4. * math.pi / 3. * ((r2 * 1.0E-6 * np.exp(0.5 * (np.log(sig) ** 2.))) ** 3.) * 1.0E+6 * 0.87  # g
-                    for indi in range(0, 324):
-                        tck = interp1d(np.log10(self.param['NH3_r']), np.log10(self.param['NH3_c'][:, indi]))
-                        temporaneo = tck(np.log10(max(0.01, min(r0, 100))))
-                        cro_nh3[j, indi] = cloudden_nh3[j] / VP * 1.0e-3 * (10. ** temporaneo)  # cm-1
-                        tck = interp1d(np.log10(self.param['NH3_r']), self.param['NH3_a'][:, indi])
-                        alb_nh3[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
-                        tck = interp1d(np.log10(self.param['NH3_r']), self.param['NH3_g'][:, indi])
-                        geo_nh3[j, indi] = tck(np.log10(max(0.01, min(r0, 100))))
+        n_cloud_wavelength = 324
+        if self.param['fit_wtr_cld'] and 'H2O' in self.param['fit_molecules'] and self.param['wtr_cld_type'] == 'mixed' and self.param['PT_profile_type'] == 'parametric':
+            ice_mask = tl < 273.15
+            cro_h2o, alb_h2o, geo_h2o = self._compute_cloud_optics_from_tables(
+                self.param['H2OL_r'],
+                self.param['H2OL_c_liquid'],
+                self.param['H2OL_a_liquid'],
+                self.param['H2OL_g_liquid'],
+                particlesize,
+                cloudden * (~ice_mask),
+                1.0,
+                sig,
+            )
+            cro_h2o_ice, alb_h2o_ice, geo_h2o_ice = self._compute_cloud_optics_from_tables(
+                self.param['H2OL_r'],
+                self.param['H2OL_c_ice'],
+                self.param['H2OL_a_ice'],
+                self.param['H2OL_g_ice'],
+                particlesize,
+                cloudden * ice_mask,
+                0.92,
+                sig,
+            )
+            active_ice = ice_mask & (cloudden >= 1.0e-16)
+            cro_h2o[active_ice] = cro_h2o_ice[active_ice]
+            alb_h2o[active_ice] = alb_h2o_ice[active_ice]
+            geo_h2o[active_ice] = geo_h2o_ice[active_ice]
+        elif self.param['fit_wtr_cld'] and 'H2O' in self.param['fit_molecules']:
+            water_material_density = 1.0 if self.param['wtr_cld_type'] == 'liquid' else 0.92
+            cro_h2o, alb_h2o, geo_h2o = self._compute_cloud_optics_from_tables(
+                self.param['H2OL_r'],
+                self.param['H2OL_c'],
+                self.param['H2OL_a'],
+                self.param['H2OL_g'],
+                particlesize,
+                cloudden,
+                water_material_density,
+                sig,
+            )
+        else:
+            cro_h2o = np.zeros((len(zl), n_cloud_wavelength), dtype=float)
+            alb_h2o = np.ones((len(zl), n_cloud_wavelength), dtype=float)
+            geo_h2o = np.zeros((len(zl), n_cloud_wavelength), dtype=float)
+
+        if self.param['fit_amm_cld'] and 'NH3' in self.param['fit_molecules']:
+            cro_nh3, alb_nh3, geo_nh3 = self._compute_cloud_optics_from_tables(
+                self.param['NH3_r'],
+                self.param['NH3_c'],
+                self.param['NH3_a'],
+                self.param['NH3_g'],
+                particlesize_nh3,
+                cloudden_nh3,
+                0.87,
+                sig,
+            )
 
         if test_verbose:
             _print_timing('cloud_optics')
 
-        with open(self.outdir + 'cross_H2O.dat', 'w') as file:
-            for j in range(0, len(zl)):
-                for indi in range(0, 324):
-                    file.write("{:.6e}".format(cro_h2o[j, indi]) + '\t')
-                file.write('\n')
+        layer_temperature = np.empty(len(tl) + 1, dtype=float)
+        if len(tl) > 1:
+            layer_temperature[1:-1] = 0.5 * (tl[:-1] + tl[1:])
+            layer_temperature[0] = 1.5 * tl[0] - 0.5 * tl[1]
+            layer_temperature[-1] = 1.5 * tl[-1] - 0.5 * tl[-2]
+        else:
+            layer_temperature[0] = tl[0]
+            layer_temperature[-1] = tl[0]
 
-        with open(self.outdir + 'albedo_H2O.dat', 'w') as file:
-            for j in range(0, len(zl)):
-                for indi in range(0, 324):
-                    file.write("{:.6e}".format(alb_h2o[j, indi]) + '\t')
-                file.write('\n')
-
-        with open(self.outdir + 'geo_H2O.dat', 'w') as file:
-            for j in range(0, len(zl)):
-                for indi in range(0, 324):
-                    file.write("{:.6e}".format(geo_h2o[j, indi]) + '\t')
-                file.write('\n')
-        
+        self._python_core_cache['profile'] = {
+            'zl': np.asarray(zl, dtype=float),
+            'z0': np.asarray(z0, dtype=float),
+            'z1': np.asarray(z1, dtype=float),
+            'tl': np.asarray(tl, dtype=float),
+            'pl': np.asarray(pl, dtype=float),
+            'mm': np.asarray(nden, dtype=float),
+            'xx': np.asarray(xx_layers, dtype=float),
+            'thickl': np.asarray((z1 - z0) * 1.0e5, dtype=float),
+            'layer_temperature': layer_temperature,
+        }
+        self._python_core_cache['cloud_optics'] = {
+            'wavelength_nm': 400.0 * np.power(1.0 + 1.0 / 200.0, np.arange(324, dtype=float)),
+            'cross_h2o': np.asarray(cro_h2o, dtype=float),
+            'albedo_h2o': np.asarray(alb_h2o, dtype=float),
+            'g_h2o': np.asarray(geo_h2o, dtype=float),
+        }
         if self.param['fit_amm_cld']:
-            with open(self.outdir + 'cross_NH3.dat', 'w') as file:
-                for j in range(0, len(zl)):
-                    for indi in range(0, 324):
-                        file.write("{:.6e}".format(cro_nh3[j, indi]) + '\t')
-                    file.write('\n')
-            
-            with open(self.outdir + 'albedo_NH3.dat', 'w') as file:
-                for j in range(0, len(zl)):
-                    for indi in range(0, 324):
-                        file.write("{:.6e}".format(alb_nh3[j, indi]) + '\t')
-                    file.write('\n')
-            
-            with open(self.outdir + 'geo_NH3.dat', 'w') as file:
-                for j in range(0, len(zl)):
-                    for indi in range(0, 324):
-                        file.write("{:.6e}".format(geo_nh3[j, indi]) + '\t')
-                    file.write('\n')
+            self._python_core_cache['cloud_optics'].update(
+                {
+                    'cross_nh3': np.asarray(cro_nh3, dtype=float),
+                    'albedo_nh3': np.asarray(alb_nh3, dtype=float),
+                    'g_nh3': np.asarray(geo_nh3, dtype=float),
+                }
+            )
 
         if test_verbose:
             _print_timing('atmosphere_cache')
             print(f"__atmospheric_structure [total]: {time.perf_counter() - _atmos_timer_total:.3f}s")
     
-    def mol_species_number(self):
+    def __mol_species_number(self):
         species_to_num = {
             'O': 1,
             'O3': 2,
@@ -2153,32 +2040,784 @@ class RADIATIVE_TRANSFER_PYTHON:
         }
         return species_to_num
 
-    def __core_function(self):
-        # Architectural notes for the future Python radiative-transfer core:
-        # keep the raw opacity tables in self.param and build any interpolator
-        # objects here, close to the runtime logic that consumes them.
-        #
-        # Do not fuse everything into one giant sigma(T, P, wl) interpolator.
-        # That makes it harder to mirror the C behavior and harder to debug.
-        #
-        # Preferred split:
-        # - OpacityTable: owns temp_grid, press_grid, wl_grid, values
-        # - OpacityEvaluator: returns a spectrum on the native opacity
-        #   wavelength grid for a given T and P
-        # - WavelengthResampler: maps that native-grid spectrum onto the
-        #   radiative-transfer or instrument wavelength grid
-        #
-        # This also keeps the interpolation semantics explicit:
-        # - interpolate in T and log(P), matching the C implementation
-        # - keep the raw arrays in param
-        # - create interpolators in __core_function
-        # - CIA tables are resampled onto the same working wavelength grid as
-        #   the cross sections, so both should be consumed on a shared wl grid
-        #
-        # TODO: when wiring the Python opacity evaluator, verify whether the
-        # loaded cross sections should be converted from m^2 to cm^2 here to
-        # match forward_mod/readcross.c exactly.
-        pass
+    def _planck_nm(self, wavelength_m, temperature):
+        exponent = np.clip(
+            (const.h.value * const.c.value) / (wavelength_m * const.k_B.value * temperature),
+            1.0e-12,
+            700.0,
+        )
+        return (
+            2.0
+            * const.h.value
+            * const.c.value ** 2
+            / wavelength_m ** 5
+            / np.expm1(exponent)
+            * 1.0e-9
+        )
+
+    def _interpolate_table_rows(self, x_grid, table, targets):
+        x_grid = np.asarray(x_grid, dtype=float).reshape(-1)
+        values = np.asarray(table, dtype=float)
+        targets = np.asarray(targets, dtype=float).reshape(-1)
+        if values.ndim != 2:
+            raise ValueError("Expected a 2D interpolation table.")
+
+        if targets.size == 0:
+            return np.zeros((0, values.shape[1]), dtype=float)
+        if x_grid.size == 1:
+            return np.repeat(values[:1], targets.size, axis=0)
+
+        x_fit = np.clip(targets, x_grid[0], x_grid[-1])
+        high = np.searchsorted(x_grid, x_fit, side='right')
+        high = np.clip(high, 1, x_grid.size - 1)
+        low = high - 1
+        denom = x_grid[high] - x_grid[low]
+        weight = np.divide(
+            x_fit - x_grid[low],
+            denom,
+            out=np.zeros_like(x_fit),
+            where=denom != 0.0,
+        )
+        low_values = values[low]
+        high_values = values[high]
+        return low_values + (high_values - low_values) * weight[:, np.newaxis]
+
+    def _prepare_opacity_interpolation(self, temperature, pressure):
+        temp_grid = np.asarray(self.param['opact'], dtype=float).reshape(-1)
+        press_grid = np.asarray(self.param['opacp'], dtype=float).reshape(-1)
+        n_layers = temperature.size
+
+        if temp_grid.size == 1:
+            t_low = np.zeros(n_layers, dtype=int)
+            t_high = np.zeros(n_layers, dtype=int)
+            t_weight = np.zeros(n_layers, dtype=float)
+        else:
+            t_fit = np.clip(temperature, temp_grid[0], temp_grid[-1])
+            t_high = np.searchsorted(temp_grid, t_fit, side='right')
+            t_high = np.clip(t_high, 1, temp_grid.size - 1)
+            t_low = t_high - 1
+            t_denom = temp_grid[t_high] - temp_grid[t_low]
+            t_weight = np.divide(
+                t_fit - temp_grid[t_low],
+                t_denom,
+                out=np.zeros_like(t_fit),
+                where=t_denom != 0.0,
+            )
+
+        p_fit = np.minimum(pressure, press_grid[-1])
+        valid_pressure = p_fit >= press_grid[0]
+        if press_grid.size == 1:
+            p_low = np.zeros(n_layers, dtype=int)
+            p_high = np.zeros(n_layers, dtype=int)
+            p_weight = np.zeros(n_layers, dtype=float)
+        else:
+            log_press_grid = np.log(press_grid)
+            p_clipped = np.clip(p_fit, press_grid[0], press_grid[-1])
+            p_high = np.searchsorted(press_grid, p_clipped, side='right')
+            p_high = np.clip(p_high, 1, press_grid.size - 1)
+            p_low = p_high - 1
+            p_denom = log_press_grid[p_high] - log_press_grid[p_low]
+            p_weight = np.divide(
+                np.log(p_clipped) - log_press_grid[p_low],
+                p_denom,
+                out=np.zeros_like(p_clipped),
+                where=p_denom != 0.0,
+            )
+
+        return {
+            't_low': t_low,
+            't_high': t_high,
+            't_weight': t_weight,
+            'p_low': p_low,
+            'p_high': p_high,
+            'p_weight': p_weight,
+            'valid_pressure': valid_pressure,
+        }
+
+    def _evaluate_opacity_table(self, opacity_table, interp_state):
+        table = np.asarray(opacity_table, dtype=float)
+        n_layers = interp_state['t_low'].size
+        n_wavelength = table.shape[-1]
+        interpolated = np.zeros((n_layers, n_wavelength), dtype=float)
+        valid_pressure = interp_state['valid_pressure']
+        if not np.any(valid_pressure):
+            return interpolated
+
+        t_low = interp_state['t_low']
+        t_high = interp_state['t_high']
+        p_low = interp_state['p_low']
+        p_high = interp_state['p_high']
+        low_low = table[p_low, t_low]
+        low_high = table[p_low, t_high]
+        high_low = table[p_high, t_low]
+        high_high = table[p_high, t_high]
+        t_weight_2d = interp_state['t_weight'][:, np.newaxis]
+        p_weight_2d = interp_state['p_weight'][:, np.newaxis]
+        interp_low = low_low + (low_high - low_low) * t_weight_2d
+        interp_high = high_low + (high_high - high_low) * t_weight_2d
+        interpolated_valid = interp_low + (interp_high - interp_low) * p_weight_2d
+        interpolated[valid_pressure] = np.maximum(interpolated_valid[valid_pressure], 0.0) * 1.0e4
+
+        return interpolated
+
+    def _evaluate_cia_tables(self, wavelength_nm, temperature):
+        cia = self.param.get('cia', {})
+        temp_grid = np.asarray(cia.get('temperature_grid', []), dtype=float)
+        tables = cia.get('tables', {})
+        n_layers = temperature.size
+        n_wavelength = wavelength_nm.size
+        output = {}
+
+        for label in ['H2H2', 'H2He', 'H2H', 'N2H2', 'N2N2', 'CO2CO2', 'O2O2', 'O2N2']:
+            table = tables.get(label)
+            if table is None or temp_grid.size == 0:
+                output[label] = np.zeros((n_layers, n_wavelength), dtype=float)
+                continue
+
+            source_wavelength = np.asarray(table['wavelength'], dtype=float)
+            values = np.asarray(table['values'], dtype=float)
+            if source_wavelength.shape[0] != n_wavelength or not np.allclose(source_wavelength, wavelength_nm):
+                resampled = np.empty((n_wavelength, values.shape[1]), dtype=float)
+                for col in range(values.shape[1]):
+                    resampled[:, col] = np.interp(
+                        wavelength_nm,
+                        source_wavelength,
+                        values[:, col],
+                        left=0.0,
+                        right=0.0,
+                    )
+                values = resampled
+
+            t_fit = np.clip(temperature, temp_grid[0], temp_grid[-1])
+            if temp_grid.size == 1:
+                output[label] = np.repeat(values[:, :1].T, n_layers, axis=0)
+                continue
+
+            t_high = np.searchsorted(temp_grid, t_fit, side='right')
+            t_high = np.clip(t_high, 1, temp_grid.size - 1)
+            t_low = t_high - 1
+            log_temp_grid = np.log(temp_grid)
+            t_denom = log_temp_grid[t_high] - log_temp_grid[t_low]
+            t_weight = np.divide(
+                np.log(t_fit) - log_temp_grid[t_low],
+                t_denom,
+                out=np.zeros_like(t_fit),
+                where=t_denom != 0.0,
+            )
+            lower = values[:, t_low].T
+            upper = values[:, t_high].T
+            output[label] = lower + (upper - lower) * t_weight[:, np.newaxis]
+
+        return output
+
+    def _compute_rayleigh_terms(self, wavelength_nm, xx, mm):
+        dens_standard = 101325.0 / const.k_B.value / 273.0 * 1.0e-6
+        wavelength_um = wavelength_nm * 1.0e-3
+        wavelength_cm = wavelength_nm * 1.0e-7
+
+        def _rayleigh_from_refidx(refidx):
+            ref_term = np.maximum(refidx, 1.0)
+            return (
+                1.061
+                * 8.0
+                * np.pi ** 3
+                * (ref_term ** 2 - 1.0) ** 2
+                / 3.0
+                / wavelength_cm ** 4
+                / dens_standard ** 2
+            )
+
+        co2_wl = np.clip(wavelength_nm, 480.0, 1800.0) * 1.0e-3
+        co2_inv = 1.0 / co2_wl ** 2
+        n2_inv = 1.0 / wavelength_um ** 2
+
+        rayleigh_by_species = {
+            7: _rayleigh_from_refidx(np.full_like(wavelength_nm, 1.000261)),
+            21: _rayleigh_from_refidx(np.full_like(wavelength_nm, 1.000444)),
+            52: _rayleigh_from_refidx(
+                1.0
+                + 1.0e-5
+                * (
+                    0.154489 / (0.0584738 - co2_inv)
+                    + 8309.1927 / (210.92417 - co2_inv)
+                    + 287.64190 / (60.122959 - co2_inv)
+                )
+            ),
+            20: _rayleigh_from_refidx(np.full_like(wavelength_nm, 1.000338)),
+            54: _rayleigh_from_refidx(1.0 + 1.181494e-4 + 9.708931e-3 / (75.4 - n2_inv)),
+            2: _rayleigh_from_refidx(np.full_like(wavelength_nm, 1.00052)),
+            11: _rayleigh_from_refidx(np.full_like(wavelength_nm, 1.000516)),
+            55: _rayleigh_from_refidx(1.0 + 6.8552e-5 + 3.243157e-2 / (144.0 - n2_inv)),
+            53: 8.14e-13 * (wavelength_nm * 10.0) ** -4
+            + 1.28e-6 * (wavelength_nm * 10.0) ** -6
+            + 1.61 * (wavelength_nm * 10.0) ** -8,
+        }
+
+        species_order = np.array([7, 21, 52, 20, 54, 2, 11, 55, 53], dtype=int)
+        mixing_ratio = np.divide(
+            xx[:, species_order],
+            mm[:, np.newaxis],
+            out=np.zeros((xx.shape[0], species_order.size), dtype=float),
+            where=mm[:, np.newaxis] > 0.0,
+        )
+        coefficients = np.vstack([rayleigh_by_species[idx] for idx in species_order])
+        combined = mixing_ratio @ coefficients
+
+        if not self.param['contribution']:
+            denominator = np.sum(mixing_ratio, axis=1)
+            crossr = np.zeros_like(combined)
+            valid = denominator > 0.0
+            crossr[valid] = combined[valid] / denominator[valid, np.newaxis]
+            return crossr
+        if self.param['mol_contr'] is not None:
+            return combined
+        return np.zeros_like(combined)
+
+    def _compute_cloud_optics_from_tables(
+        self,
+        radius_grid,
+        cross_table,
+        albedo_table,
+        g_table,
+        particle_radius,
+        cloud_density,
+        material_density,
+        sig,
+    ):
+        n_layers = particle_radius.size
+        n_wavelength = np.asarray(cross_table, dtype=float).shape[1]
+        cross = np.zeros((n_layers, n_wavelength), dtype=float)
+        albedo = np.ones((n_layers, n_wavelength), dtype=float)
+        asymmetry = np.zeros((n_layers, n_wavelength), dtype=float)
+
+        active = cloud_density >= 1.0e-16
+        if not np.any(active):
+            return cross, albedo, asymmetry
+
+        log_radius_grid = np.log10(np.asarray(radius_grid, dtype=float))
+        sig_log_sq = np.log(sig) ** 2
+        active_radius = particle_radius[active]
+        target_radius = np.log10(np.clip(active_radius * np.exp(-sig_log_sq), 0.01, 100.0))
+        vp = (
+            4.0
+            * math.pi
+            / 3.0
+            * ((active_radius * 1.0e-6 * np.exp(0.5 * sig_log_sq)) ** 3.0)
+            * 1.0e6
+            * material_density
+        )
+
+        log_cross = self._interpolate_table_rows(log_radius_grid, np.log10(cross_table), target_radius)
+        albedo_active = self._interpolate_table_rows(log_radius_grid, albedo_table, target_radius)
+        asymmetry_active = self._interpolate_table_rows(log_radius_grid, g_table, target_radius)
+
+        cross[active] = cloud_density[active][:, np.newaxis] / vp[:, np.newaxis] * 1.0e-3 * np.power(10.0, log_cross)
+        albedo[active] = albedo_active
+        asymmetry[active] = asymmetry_active
+        return cross, albedo, asymmetry
+
+    def _build_optical_properties(self, wavelength_nm, tl, pl, mm, xx, thickl, cloud_optics):
+        n_layers = tl.size
+        n_wavelength = wavelength_nm.size
+        wa = np.zeros((n_layers, n_wavelength), dtype=float)
+        ws = np.zeros((n_layers, n_wavelength), dtype=float)
+        g_numerator = np.zeros((n_layers, n_wavelength), dtype=float)
+        opacity_interp = self._prepare_opacity_interpolation(tl, pl)
+
+        clipped_cross_temperature = np.clip(tl, 200.0, 300.0)
+        for std_num, table in self.param.get('photolysis_tables', {}).items():
+            if std_num >= xx.shape[1]:
+                continue
+            number_density = xx[:, std_num]
+            if not np.any(number_density):
+                continue
+            data = np.asarray(table['data'], dtype=float)
+            cross = np.interp(wavelength_nm, data[:, 0], data[:, 1], left=0.0, right=0.0)
+            cross_t = np.interp(wavelength_nm, data[:, 0], data[:, 2], left=0.0, right=0.0)
+            wa += number_density[:, np.newaxis] * (
+                cross[np.newaxis, :] + (clipped_cross_temperature[:, np.newaxis] - 295.0) * cross_t[np.newaxis, :]
+            )
+
+        active_molecules = list(self.param.get('fit_molecules', []))
+        gas_fill = self.param.get('gas_fill')
+        if gas_fill is not None and gas_fill not in active_molecules:
+            active_molecules.append(gas_fill)
+        for mol_name in active_molecules:
+            param_key = 'opac' + mol_name.lower()
+            if param_key not in self.param:
+                continue
+            std_num = self.species_to_num.get(mol_name)
+            if std_num is None:
+                continue
+            number_density = xx[:, std_num]
+            if not np.any(number_density):
+                continue
+            sigma = self._evaluate_opacity_table(self.param[param_key], opacity_interp)
+            wa += sigma * number_density[:, np.newaxis]
+
+        cia_terms = self._evaluate_cia_tables(wavelength_nm, tl)
+        helium_number = np.maximum(mm - np.sum(xx[:, 1:], axis=1), 0.0)
+        wa += cia_terms['H2H2'] * xx[:, 53][:, np.newaxis] * xx[:, 53][:, np.newaxis]
+        wa += cia_terms['H2H'] * xx[:, 53][:, np.newaxis] * xx[:, 3][:, np.newaxis]
+        wa += cia_terms['H2He'] * xx[:, 53][:, np.newaxis] * helium_number[:, np.newaxis]
+        wa += cia_terms['N2H2'] * xx[:, 53][:, np.newaxis] * xx[:, 55][:, np.newaxis]
+        wa += cia_terms['N2N2'] * xx[:, 55][:, np.newaxis] * xx[:, 55][:, np.newaxis]
+        wa += cia_terms['CO2CO2'] * xx[:, 52][:, np.newaxis] * xx[:, 52][:, np.newaxis]
+        wa += cia_terms['O2O2'] * xx[:, 54][:, np.newaxis] * xx[:, 54][:, np.newaxis]
+        wa += cia_terms['O2N2'] * xx[:, 54][:, np.newaxis] * xx[:, 55][:, np.newaxis]
+
+        cloud_wavelength = np.asarray(cloud_optics['wavelength_nm'], dtype=float)
+        def _resample_cloud_term(values):
+            resampled = np.empty((n_layers, n_wavelength), dtype=float)
+            for layer_idx in range(n_layers):
+                resampled[layer_idx] = np.interp(
+                    wavelength_nm,
+                    cloud_wavelength,
+                    values[layer_idx],
+                    left=values[layer_idx, 0],
+                    right=values[layer_idx, -1],
+                )
+            return resampled
+
+        cross_h2o = _resample_cloud_term(np.asarray(cloud_optics['cross_h2o'], dtype=float))
+        albedo_h2o = _resample_cloud_term(np.asarray(cloud_optics['albedo_h2o'], dtype=float))
+        g_h2o = _resample_cloud_term(np.asarray(cloud_optics['g_h2o'], dtype=float))
+
+        wa += cross_h2o * (1.0 - albedo_h2o)
+        ws += cross_h2o * albedo_h2o
+        g_numerator += cross_h2o * albedo_h2o * g_h2o
+
+        if 'cross_nh3' in cloud_optics:
+            cross_nh3 = _resample_cloud_term(np.asarray(cloud_optics['cross_nh3'], dtype=float))
+            albedo_nh3 = _resample_cloud_term(np.asarray(cloud_optics['albedo_nh3'], dtype=float))
+            g_nh3 = _resample_cloud_term(np.asarray(cloud_optics['g_nh3'], dtype=float))
+            wa += cross_nh3 * (1.0 - albedo_nh3)
+            ws += cross_nh3 * albedo_nh3
+            g_numerator += cross_nh3 * albedo_nh3 * g_nh3
+
+        crossr = self._compute_rayleigh_terms(wavelength_nm, xx, mm)
+        rayleigh_scattering = crossr * mm[:, np.newaxis]
+        ws += rayleigh_scattering
+
+        w = np.zeros_like(ws)
+        g = np.zeros_like(ws)
+        rr = np.ones_like(ws)
+        valid_scattering = ws > 0.0
+        total_extinction = wa + ws
+        w[valid_scattering] = ws[valid_scattering] / total_extinction[valid_scattering]
+        g[valid_scattering] = g_numerator[valid_scattering] / ws[valid_scattering]
+        rr[valid_scattering] = rayleigh_scattering[valid_scattering] / ws[valid_scattering]
+        w = np.clip(w, 1.0e-13, 1.0 - 1.0e-13)
+
+        tau = total_extinction * thickl[:, np.newaxis]
+        delta_scale = 1.0 - w * g * g
+        tau = tau * delta_scale
+        w = ((1.0 - g * g) * w) / delta_scale
+        g = g / (1.0 + g)
+        tc = np.vstack([np.zeros((1, n_wavelength), dtype=float), np.cumsum(tau, axis=0)])
+
+        return {
+            'tau': tau,
+            'w': w,
+            'g': g,
+            'rr': rr,
+            'tc': tc,
+        }
+
+    def _prepare_reflection_groups(self, optical, solar, wavelength_m, surface_albedo, planck_boundary, phase):
+        tau_all = optical['tau']
+        w_all = optical['w']
+        g_all = optical['g']
+        rr_all = optical['rr']
+        tc_all = optical['tc']
+        n_layers, n_wavelength = tau_all.shape
+        positive_solar = solar > 0.0
+        if not np.any(positive_solar):
+            return {'n_wavelength': n_wavelength, 'groups': []}
+
+        tau_limit = tc_all >= 1000.0
+        ntau_by_wave = tau_limit.argmax(axis=0)
+        ntau_by_wave[~tau_limit.any(axis=0)] = n_layers
+        ntau_by_wave = np.clip(ntau_by_wave, 1, n_layers)
+        cos_scattering = math.cos(np.pi - phase)
+        groups = []
+
+        for ntau in np.unique(ntau_by_wave[positive_solar]):
+            wave_idx = np.where((ntau_by_wave == ntau) & positive_solar)[0]
+            tau1 = tau_all[:ntau, wave_idx]
+            w1 = w_all[:ntau, wave_idx]
+            g1 = g_all[:ntau, wave_idx]
+            rr1 = rr_all[:ntau, wave_idx]
+            tc1 = tc_all[:ntau + 1, wave_idx]
+            planck1 = planck_boundary[:ntau + 1, wave_idx]
+            solar_i = solar[wave_idx]
+            surfaceref = np.where(wavelength_m[wave_idx] * 1.0e9 > 3000.0, 0.0, surface_albedo[wave_idx])
+
+            gamma1 = (7.0 - (4.0 + 3.0 * g1) * w1) / 4.0
+            gamma2 = -((1.0 - (4.0 - 3.0 * g1) * w1) / 4.0)
+            lam = np.sqrt(np.maximum(gamma1 * gamma1 - gamma2 * gamma2, 0.0))
+            gamma = gamma2 / (gamma1 + lam)
+            exp_term = np.exp(-lam * tau1)
+            e1 = 1.0 + gamma * exp_term
+            e2 = 1.0 - gamma * exp_term
+            e3 = gamma + exp_term
+            e4 = gamma - exp_term
+
+            phase_function = rr1 * 0.75 * (cos_scattering * cos_scattering + 1.0)
+            hg_term = (
+                (1.0 - g1 * g1 / 4.0)
+                * (1.0 - g1 * g1)
+                / np.power(1.0 + g1 * g1 - 2.0 * g1 * cos_scattering, 1.5)
+                + g1 * g1
+                / 4.0
+                * (1.0 - g1 * g1 / 4.0)
+                / np.power(1.0 + g1 * g1 / 4.0 + g1 * cos_scattering, 1.5)
+            )
+            phase_function += (1.0 - rr1) * hg_term
+
+            groups.append(
+                {
+                    'ntau': int(ntau),
+                    'nvector': 2 * int(ntau),
+                    'wave_idx': wave_idx,
+                    'tau': tau1,
+                    'w': w1,
+                    'g': g1,
+                    'gamma1': gamma1,
+                    'gamma2': gamma2,
+                    'lam': lam,
+                    'gamma': gamma,
+                    'e1': e1,
+                    'e2': e2,
+                    'e3': e3,
+                    'e4': e4,
+                    'tc': tc1,
+                    'solar': solar_i,
+                    'surface_reflectance': surfaceref,
+                    'phase_function': phase_function,
+                    'aa1': 2.0 * np.pi * planck1[:-1],
+                    'planck_source': 2.0 * np.pi * 0.5 * planck1[:-1],
+                    'bottom_planck': planck1[-1],
+                }
+            )
+
+        return {'n_wavelength': n_wavelength, 'groups': groups}
+
+    def _solve_reflection_angle(self, reflection_data, miu0, mium):
+        rout = np.zeros(reflection_data['n_wavelength'], dtype=float)
+        miu0_diffuse = min(miu0, 1.0)
+
+        for group in reflection_data['groups']:
+            ntau = group['ntau']
+            wave_idx = group['wave_idx']
+            tau1 = group['tau']
+            w1 = group['w']
+            g1 = group['g']
+            gamma1 = group['gamma1']
+            gamma2 = group['gamma2']
+            lam = group['lam']
+            gamma = group['gamma']
+            e1 = group['e1']
+            e2 = group['e2']
+            e3 = group['e3']
+            e4 = group['e4']
+            tc1 = group['tc']
+            solar_i = group['solar']
+            surfaceref = group['surface_reflectance']
+
+            gamma3 = (2.0 - 3.0 * g1 * miu0_diffuse) / 4.0
+            gamma4 = 1.0 - gamma3
+
+            cp0 = group['planck_source'].copy()
+            cp1 = cp0.copy()
+            cm0 = cp0.copy()
+            cm1 = cp0.copy()
+
+            if miu0_diffuse > 0.0:
+                denom = lam * lam - 1.0 / (miu0_diffuse * miu0_diffuse)
+                exp_top = np.exp(-tc1[:-1] / miu0_diffuse)
+                exp_bottom = np.exp(-tc1[1:] / miu0_diffuse)
+                solar_prefactor = solar_i[np.newaxis, :] * w1
+                cp0 += solar_prefactor * exp_top * (
+                    ((gamma1 - 1.0 / miu0_diffuse) * gamma3 + gamma2 * gamma4) / denom
+                )
+                cp1 += solar_prefactor * exp_bottom * (
+                    ((gamma1 - 1.0 / miu0_diffuse) * gamma3 + gamma2 * gamma4) / denom
+                )
+                cm0 += solar_prefactor * exp_top * (
+                    ((gamma1 + 1.0 / miu0_diffuse) * gamma4 + gamma2 * gamma3) / denom
+                )
+                cm1 += solar_prefactor * exp_bottom * (
+                    ((gamma1 + 1.0 / miu0_diffuse) * gamma4 + gamma2 * gamma3) / denom
+                )
+
+            nvector = group['nvector']
+            a = np.zeros((nvector, wave_idx.size), dtype=float)
+            b = np.zeros((nvector, wave_idx.size), dtype=float)
+            d = np.zeros((nvector, wave_idx.size), dtype=float)
+            e = np.zeros((nvector, wave_idx.size), dtype=float)
+
+            a[0] = 0.0
+            b[0] = e1[0]
+            d[0] = -e2[0]
+            e[0] = -cm0[0]
+
+            for layer_idx in range(ntau - 1):
+                even_row = 2 * layer_idx + 1
+                odd_row = 2 * layer_idx + 2
+                a[odd_row] = e2[layer_idx] * e3[layer_idx] - e4[layer_idx] * e1[layer_idx]
+                b[odd_row] = e1[layer_idx] * e1[layer_idx + 1] - e3[layer_idx] * e3[layer_idx + 1]
+                d[odd_row] = e3[layer_idx] * e4[layer_idx + 1] - e1[layer_idx] * e2[layer_idx + 1]
+                e[odd_row] = e3[layer_idx] * (cp0[layer_idx + 1] - cp1[layer_idx]) - e1[layer_idx] * (
+                    cm0[layer_idx + 1] - cm1[layer_idx]
+                )
+
+                a[even_row] = e2[layer_idx + 1] * e1[layer_idx] - e3[layer_idx] * e4[layer_idx + 1]
+                b[even_row] = e2[layer_idx] * e2[layer_idx + 1] - e4[layer_idx] * e4[layer_idx + 1]
+                d[even_row] = e1[layer_idx + 1] * e4[layer_idx + 1] - e2[layer_idx + 1] * e3[layer_idx + 1]
+                e[even_row] = e2[layer_idx + 1] * (cp0[layer_idx + 1] - cp1[layer_idx]) - e4[layer_idx + 1] * (
+                    cm0[layer_idx + 1] - cm1[layer_idx]
+                )
+
+            a[-1] = e1[-1] - surfaceref * e3[-1]
+            b[-1] = e2[-1] - surfaceref * e4[-1]
+            d[-1] = 0.0
+            e[-1] = -cp1[-1] + surfaceref * cm1[-1] + (1.0 - surfaceref) * np.pi * group['bottom_planck']
+            if miu0_diffuse > 0.0:
+                e[-1] += surfaceref * miu0_diffuse * solar_i * np.exp(-tc1[-1] / miu0_diffuse)
+
+            as_ = np.zeros_like(a)
+            ds_ = np.zeros_like(a)
+            y = np.zeros_like(a)
+            as_[-1] = a[-1] / b[-1]
+            ds_[-1] = e[-1] / b[-1]
+            for row_idx in range(nvector - 2, -1, -1):
+                factor = 1.0 / (b[row_idx] - d[row_idx] * as_[row_idx + 1])
+                as_[row_idx] = a[row_idx] * factor
+                ds_[row_idx] = (e[row_idx] - d[row_idx] * ds_[row_idx + 1]) * factor
+            y[0] = ds_[0]
+            for row_idx in range(1, nvector):
+                y[row_idx] = ds_[row_idx] - as_[row_idx] * y[row_idx - 1]
+            y1 = y[0::2]
+            y2 = y[1::2]
+
+            aa1 = group['aa1']
+            aa2 = np.zeros_like(aa1)
+            aa3 = np.zeros_like(aa1)
+            if miu0 > 0.0:
+                denom = lam * lam - 1.0 / (miu0 * miu0)
+                aa3 = (
+                    w1
+                    / 2.0
+                    * solar_i[np.newaxis, :]
+                    * (
+                        group['phase_function']
+                        + (2.0 + 3.0 * g1 * mium)
+                        * w1
+                        * ((gamma1 - 1.0 / miu0) * gamma3 + gamma2 * gamma4)
+                        / denom
+                        + (2.0 - 3.0 * g1 * mium)
+                        * w1
+                        * ((gamma1 + 1.0 / miu0) * gamma4 + gamma2 * gamma3)
+                        / denom
+                    )
+                    * np.exp(-tc1[:-1] / miu0)
+                )
+            aa4r = (y1 + y2) * w1 / 2.0 * (2.0 + 3.0 * g1 * mium + gamma * (2.0 - 3.0 * g1 * mium))
+            aa5 = (y1 - y2) * w1 / 2.0 * (((2.0 + 3.0 * g1 * mium) * gamma) + 2.0 - 3.0 * g1 * mium)
+
+            same_mu = abs(mium - miu0) == 0.0
+            rid = np.zeros(wave_idx.size, dtype=float)
+            for layer_idx in range(ntau):
+                exp_m = np.exp(-tau1[layer_idx] / mium)
+                if same_mu:
+                    rid = (
+                        rid * exp_m
+                        + aa1[layer_idx] * (1.0 - exp_m)
+                        + aa2[layer_idx] * (tau1[layer_idx] - mium + mium * exp_m)
+                        + aa3[layer_idx] * tau1[layer_idx] / mium * exp_m
+                        + aa4r[layer_idx]
+                        / (1.0 + mium * lam[layer_idx])
+                        * (1.0 - np.exp(-tau1[layer_idx] / mium - lam[layer_idx] * tau1[layer_idx]))
+                        + aa5[layer_idx]
+                        / (1.0 - mium * lam[layer_idx])
+                        * (np.exp(-lam[layer_idx] * tau1[layer_idx]) - exp_m)
+                    )
+                elif miu0 < 0.0:
+                    rid = (
+                        rid * exp_m
+                        + aa1[layer_idx] * (1.0 - exp_m)
+                        + aa2[layer_idx] * (tau1[layer_idx] - mium + mium * exp_m)
+                        + aa4r[layer_idx]
+                        / (1.0 + mium * lam[layer_idx])
+                        * (1.0 - np.exp(-tau1[layer_idx] / mium - lam[layer_idx] * tau1[layer_idx]))
+                        + aa5[layer_idx]
+                        / (1.0 - mium * lam[layer_idx])
+                        * (np.exp(-lam[layer_idx] * tau1[layer_idx]) - exp_m)
+                    )
+                else:
+                    rid = (
+                        rid * exp_m
+                        + aa1[layer_idx] * (1.0 - exp_m)
+                        + aa2[layer_idx] * (tau1[layer_idx] - mium + mium * exp_m)
+                        + aa3[layer_idx]
+                        * miu0
+                        / (miu0 - mium)
+                        * (np.exp(-tau1[layer_idx] / miu0) - exp_m)
+                        + aa4r[layer_idx]
+                        / (1.0 + mium * lam[layer_idx])
+                        * (1.0 - np.exp(-tau1[layer_idx] / mium - lam[layer_idx] * tau1[layer_idx]))
+                        + aa5[layer_idx]
+                        / (1.0 - mium * lam[layer_idx])
+                        * (np.exp(-lam[layer_idx] * tau1[layer_idx]) - exp_m)
+                    )
+
+            riu = rid * surfaceref + (1.0 - surfaceref) * 2.0 * np.pi * group['bottom_planck']
+            if miu0_diffuse > 0.0:
+                riu += surfaceref * 2.0 * miu0_diffuse * solar_i * np.exp(-tc1[-1] / miu0_diffuse)
+                for layer_idx in range(ntau - 1, -1, -1):
+                    exp_m = np.exp(-tau1[layer_idx] / mium)
+                    riu = (
+                        riu * exp_m
+                        + aa1[layer_idx] * (1.0 - exp_m)
+                        + aa2[layer_idx] * (mium - (tau1[layer_idx] + mium) * exp_m)
+                        + aa3[layer_idx]
+                        * miu0
+                        / (miu0 + mium)
+                        * (1.0 - np.exp(-tau1[layer_idx] / miu0 - tau1[layer_idx] / mium))
+                        + aa4r[layer_idx]
+                        / (1.0 - mium * lam[layer_idx])
+                        * (np.exp(-lam[layer_idx] * tau1[layer_idx]) - exp_m)
+                        + aa5[layer_idx]
+                        / (1.0 + mium * lam[layer_idx])
+                        * (1.0 - np.exp(-tau1[layer_idx] / mium - lam[layer_idx] * tau1[layer_idx]))
+                    )
+            else:
+                for layer_idx in range(ntau - 1, -1, -1):
+                    exp_m = np.exp(-tau1[layer_idx] / mium)
+                    riu = (
+                        riu * exp_m
+                        + aa1[layer_idx] * (1.0 - exp_m)
+                        + aa2[layer_idx] * (mium - (tau1[layer_idx] + mium) * exp_m)
+                        + aa4r[layer_idx]
+                        / (1.0 - mium * lam[layer_idx])
+                        * (np.exp(-lam[layer_idx] * tau1[layer_idx]) - exp_m)
+                        + aa5[layer_idx]
+                        / (1.0 + mium * lam[layer_idx])
+                        * (1.0 - np.exp(-tau1[layer_idx] / mium - lam[layer_idx] * tau1[layer_idx]))
+                    )
+
+            values = riu / solar_i / 2.0
+            values[~np.isfinite(values)] = 0.0
+            rout[wave_idx] = values
+
+        return rout
+
+    def __core_function(self):        
+        profile = self._python_core_cache.get('profile')
+        cloud_optics = self._python_core_cache.get('cloud_optics')
+        if profile is None or cloud_optics is None:
+            raise RuntimeError("Atmospheric structure must be computed before the Python core runs.")
+
+        wavelength_m = np.asarray(self.param['opacw'], dtype=float).reshape(-1)
+        wavelength_nm = wavelength_m * 1.0e9
+        solar_data = np.asarray(self.param['solar_data'], dtype=float)
+        solar = np.interp(wavelength_nm, solar_data[:, 0], solar_data[:, 1], left=0.0, right=0.0)
+        solar = solar / (self.param['equivalent_a'] ** 2)
+        solar_tail_start = 0
+        while solar_tail_start < solar.size and (solar[solar_tail_start] > 0.0 or wavelength_nm[solar_tail_start] < 9990.0):
+            solar_tail_start += 1
+        if 0 < solar_tail_start < solar.size:
+            solar[solar_tail_start:] = solar[solar_tail_start - 1] * (
+                wavelength_nm[solar_tail_start - 1] / wavelength_nm[solar_tail_start:]
+            ) ** 4
+
+        tl = np.asarray(profile['tl'], dtype=float)[::-1]
+        pl = np.asarray(profile['pl'], dtype=float)[::-1]
+        mm = np.asarray(profile['mm'], dtype=float)[::-1]
+        xx = np.asarray(profile['xx'], dtype=float)[::-1]
+        thickl = np.asarray(profile['thickl'], dtype=float)[::-1]
+        layer_temperature = np.asarray(profile['layer_temperature'], dtype=float)[::-1]
+        cloud_top = {
+            'wavelength_nm': np.asarray(cloud_optics['wavelength_nm'], dtype=float),
+            'cross_h2o': np.asarray(cloud_optics['cross_h2o'], dtype=float)[::-1],
+            'albedo_h2o': np.asarray(cloud_optics['albedo_h2o'], dtype=float)[::-1],
+            'g_h2o': np.asarray(cloud_optics['g_h2o'], dtype=float)[::-1],
+        }
+        if 'cross_nh3' in cloud_optics:
+            cloud_top.update(
+                {
+                    'cross_nh3': np.asarray(cloud_optics['cross_nh3'], dtype=float)[::-1],
+                    'albedo_nh3': np.asarray(cloud_optics['albedo_nh3'], dtype=float)[::-1],
+                    'g_nh3': np.asarray(cloud_optics['g_nh3'], dtype=float)[::-1],
+                }
+            )
+
+        optical = self._build_optical_properties(wavelength_nm, tl, pl, mm, xx, thickl, cloud_top)
+        planck_boundary = self._planck_nm(wavelength_m[np.newaxis, :], layer_temperature[:, np.newaxis])
+        surface_albedo = np.asarray(self._python_core_cache['surface_albedo'], dtype=float)
+
+        cmiu = np.array(
+            [
+                -0.9681602395076261,
+                -0.8360311073266358,
+                -0.6133714327005904,
+                -0.3242534234038089,
+                0.0,
+                0.3242534234038089,
+                0.6133714327005904,
+                0.8360311073266358,
+                0.9681602395076261,
+            ],
+            dtype=float,
+        )
+        wmiu = np.array(
+            [
+                0.0812743883615744,
+                0.1806481606948574,
+                0.2606106964029354,
+                0.3123470770400029,
+                0.3302393550012598,
+                0.3123470770400029,
+                0.2606106964029354,
+                0.1806481606948574,
+                0.0812743883615744,
+            ],
+            dtype=float,
+        )
+        lat = 0.5 * np.pi * cmiu
+        lon = 0.5 * np.pi * cmiu
+        phase = float(self.param['phi'])
+        reflection_data = self._prepare_reflection_groups(
+            optical,
+            solar,
+            wavelength_m,
+            surface_albedo,
+            planck_boundary,
+            phase,
+        )
+
+        geometric_albedo = np.zeros_like(wavelength_nm, dtype=float)
+        for lat_idx in range(9):
+            cos_lat = math.cos(lat[lat_idx])
+            for lon_idx in range(9):
+                gmiu0 = cos_lat * math.cos(lon[lon_idx] - phase)
+                gmiu = cos_lat * math.cos(lon[lon_idx])
+                if abs(gmiu0 - gmiu) < 1.0e-7:
+                    gmiu = gmiu0 + 1.0e-7
+                rout = self._solve_reflection_angle(reflection_data, gmiu0, gmiu)
+                geometric_albedo += (
+                    wmiu[lat_idx]
+                    * wmiu[lon_idx]
+                    * rout
+                    * gmiu
+                    * cos_lat
+                    * (0.5 * np.pi)
+                    * (0.5 * np.pi)
+                    / np.pi
+                )
+
+        return wavelength_nm, geometric_albedo
 
     def run_forward(self):
         self.__atmospheric_structure()
@@ -2272,7 +2911,6 @@ def forward(parameters_dictionary, evaluation=None, phi=None, n_obs=None, retrie
         param['phi'] = phi
 
     param['core_number'] = core_number
-
     if param['gas_par_space'] == 'partial_pressure' and np.log10(param['P0']) < 0.0:
         param['P0'] = 1.1
     if param['PT_profile_type'] == 'isothermal' or param['PT_profile_type'] == 'parametric':
@@ -2284,8 +2922,11 @@ def forward(parameters_dictionary, evaluation=None, phi=None, n_obs=None, retrie
     if param['fit_amm_cld']:
         param['vmr_NH3'] = cloud_pos(param, condensed_gas='NH3')
         param = adjust_VMR(param, all_gases=param['adjust_VMR_gases'], condensed_gas='NH3')
-    param['vmr_H2O'] = cloud_pos(param, condensed_gas='H2O')
-    param = adjust_VMR(param, all_gases=param['adjust_VMR_gases'], condensed_gas='H2O')
+    if param['fit_wtr_cld']:
+        param['vmr_H2O'] = cloud_pos(param, condensed_gas='H2O')
+        param = adjust_VMR(param, all_gases=param['adjust_VMR_gases'], condensed_gas='H2O')
+    if not param['fit_wtr_cld'] and not param['fit_amm_cld']:
+        param = adjust_VMR(param, all_gases=param['adjust_VMR_gases'], condensed_gas=None)
     if param['O3_earth']:
         param['vmr_O3'] = ozone_earth_mask(param)
     param = calc_mean_mol_mass(param)
