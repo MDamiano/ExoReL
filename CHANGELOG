@@ -1,3 +1,10 @@
+## [3.0.2] - 07/01/26
+- Improved compacted `GEN_DATASET` append behavior: new samples now extend existing `dataset_spectra.npx` and `dataset_errorbars.npx` files atomically, validate contiguous sample indexes, preserve the shared wavelength grid, and keep compaction metadata indexed from the full dataset.
+- Added fixed-radius, mass-only retrieval support in `MULTINEST` and `forward()`: when `Mp` is fitted while `Rp` is fixed and `gp` is not fitted, the model now updates gravity consistently from the sampled mass and fixed radius.
+- Hardened MultiNest MPI failures by printing full forward-model tracebacks, writing per-rank error logs under the output directory, and aborting the MPI communicator cleanly instead of silently finalizing.
+- Fixed likelihood-per-datapoint post-processing directory creation so every rank can safely write into the solution-specific temporary directory.
+- Fixed cloud-file path setup in `pre_load_variables()` so non-water-cloud paths can reuse the cloud-file directory variable safely.
+
 ## [3.0.1] - 06/24/26
 - Added O2-N2 CIA support across the Python and C reflected-light forward paths, including table loading, interpolation, and absorption-opacity terms.
 - Expanded `GEN_DATASET` parity with `CREATE_SPECTRUM`: sampled dataset parameters now round-trip through cleaned CSV column names, higher-precision CSV output, isothermal temperature ranges trigger the correct opacity-temperature handling, parametric P-T sampled values are applied consistently, and fractional H2O/NH3 cloud mixing now compares cloudy and clear columns correctly.

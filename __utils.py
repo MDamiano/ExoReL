@@ -1306,8 +1306,8 @@ def pre_load_variables(param):
             else:
                 pass
     #  Load Mie Calculation Results
+    fldr_cld_fl = 'forward_mod/cloud_files/'
     if param['fit_wtr_cld']:
-        fldr_cld_fl = 'forward_mod/cloud_files/'
         if param['wtr_cld_type'] == 'liquid':
             data = np.loadtxt(param['pkg_dir'] + fldr_cld_fl + 'Cross_water_wavelength_250916.dat')
             param['H2OL_r'] = data[:, 0]  # zero-order radius, in micron

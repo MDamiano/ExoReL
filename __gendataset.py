@@ -178,6 +178,17 @@ def dataset_header_columns(par, include_planet_class=False, filler_column=None):
     return columns
 
 
+def save_numpy_atomic(path, array):
+    tmp_path = path + '.tmp.' + str(os.getpid())
+    try:
+        with open(tmp_path, 'wb') as f:
+            np.save(f, array, allow_pickle=False)
+        os.replace(tmp_path, path)
+    finally:
+        if os.path.isfile(tmp_path):
+            os.remove(tmp_path)
+
+
 def compact_dataset_samples(out_dir):
     sample_files = []
     for name in os.listdir(out_dir):
@@ -246,26 +257,93 @@ def compact_dataset_samples(out_dir):
             errorbars.append(err)
         indexes.append(record_index)
 
-    index_to_row = {idx: row for row, idx in enumerate(sorted(indexes))}
-    D = np.empty((len(indexes), n_wavelengths), dtype=float)
-    E = np.empty((len(indexes), n_wavelengths), dtype=float) if have_errorbars else None
+    new_index_start = int(min(indexes))
+    new_index_end = int(max(indexes))
+    expected_new_indexes = list(range(new_index_start, new_index_start + len(indexes)))
+    if indexes != expected_new_indexes:
+        raise ValueError(
+            "Compacted sample indexes must be contiguous. "
+            f"Found {new_index_start} through {new_index_end} across {len(indexes)} files."
+        )
+
+    D_new = np.empty((len(indexes), n_wavelengths), dtype=float)
+    E_new = np.empty((len(indexes), n_wavelengths), dtype=float) if have_errorbars else None
     for idx, spectrum, err in zip(indexes, spectra, errorbars if have_errorbars else [None] * len(indexes)):
-        row = index_to_row[idx]
-        D[row, :] = spectrum
+        row = idx - new_index_start
+        D_new[row, :] = spectrum
         if have_errorbars:
-            E[row, :] = err
+            E_new[row, :] = err
 
     spectra_path = os.path.join(out_dir, 'dataset_spectra.npx')
-    with open(spectra_path, 'wb') as f:
-        np.save(f, D, allow_pickle=False)
+    errorbars_path = os.path.join(out_dir, 'dataset_errorbars.npx')
+    wavelength_path = os.path.join(out_dir, 'wavelength.dat')
+
+    D_existing = None
+    E_existing = None
+    existing_rows = 0
+    if os.path.isfile(spectra_path):
+        with open(spectra_path, 'rb') as f:
+            D_existing = np.load(f, allow_pickle=False)
+        if D_existing.ndim != 2:
+            raise ValueError("Existing dataset_spectra.npx must contain a two-dimensional array.")
+        if D_existing.shape[1] != n_wavelengths:
+            raise ValueError("Existing dataset_spectra.npx wavelength count does not match new samples.")
+        existing_rows = int(D_existing.shape[0])
+
+    if new_index_start != existing_rows:
+        raise ValueError(
+            "New sample indexes do not continue the compacted dataset. "
+            f"Expected first new index {existing_rows}, found {new_index_start}."
+        )
+
+    if os.path.isfile(wavelength_path):
+        existing_wavelength = np.asarray(np.loadtxt(wavelength_path), dtype=float)
+        if existing_wavelength.ndim == 0:
+            existing_wavelength = existing_wavelength.reshape(1)
+        if existing_wavelength.ndim != 1 or existing_wavelength.size != n_wavelengths:
+            raise ValueError("Existing wavelength.dat length does not match compacted spectra.")
+        if wavelength is not None and not np.array_equal(existing_wavelength, wavelength):
+            raise ValueError("Existing wavelength.dat grid does not match new samples.")
+        if wavelength is None:
+            wavelength = existing_wavelength
+
+    if D_existing is not None:
+        if os.path.isfile(errorbars_path):
+            with open(errorbars_path, 'rb') as f:
+                E_existing = np.load(f, allow_pickle=False)
+            if E_existing.ndim != 2 or E_existing.shape != D_existing.shape:
+                raise ValueError("Existing dataset_errorbars.npx shape does not match dataset_spectra.npx.")
+            if not have_errorbars:
+                raise ValueError("Existing compacted dataset has errorbars but new samples do not.")
+        elif have_errorbars:
+            raise ValueError("New samples have errorbars but existing compacted dataset does not.")
+
+    if D_existing is None:
+        D = D_new
+    else:
+        D = np.concatenate((D_existing, D_new), axis=0)
+
+    if have_errorbars:
+        if E_existing is None:
+            E = E_new
+        else:
+            E = np.concatenate((E_existing, E_new), axis=0)
+    else:
+        E = None
+
+    save_numpy_atomic(spectra_path, D)
 
     if wavelength is not None:
-        np.savetxt(os.path.join(out_dir, 'wavelength.dat'), wavelength)
+        tmp_wavelength_path = wavelength_path + '.tmp.' + str(os.getpid())
+        try:
+            np.savetxt(tmp_wavelength_path, wavelength)
+            os.replace(tmp_wavelength_path, wavelength_path)
+        finally:
+            if os.path.isfile(tmp_wavelength_path):
+                os.remove(tmp_wavelength_path)
 
-    errorbars_path = os.path.join(out_dir, 'dataset_errorbars.npx')
-    if have_errorbars:
-        with open(errorbars_path, 'wb') as f:
-            np.save(f, E, allow_pickle=False)
+    if E is not None:
+        save_numpy_atomic(errorbars_path, E)
     elif os.path.isfile(errorbars_path):
         os.remove(errorbars_path)
 
@@ -278,8 +356,8 @@ def compact_dataset_samples(out_dir):
         'wavelength_file': 'wavelength.dat' if wavelength is not None else None,
         'n_compacted_samples': int(D.shape[0]),
         'n_wavelengths': int(D.shape[1]),
-        'index_start': int(min(indexes)),
-        'index_end': int(max(indexes)),
+        'index_start': 0,
+        'index_end': int(D.shape[0] - 1),
     }
 
 

@@ -187,13 +187,26 @@ class MULTINEST:
                 try:
                     return forward(self.param, evaluation=evaluation, phi=phi, n_obs=n_obs, retrieval_mode=retrieval_mode, core_number=MPIrank,
                                    albedo_calc=self.param['albedo_calc'], fp_over_fs=self.param['fp_over_fs'], canc_metadata=True)
-                except:
+                except Exception:
+                    import traceback
+
+                    msg = (
+                        f"\nForward model failed on MPI rank {MPIrank}/{MPIsize}.\n"
+                        + traceback.format_exc()
+                    )
+                    print(msg, file=sys.stderr, flush=True)
+
+                    try:
+                        os.makedirs(self.param['out_dir'], exist_ok=True)
+                        with open(self.param['out_dir'] + f'mpi_rank_{MPIrank}_error.log', 'a') as f:
+                            f.write(msg + '\n')
+                    except Exception:
+                        pass
+
                     if MPIimport:
-                        MPI.Finalize()
-                        sys.exit()
-                    else:
-                        print('Some errors occurred in during the calculation of the forward model.')
-                        sys.exit()
+                        MPI.COMM_WORLD.Abort(1)
+
+                    raise
 
         def prior(cube, ndim, nparams):
             par = 0
@@ -586,6 +599,10 @@ class MULTINEST:
             self.param['Rp'] = cube[par + 1]  # Rp is in R_jup
             self.param['gp'] = (const.G.value * const.M_jup.value * self.param['Mp']) / ((const.R_jup.value * self.param['Rp']) ** 2.)  # g is in m/s2
             par += 2
+        elif self.param['fit_Mp'] and not self.param['fit_Rp'] and not self.param['fit_g'] and self.param['Rp'] is not None:
+            self.param['Mp'] = cube[par]  # Mp is in M_jup
+            self.param['gp'] = (const.G.value * const.M_jup.value * self.param['Mp']) / ((const.R_jup.value * self.param['Rp']) ** 2.)  # g is in m/s2
+            par += 1
         elif self.param['fit_g'] and not self.param['fit_Mp'] and not self.param['fit_Rp'] and self.param['Mp'] is not None:
             self.param['gp'] = (10. ** (cube[par] - 2.0))  # g is in m/s2 but it was defined in cgs
             self.param['Rp'] = (np.sqrt((const.G.value * const.M_jup.value * self.param['Mp']) / self.param['gp'])) / const.R_jup.value  # Rp is in R_jup
@@ -673,8 +690,7 @@ class MULTINEST:
 
             loglike_dir = self.param['out_dir'] + f'loglikelihood_per_datapoint_sol{mds}/'
 
-            if MPIrank == 0:
-                os.makedirs(loglike_dir, exist_ok=True)
+            os.makedirs(loglike_dir, exist_ok=True)
 
             if mc_samples.shape[0] < self.param['n_likelihood_data']:
                 self.param['n_likelihood_data'] = mc_samples.shape[0] - MPIsize

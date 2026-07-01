@@ -2871,6 +2871,7 @@ def forward(parameters_dictionary, evaluation=None, phi=None, n_obs=None, retrie
                 param['beta'] = evaluation['beta']
                 if param['fit_Tint']:
                     param['Tint'] = evaluation['Tint']
+
         if param['fit_g'] and param['fit_Mp'] and not param['fit_Rp']:
             param['gp'] = (10. ** (evaluation['gp'] - 2.0))                                                                     # g is in m/s2 but it was defined in cgs
             param['Mp'] = evaluation['Mp']                                                                                      # Mp is in M_jup
@@ -2882,6 +2883,9 @@ def forward(parameters_dictionary, evaluation=None, phi=None, n_obs=None, retrie
         elif param['fit_Mp'] and param['fit_Rp'] and not param['fit_g']:
             param['Mp'] = evaluation['Mp']                                                                                      # Mp is in M_jup
             param['Rp'] = evaluation['Rp']                                                                                      # Rp is in R_jup
+            param['gp'] = (const.G.value * const.M_jup.value * param['Mp']) / ((const.R_jup.value * param['Rp']) ** 2.)         # g is in m/s2
+        elif param['fit_Mp'] and not param['fit_Rp'] and not param['fit_g'] and param['Rp'] is not None:
+            param['Mp'] = evaluation['Mp']                                                                                      # Mp is in M_jup
             param['gp'] = (const.G.value * const.M_jup.value * param['Mp']) / ((const.R_jup.value * param['Rp']) ** 2.)         # g is in m/s2
         elif param['fit_g'] and not param['fit_Mp'] and not param['fit_Rp'] and param['Mp'] is not None:
             param['gp'] = (10. ** (evaluation['gp'] - 2.0))                                                                     # g is in m/s2 but it was defined in cgs
