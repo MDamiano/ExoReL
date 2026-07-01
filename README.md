@@ -81,6 +81,7 @@ In case `pymultinest` finds multiple solutions, ExoReL will automatically plot t
 * Damiano et al. 2023, [Reflected Spectroscopy of Small Exoplanets III: probing the UV band to measure biosignature gasses](https://iopscience.iop.org/article/10.3847/1538-3881/acefd3), AJ, 166, 157.
 * Tokadjian et al. 2024, [The Detectability of CH<sub>4</sub>/CO<sub>2</sub>/CO and N<sub>2</sub>O Biosignatures Through Reflection Spectroscopy of Terrestrial Exoplanets](https://iopscience.iop.org/article/10.3847/1538-3881/ad88eb), AJ, 168, 292.
 * Damiano et al. 2025, [Effects of planetary mass uncertainties on the interpretation of the reflectance spectra of Earth-like exoplanets](https://iopscience.iop.org/article/10.3847/1538-3881/ada610), AJ, 169, 97.
+* Burr et al. 2026, [Retrieving the Red Edge on Earth-like Planets with Heterogeneous Clouds and Surfaces](https://iopscience.iop.org/article/10.3847/1538-4357/ae563d), ApJ, 1001, 222. 
 
 ## Acknowledgement
 The research was carried out at the Jet Propulsion Laboratory, California Institute of Technology, under a contract with the National Aeronautics and Space Administration (80NM0018D0004).
