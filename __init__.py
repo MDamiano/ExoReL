@@ -216,19 +216,30 @@ def _ensure_required_data():
                 flush=True,
             )
 
-            # Download the entire Drive folder into the package directory
+            # Download the archive to an explicit filename. Passing ``pkg_dir``
+            # directly is ambiguous to gdown: versions that do not see a trailing
+            # separator can treat the directory itself as the output filename and
+            # return it, causing ZipFile to receive a directory path.
             # use_cookies=False avoids interactive confirmation for public files.
             for i in missing:
                 if i == "forward_mod":
-                    downloaded_zip = gdown.download(id=drive_forward_mod, output=pkg_dir, use_cookies=False)
-                    if not downloaded_zip:
-                        raise RuntimeError("Download failed for forward_mod archive.")
-                    with zipfile.ZipFile(downloaded_zip, 'r') as zip_ref:
-                        zip_ref.extractall(pkg_dir)
-                    with os.scandir(pkg_dir) as entries:
-                        for entry in entries:
-                            if entry.is_file() and entry.name.startswith("forward_mod") and entry.name.endswith(".zip"):
-                                os.remove(entry.path)
+                    with tempfile.TemporaryDirectory(
+                        prefix=".forward-mod-", dir=pkg_dir
+                    ) as download_dir:
+                        archive_path = os.path.join(download_dir, "forward_mod.zip")
+                        downloaded_zip = gdown.download(
+                            id=drive_forward_mod,
+                            output=archive_path,
+                            use_cookies=False,
+                        )
+                        if not downloaded_zip or not os.path.isfile(archive_path):
+                            raise RuntimeError("Download failed for forward_mod archive.")
+                        if not zipfile.is_zipfile(archive_path):
+                            raise RuntimeError(
+                                "Downloaded forward_mod file is not a valid ZIP archive."
+                            )
+                        with zipfile.ZipFile(archive_path, "r") as zip_ref:
+                            zip_ref.extractall(pkg_dir)
 
             if not os.path.isdir(forward_mod_path):
                 with os.scandir(pkg_dir) as entries:

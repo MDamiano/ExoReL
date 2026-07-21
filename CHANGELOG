@@ -6,6 +6,7 @@
 - Added a non-fatal warning when molecular-opacity resolving power exceeds 10,000 while the standard `stsynphot` PHOENIX atlas is selected.
 - Allowed overlapping observational channels from adjacent instrument segments when integrating stellar flux, while retaining each channel's exact wavelength boundaries.
 - Replaced the Python radiative-transfer branch's scaled `solar0.txt` illumination with the same `stsynphot` or external SVO PHOENIX model used by output and noise calculations, evaluated as flux density on the opacity grid, converted to W m⁻² nm⁻¹, and diluted to the planet by `(Rstar/a)²`; the C branch remains unchanged.
+- Fixed first-import `forward_mod` setup by downloading the Google Drive archive to an explicit temporary ZIP filename, validating it before extraction, and cleaning the temporary download automatically.
 
 ## [3.0.2] - 07/01/26
 - Improved compacted `GEN_DATASET` append behavior: new samples now extend existing `dataset_spectra.npx` and `dataset_errorbars.npx` files atomically, validate contiguous sample indexes, preserve the shared wavelength grid, and keep compaction metadata indexed from the full dataset.
