@@ -30,9 +30,47 @@ Do not forget to make the folder reachable by python in your `.bash_profile` or 
 
 `export PYTHONPATH="$PYTHONPATH:/full/path/of/folder/containing/ExoReL:"`
 
-After installation, upon the first import of the package, ExoReL will automaticaly download required files from GDrive. It generally teke less than a minute.
+After installation, upon the first import of the package, ExoReL will automatically download required files. The forward-model download generally takes less than a minute.
 
-It will download the folders "PHO_STELLAR_MODEL" and "forward_mod" from the following link : [Google Drive](https://drive.google.com/drive/folders/1CQutXQ8Ki59TB9Dndo61sktwS3uOM7qZ?usp=sharing). The required folders will be placed inside the ExoReL folder.
+It will download the "forward_mod" folder from the following link: [Google Drive](https://drive.google.com/drive/folders/1CQutXQ8Ki59TB9Dndo61sktwS3uOM7qZ?usp=sharing). The required folder will be placed inside the ExoReL folder.
+
+Stellar flux calculations use the PHOENIX grid distributed for `stsynphot`. On
+first import, ExoReL downloads this approximately 1.8 GB atlas from the
+[STScI reference-atlas archive](https://archive.stsci.edu/hlsp/reference-atlases)
+into `ExoReL/stsynphot_data/grid/phoenix` and configures `PYSYN_CDBS`
+automatically. The local data directory is ignored by Git. You can also trigger
+or retry the one-time setup explicitly with `ExoReL.setup_stsynphot_data()`.
+
+If `PYSYN_CDBS` already points to a complete external atlas, ExoReL reuses it
+instead of downloading a duplicate. A complete atlas must contain
+`grid/phoenix/catalog.fits` and the PHOENIX model files.
+
+For molecular-opacity grids above resolving power `R=10000`, higher-resolution
+BT-Settl spectra can be downloaded manually from the
+[SVO Theory Server](https://svo2.cab.inta-csic.es/theory/newov2/index.php). Place
+the downloaded ASCII spectra together in a directory and set `stellar_dir` in
+the ExoReL JSON parameter file. ExoReL reads the `teff`, `logg`, and `meta`
+values from each file header and performs bounded trilinear flux interpolation
+in `(teff, logg, meta)` through `synphot`. The directory must contain every
+bounding corner model required for the requested stellar parameters; ExoReL
+does not silently extrapolate or substitute the nearest model. The source files
+and interpolation weights are recorded in `starfx_model`. ExoReL validates the
+SVO column units (Angstrom and erg cm⁻² s⁻¹ Angstrom⁻¹), converts SVO optical air
+wavelengths to the vacuum frame used by the forward model, and conserves flux
+density during that coordinate transformation. If `use_float32` is enabled,
+the returned stellar wavelength and flux arrays are stored as `float32`; native
+high-resolution files are still parsed at `float64` precision before rebinning.
+
+The Python radiative-transfer branch also evaluates this same selected stellar
+model directly on the molecular-opacity grid. Its surface flux density is
+converted from W m⁻² µm⁻¹ to W m⁻² nm⁻¹ and diluted to the planet by
+`(Rs * R_sun / (major-a * au))²`. The observational `starfx` arrays remain
+separate, bin-integrated quantities. The C radiative-transfer branch continues
+to use its legacy `solar0.txt` illumination spectrum.
+
+```json
+"stellar_dir": "/path/to/downloaded/SVO/stellar_spectra"
+```
 
 ## Usage
 You have to prepare the "retrieval_example.dat" and "forward_example.dat" parameters files before running ExoReL.

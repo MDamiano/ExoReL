@@ -1,5 +1,6 @@
 from .__basics import *
 from .__utils import *
+from .__utils import _prepare_python_stellar_irradiance
 from pathlib import Path
 
 
@@ -2721,16 +2722,31 @@ class RADIATIVE_TRANSFER_PYTHON:
 
         wavelength_m = np.asarray(self.param['opacw'], dtype=float).reshape(-1)
         wavelength_nm = wavelength_m * 1.0e9
-        solar_data = np.asarray(self.param['solar_data'], dtype=float)
-        solar = np.interp(wavelength_nm, solar_data[:, 0], solar_data[:, 1], left=0.0, right=0.0)
-        solar = solar / (self.param['equivalent_a'] ** 2)
-        solar_tail_start = 0
-        while solar_tail_start < solar.size and (solar[solar_tail_start] > 0.0 or wavelength_nm[solar_tail_start] < 9990.0):
-            solar_tail_start += 1
-        if 0 < solar_tail_start < solar.size:
-            solar[solar_tail_start:] = solar[solar_tail_start - 1] * (
-                wavelength_nm[solar_tail_start - 1] / wavelength_nm[solar_tail_start:]
-            ) ** 4
+        stellar_irradiance = self.param.get('stellar_irradiance')
+        if stellar_irradiance is None:
+            raise RuntimeError(
+                'Python radiative transfer requires opacity-grid stellar irradiance. '
+                'Run pre_load_variables() before the forward model.'
+            )
+        if stellar_irradiance.get('flux_density_unit') != 'W m-2 nm-1':
+            raise ValueError('Python stellar irradiance must be expressed in W m-2 nm-1.')
+        stellar_wavelength_nm = np.asarray(
+            stellar_irradiance['wavelength_nm'], dtype=float
+        ).reshape(-1)
+        solar = np.asarray(
+            stellar_irradiance['planet_flux_density'], dtype=float
+        ).reshape(-1)
+        if (
+            stellar_wavelength_nm.shape != wavelength_nm.shape
+            or solar.shape != wavelength_nm.shape
+            or not np.allclose(stellar_wavelength_nm, wavelength_nm, rtol=5.0e-7, atol=1.0e-6)
+            or not np.all(np.isfinite(solar))
+            or np.any(solar <= 0.0)
+        ):
+            raise ValueError(
+                'Opacity-grid stellar irradiance is inconsistent with the Python '
+                'radiative-transfer wavelength grid.'
+            )
 
         tl = np.asarray(profile['tl'], dtype=float)[::-1]
         pl = np.asarray(profile['pl'], dtype=float)[::-1]
@@ -2946,6 +2962,10 @@ def forward(parameters_dictionary, evaluation=None, phi=None, n_obs=None, retrie
 
     if param['physics_model'] == 'radiative_transfer':
         if param['physics_model_code_language'] == 'Python':
+            # Dataset generation can vary stellar radius, temperature, or
+            # orbital distance after the initial preload. Revalidate the
+            # opacity-grid stellar model and update geometric dilution here.
+            param = _prepare_python_stellar_irradiance(param)
             mod = RADIATIVE_TRANSFER_PYTHON(param)
         else:
             mod = RADIATIVE_TRANSFER_C(param, retrieval=retrieval_mode, canc_metadata=canc_metadata)

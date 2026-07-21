@@ -1,4 +1,5 @@
 from .__basics import *
+import re
 import shutil
 
 
@@ -12,6 +13,7 @@ def default_parameters():
     param['Ts'] = None  # Star temperature
     param['meta'] = None  # star metallicity [M / H]
     param['Loggs'] = None  # Star log surface gravity
+    param['stellar_dir'] = None  # optional directory containing high-resolution SVO stellar spectra
     param['distance'] = None  # star distance from the Sun [pc]
 
     #### [PLANET] ####
@@ -1145,15 +1147,455 @@ def custom_spectral_binning(x, wl, model, err=None, bins=False):
         return np.array(binned_mod), np.array(binned_er)
 
 
+def _spectres_bin_edges(wavelengths):
+    """Return the bin edges inferred by SpectRes from bin centers."""
+    wavelengths = np.asarray(wavelengths, dtype=float)
+    if wavelengths.ndim != 1 or wavelengths.size < 2:
+        raise ValueError('At least two wavelength centers are required to infer bin edges.')
+    if not np.all(np.isfinite(wavelengths)) or np.any(np.diff(wavelengths) <= 0.0):
+        raise ValueError('Wavelength centers must be finite and strictly increasing.')
+
+    edges = np.empty(wavelengths.size + 1, dtype=float)
+    edges[0] = wavelengths[0] - ((wavelengths[1] - wavelengths[0]) / 2.0)
+    edges[-1] = wavelengths[-1] + ((wavelengths[-1] - wavelengths[-2]) / 2.0)
+    edges[1:-1] = (wavelengths[1:] + wavelengths[:-1]) / 2.0
+    return edges
+
+
+def _spectres_integrated_flux(wavelength, flux_density, wl_low, wl_high):
+    """Integrate a flux density over explicit bins using SpectRes.
+
+    SpectRes normally infers output-bin edges from output wavelength centers.
+    For every contiguous group of requested bins, this routine constructs the
+    SpectRes wavelength basis whose inferred edges are exactly ``wl_low`` and
+    ``wl_high``. The returned bin-averaged flux density is then multiplied by
+    the actual bin width, yielding integrated flux.
+
+    Parameters are expected in compatible wavelength units. If ``flux_density``
+    is W m-2 micron-1 and wavelengths are micron, the output is W m-2.
+    """
+    wavelength = np.asarray(wavelength, dtype=float)
+    flux_density = np.asarray(flux_density, dtype=float)
+    wl_low = np.asarray(wl_low, dtype=float)
+    wl_high = np.asarray(wl_high, dtype=float)
+
+    if wavelength.ndim != 1 or flux_density.shape != wavelength.shape:
+        raise ValueError('Stellar wavelength and flux-density arrays must be one-dimensional and have matching shapes.')
+    if wl_low.ndim != 1 or wl_high.shape != wl_low.shape or wl_low.size == 0:
+        raise ValueError('Observation bin limits must be non-empty, one-dimensional arrays with matching shapes.')
+    if not np.all(np.isfinite(wavelength)) or not np.all(np.isfinite(flux_density)):
+        raise ValueError('Stellar wavelength and flux-density arrays must contain only finite values.')
+    if np.any(np.diff(wavelength) <= 0.0):
+        raise ValueError('Stellar wavelengths must be strictly increasing.')
+    if not np.all(np.isfinite(wl_low)) or not np.all(np.isfinite(wl_high)):
+        raise ValueError('Observation bin limits must contain only finite values.')
+    if np.any(wl_high <= wl_low):
+        raise ValueError('Every observation bin must have wl_high > wl_low.')
+    bin_centers = (wl_low + wl_high) / 2.0
+    if np.any(np.diff(bin_centers) <= 0.0):
+        raise ValueError('Observation wavelength bins must be ordered by increasing center.')
+
+    integrated_flux = np.empty(wl_low.size, dtype=float)
+
+    def resample_group(start, stop):
+        edges = np.concatenate(([wl_low[start]], wl_high[start:stop]))
+        spectres_wavelengths = np.empty(edges.size, dtype=float)
+        spectres_wavelengths[0] = (edges[0] + edges[1]) / 2.0
+        for edge_idx in range(1, edges.size):
+            spectres_wavelengths[edge_idx] = (2.0 * edges[edge_idx]) - spectres_wavelengths[edge_idx - 1]
+
+        # Strongly varying adjacent bin widths can make the constructed basis
+        # non-monotonic. In that uncommon case, process each bin independently.
+        if np.any(np.diff(spectres_wavelengths) <= 0.0):
+            for bin_idx in range(start, stop):
+                center = (wl_low[bin_idx] + wl_high[bin_idx]) / 2.0
+                width = wl_high[bin_idx] - wl_low[bin_idx]
+                basis = np.array([center, center + width])
+                mean_flux_density = spectres(
+                    basis, wavelength, flux_density, fill=np.nan, verbose=False
+                )[0]
+                integrated_flux[bin_idx] = mean_flux_density * width
+            return
+
+        mean_flux_density = spectres(
+            spectres_wavelengths, wavelength, flux_density, fill=np.nan, verbose=False
+        )
+        integrated_flux[start:stop] = mean_flux_density[:-1] * (wl_high[start:stop] - wl_low[start:stop])
+
+    group_start = 0
+    for bin_idx in range(wl_low.size - 1):
+        # Gaps and overlaps both terminate a contiguous SpectRes group. This
+        # permits independently defined channels from adjacent instruments to
+        # overlap while still integrating every channel over its exact edges.
+        contiguous = np.isclose(wl_high[bin_idx], wl_low[bin_idx + 1], rtol=1.0e-10, atol=1.0e-12)
+        if not contiguous:
+            resample_group(group_start, bin_idx + 1)
+            group_start = bin_idx + 1
+    resample_group(group_start, wl_low.size)
+
+    if not np.all(np.isfinite(integrated_flux)):
+        raise ValueError('The PHOENIX spectrum does not fully cover the requested observation bins.')
+    return integrated_flux
+
+
+def _star_spectrum_entry(param, n_obs=None):
+    """Return the stellar spectrum corresponding to one observation."""
+    expected_signature = _stellar_model_signature(param)
+    if (
+        'starfx' not in param
+        or tuple(param.get('starfx_model', {}).get('model_signature', ()))
+        != expected_signature
+    ):
+        take_star_spectrum(param)
+    if param['obs_numb'] is None:
+        return param['starfx']
+    obs = 0 if n_obs is None else int(n_obs)
+    return param['starfx'][str(obs)]
+
+
+def _opacity_resolving_power(param):
+    """Return the nominal molecular-opacity resolving power when available."""
+    resolution_label = param.get('opac_data')
+    if isinstance(resolution_label, (int, float, np.integer, np.floating)):
+        return float(resolution_label)
+    if isinstance(resolution_label, str):
+        match = re.search(r'(?i)(\d+(?:\.\d+)?)\s*k', resolution_label)
+        if match:
+            return float(match.group(1)) * 1000.0
+        match = re.fullmatch(r'(?i)\s*r?\s*(\d+(?:\.\d+)?)\s*', resolution_label)
+        if match:
+            return float(match.group(1))
+        match = re.search(
+            r'(?i)(?:^|[_-])r(\d+(?:\.\d+)?)(?:$|[_-])', resolution_label
+        )
+        if match:
+            return float(match.group(1))
+
+    wavelength = param.get('opacw')
+    if wavelength is None:
+        return None
+    wavelength = np.asarray(wavelength, dtype=float).reshape(-1)
+    wavelength = wavelength[np.isfinite(wavelength) & (wavelength > 0.0)]
+    if wavelength.size < 2:
+        return None
+    wavelength = np.sort(np.unique(wavelength))
+    delta = np.diff(wavelength)
+    resolving_power = wavelength[:-1] / delta
+    resolving_power = resolving_power[np.isfinite(resolving_power) & (resolving_power > 0.0)]
+    if resolving_power.size == 0:
+        return None
+    return float(np.median(resolving_power))
+
+
+def _warn_if_stellar_grid_is_too_coarse(param, stellar_spectrum_required=False):
+    """Warn when high-resolution opacities are paired with the standard atlas."""
+    resolving_power = _opacity_resolving_power(param)
+    if resolving_power is not None:
+        param['opacity_resolving_power'] = resolving_power
+
+    if (
+        resolving_power is None
+        or resolving_power <= 10000.0
+        or (
+            not stellar_spectrum_required
+            and (param.get('albedo_calc', False) or param.get('fp_over_fs', False))
+        )
+        or param.get('stellar_dir') is not None
+        or param.get('_stellar_resolution_warning_emitted', False)
+    ):
+        return
+
+    message = (
+        f"Molecular opacity resolving power R={resolving_power:g} exceeds 10,000, "
+        "while the standard stsynphot PHOENIX atlas is being used. Consider "
+        "providing higher-resolution SVO stellar spectra with 'stellar_dir'."
+    )
+    # __basics.py suppresses third-party warnings globally; force this ExoReL
+    # science warning to remain visible without turning it into an exception.
+    with warnings.catch_warnings():
+        warnings.simplefilter('always', RuntimeWarning)
+        warnings.warn(message, RuntimeWarning, stacklevel=3)
+    param['_stellar_resolution_warning_emitted'] = True
+
+
+def _read_svo_stellar_header(path):
+    """Read stellar parameters and declared units from an SVO ASCII header."""
+    metadata = {}
+    patterns = {
+        'temperature_K': re.compile(r'^\s*#\s*teff\s*=\s*([+-]?[\d.]+(?:[eEdD][+-]?\d+)?)', re.I),
+        'logg_cgs': re.compile(r'^\s*#\s*logg\s*=\s*([+-]?[\d.]+(?:[eEdD][+-]?\d+)?)', re.I),
+        'metallicity': re.compile(r'^\s*#\s*meta\s*=\s*([+-]?[\d.]+(?:[eEdD][+-]?\d+)?)', re.I),
+    }
+    unit_patterns = {
+        'wavelength_unit': re.compile(
+            r'^\s*#\s*column\s+1\s*:\s*wavelength\s*\(\s*angstrom\s*\)', re.I
+        ),
+        'flux_density_unit': re.compile(
+            r'^\s*#\s*column\s+2\s*:\s*flux\s*'
+            r'\(\s*erg\s*/\s*cm2\s*/\s*s\s*/\s*a\s*\)', re.I
+        ),
+    }
+    try:
+        with open(path, 'r', encoding='utf-8', errors='replace') as stream:
+            for _ in range(40):
+                line = stream.readline()
+                if not line or not line.lstrip().startswith('#'):
+                    break
+                for key, pattern in patterns.items():
+                    match = pattern.search(line)
+                    if match:
+                        metadata[key] = float(match.group(1).replace('D', 'E').replace('d', 'e'))
+                for key, pattern in unit_patterns.items():
+                    if pattern.search(line):
+                        metadata[key] = (
+                            'angstrom' if key == 'wavelength_unit'
+                            else 'erg cm-2 s-1 angstrom-1'
+                        )
+    except OSError:
+        return None
+    if not set(patterns).issubset(metadata):
+        return None
+    metadata.setdefault('wavelength_unit', None)
+    metadata.setdefault('flux_density_unit', None)
+    # The SVO Theory Server distributes these BT-Settl coordinates in air.
+    # ExoReL converts the optical part back to vacuum when loading the data.
+    metadata['input_wavelength_medium'] = 'air'
+    metadata['path'] = path
+    return metadata
+
+
+def _svo_interpolation_models(stellar_dir, temperature, metallicity, logg, wkg_dir):
+    """Return the SVO grid models and trilinear weights for a target star."""
+    stellar_dir = os.path.expanduser(os.fspath(stellar_dir))
+    if not os.path.isabs(stellar_dir):
+        stellar_dir = os.path.join(wkg_dir, stellar_dir)
+    stellar_dir = os.path.abspath(stellar_dir)
+    if not os.path.isdir(stellar_dir):
+        raise FileNotFoundError(f"The stellar_dir directory does not exist: {stellar_dir}")
+
+    supported_suffixes = ('.txt', '.dat', '.spec', '.7')
+    candidates = []
+    with os.scandir(stellar_dir) as entries:
+        for entry in sorted(entries, key=lambda item: item.name):
+            if not entry.is_file() or not entry.name.lower().endswith(supported_suffixes):
+                continue
+            metadata = _read_svo_stellar_header(entry.path)
+            if metadata is not None:
+                candidates.append(metadata)
+    if not candidates:
+        raise FileNotFoundError(
+            f"No SVO stellar ASCII spectra were found in {stellar_dir}. Expected header "
+            "entries for teff, logg, and meta."
+        )
+
+    parameter_targets = {
+        'temperature_K': temperature,
+        'logg_cgs': logg,
+        'metallicity': metallicity,
+    }
+
+    def bracket(key, target):
+        values = np.array(sorted({model[key] for model in candidates}), dtype=float)
+        exact = values[np.isclose(values, target, rtol=0.0, atol=1.0e-10)]
+        if exact.size:
+            return [(float(exact[0]), 1.0)]
+        lower = values[values < target]
+        upper = values[values > target]
+        if lower.size == 0 or upper.size == 0:
+            raise ValueError(
+                f"Requested stellar {key}={target:g} is outside the SVO grid "
+                f"range [{values.min():g}, {values.max():g}] in {stellar_dir}."
+            )
+        low = float(lower.max())
+        high = float(upper.min())
+        return [
+            (low, (high - target) / (high - low)),
+            (high, (target - low) / (high - low)),
+        ]
+
+    corners = [({}, 1.0)]
+    for key, target in parameter_targets.items():
+        corners = [
+            ({**corner, key: value}, weight * axis_weight)
+            for corner, weight in corners
+            for value, axis_weight in bracket(key, target)
+        ]
+
+    interpolation_models = []
+    missing = []
+    for corner, weight in corners:
+        matches = [
+            model for model in candidates
+            if all(np.isclose(model[key], value, rtol=0.0, atol=1.0e-10)
+                   for key, value in corner.items())
+        ]
+        if not matches:
+            missing.append(corner)
+            continue
+        if len(matches) > 1:
+            paths = ', '.join(model['path'] for model in matches)
+            raise ValueError(
+                "Multiple SVO spectra have identical stellar parameters; keep only "
+                f"one of these files in stellar_dir: {paths}"
+            )
+        model = dict(matches[0])
+        model['weight'] = float(weight)
+        interpolation_models.append(model)
+
+    if missing:
+        missing_text = '; '.join(
+            f"Teff={corner['temperature_K']:g} K, logg={corner['logg_cgs']:g}, "
+            f"[M/H]={corner['metallicity']:g}"
+            for corner in missing
+        )
+        raise ValueError(
+            "stellar_dir does not contain the complete bounding model set needed "
+            f"for trilinear interpolation. Missing: {missing_text}"
+        )
+
+    return interpolation_models
+
+
+def _svo_air_to_vacuum_wavelength(wavelength_air):
+    """Convert SVO optical air wavelengths to vacuum using Morton (2000).
+
+    Wavelengths below 2000 Angstrom are conventionally vacuum wavelengths and
+    are left unchanged. The second return value is d(lambda_air)/d(lambda_vac)
+    and is used to transform a per-air-wavelength flux density conservatively.
+    """
+    wavelength_air = np.asarray(wavelength_air, dtype=np.float64)
+    wavelength_vacuum = wavelength_air.copy()
+    density_jacobian = np.ones_like(wavelength_air)
+    optical = wavelength_air >= 2000.0
+    if not np.any(optical):
+        return wavelength_vacuum, density_jacobian
+
+    air = wavelength_air[optical]
+    vacuum = air.copy()
+    for _ in range(5):
+        sigma_squared = (1.0e4 / vacuum) ** 2.0
+        refractive_index = (
+            1.0
+            + 8.34254e-5
+            + (2.406147e-2 / (130.0 - sigma_squared))
+            + (1.5998e-4 / (38.9 - sigma_squared))
+        )
+        vacuum = air * refractive_index
+
+    sigma_squared = (1.0e4 / vacuum) ** 2.0
+    refractive_index = (
+        1.0
+        + 8.34254e-5
+        + (2.406147e-2 / (130.0 - sigma_squared))
+        + (1.5998e-4 / (38.9 - sigma_squared))
+    )
+    dsigma_squared_dvacuum = -2.0 * sigma_squared / vacuum
+    dn_dvacuum = (
+        (2.406147e-2 * dsigma_squared_dvacuum / (130.0 - sigma_squared) ** 2.0)
+        + (1.5998e-4 * dsigma_squared_dvacuum / (38.9 - sigma_squared) ** 2.0)
+    )
+    wavelength_vacuum[optical] = vacuum
+    density_jacobian[optical] = (
+        (refractive_index - (vacuum * dn_dvacuum)) / refractive_index ** 2.0
+    )
+    return wavelength_vacuum, density_jacobian
+
+
+def _load_svo_stellar_spectrum(model, SourceSpectrum, Empirical1D, u):
+    """Load an SVO spectrum with validated units on a vacuum wavelength grid."""
+    if (
+        model.get('wavelength_unit') != 'angstrom'
+        or model.get('flux_density_unit') != 'erg cm-2 s-1 angstrom-1'
+    ):
+        raise ValueError(
+            "Unsupported or missing SVO column units in "
+            f"{model['path']}. Expected WAVELENGTH (ANGSTROM) and "
+            "FLUX (ERG/CM2/S/A)."
+        )
+    try:
+        # Parse in float64 even when returned ExoReL arrays use float32. Casting
+        # the native wavelength grid first would merge genuinely distinct
+        # high-resolution samples at long wavelengths.
+        data = np.loadtxt(model['path'], comments='#', usecols=(0, 1), dtype=np.float64)
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"Could not read SVO stellar spectrum: {model['path']}") from exc
+    data = np.atleast_2d(data)
+    if data.shape[0] < 2 or data.shape[1] != 2:
+        raise ValueError(f"SVO stellar spectrum has insufficient data: {model['path']}")
+
+    wavelength = np.asarray(data[:, 0], dtype=np.float64)
+    flux_density = np.asarray(data[:, 1], dtype=np.float64)
+    valid = np.isfinite(wavelength) & np.isfinite(flux_density) & (wavelength > 0.0)
+    wavelength = wavelength[valid]
+    flux_density = flux_density[valid]
+    if wavelength.size < 2:
+        raise ValueError(f"SVO stellar spectrum has insufficient finite data: {model['path']}")
+
+    order = np.argsort(wavelength, kind='stable')
+    wavelength = wavelength[order]
+    flux_density = flux_density[order]
+    unique_wavelength, first_index, counts = np.unique(
+        wavelength, return_index=True, return_counts=True
+    )
+    duplicate_count = int(wavelength.size - unique_wavelength.size)
+    if duplicate_count:
+        summed_flux = np.add.reduceat(flux_density.astype(np.float64), first_index)
+        flux_density = summed_flux / counts
+        wavelength = unique_wavelength
+
+    wavelength, density_jacobian = _svo_air_to_vacuum_wavelength(wavelength)
+    flux_density = flux_density * density_jacobian
+    stellar_spectrum = SourceSpectrum(
+        Empirical1D,
+        points=wavelength * u.AA,
+        lookup_table=flux_density * (u.erg / (u.cm ** 2.0 * u.s * u.AA)),
+        keep_neg=True,
+    )
+    return stellar_spectrum, duplicate_count
+
+
+def _interpolate_svo_stellar_spectra(models, SourceSpectrum, Empirical1D, u):
+    """Combine SVO spectra using their trilinear parameter-space weights."""
+    interpolated_spectrum = None
+    source_models = []
+    for model in models:
+        spectrum, duplicate_count = _load_svo_stellar_spectrum(
+            model, SourceSpectrum, Empirical1D, u
+        )
+        weighted_spectrum = model['weight'] * spectrum
+        if interpolated_spectrum is None:
+            interpolated_spectrum = weighted_spectrum
+        else:
+            interpolated_spectrum = interpolated_spectrum + weighted_spectrum
+        source_models.append({
+            'file': model['path'],
+            'temperature_K': model['temperature_K'],
+            'metallicity': model['metallicity'],
+            'logg_cgs': model['logg_cgs'],
+            'weight': model['weight'],
+            'duplicate_wavelengths_collapsed': duplicate_count,
+            'input_wavelength_unit': model['wavelength_unit'],
+            'input_flux_density_unit': model['flux_density_unit'],
+            'input_wavelength_medium': model['input_wavelength_medium'],
+            'working_wavelength_medium': 'vacuum',
+            'air_to_vacuum_method': 'Morton (2000); optical wavelengths >= 2000 Angstrom',
+        })
+
+    if interpolated_spectrum is None:
+        raise RuntimeError('No SVO stellar spectra were available for interpolation.')
+    return interpolated_spectrum, source_models
+
+
 def model_finalizzation(param, alb_wl, alb, planet_albedo=False, fp_over_fs=False, n_obs=None):
     if not param['wl_native']:
         if param['obs_numb'] is not None:
-            wl = param['spectrum'][str(n_obs)]['wl'] + 0.0
+            observation = param['spectrum'][str(n_obs)]
         else:
-            wl = param['spectrum']['wl'] + 0.0
+            observation = param['spectrum']
+        wl = observation['wl'] + 0.0
 
         if param['spectrum']['bins']:
-            wl_bins = np.append(np.array([param['spectrum']['wl_low']]).T, np.array([param['spectrum']['wl_high']]).T, axis=1)
+            wl_bins = np.column_stack((observation['wl_low'], observation['wl_high']))
             albedo = custom_spectral_binning(wl_bins, alb_wl, alb, bins=True)
         else:
             albedo = spectres(wl, alb_wl, alb, fill=False)
@@ -1176,103 +1618,304 @@ def model_finalizzation(param, alb_wl, alb, planet_albedo=False, fp_over_fs=Fals
         return wl, contrast
     elif not planet_albedo and not fp_over_fs:
         contrast = albedo * (((param['Rp'] * const.R_jup.value) / (param['major-a'] * const.au.value)) ** 2.0)
-        planet_flux = contrast * param['starfx']['y'] * (((param['Rs'] * const.R_sun.value) / (param['distance'] * const.pc.value)) ** 2.0)
+        star_flux = _star_spectrum_entry(param, n_obs=n_obs)['y']
+        planet_flux = contrast * star_flux * (((param['Rs'] * const.R_sun.value) / (param['distance'] * const.pc.value)) ** 2.0)
         return wl, planet_flux
 
 
-def take_star_spectrum(param, plot=False):
-    directory = param['pkg_dir'] + 'PHO_STELLAR_MODEL/'
-    t_star = [int(i) for i in str(param['Ts']) if i.isdigit()]
-    if t_star[2] >= 5:
-        if t_star[1] == 9:
-            t_star[1] = 0
-            t_star[0] += 1
-        else:
-            t_star[1] += 1
+def _stellar_model_signature(param):
+    """Return current stellar-grid parameters, deriving gravity when needed."""
+    temperature = float(param['Ts'])
+    metallicity = 0.0 if param.get('meta') is None else float(param['meta'])
+    if param.get('Loggs') is None or param.get('_stellar_logg_derived', False):
+        if param.get('Ms') is None or param.get('Rs') is None:
+            raise ValueError('Provide Loggs, or both Ms and Rs, to select a PHOENIX stellar model.')
+        gravity_cgs = (
+            const.G.value
+            * (float(param['Ms']) * const.M_sun.value)
+            / ((float(param['Rs']) * const.R_sun.value) ** 2.0)
+            * 100.0
+        )
+        param['Loggs'] = float(np.log10(gravity_cgs))
+        param['_stellar_logg_derived'] = True
+    logg = float(param['Loggs'])
+
+    stellar_dir = param.get('stellar_dir')
+    if stellar_dir is not None:
+        stellar_dir = os.path.expanduser(os.fspath(stellar_dir))
+        if not os.path.isabs(stellar_dir):
+            stellar_dir = os.path.join(param.get('wkg_dir', os.getcwd()), stellar_dir)
+        stellar_dir = os.path.abspath(stellar_dir)
+    return temperature, metallicity, logg, stellar_dir
+
+
+def _build_stellar_source_spectrum(param):
+    """Return the selected PHOENIX surface spectrum and model metadata."""
     try:
-        param['Loggs'] += 0.0
-    except (KeyError, TypeError):
-        param['Loggs'] = round(np.log10(274.20011166 * param['Ms'] / (param['Rs'] ** 2.)), 1)
+        import stsynphot as stsyn
+        from astropy import units as u
+        from synphot import SourceSpectrum
+        from synphot.models import Empirical1D
+    except ImportError as exc:
+        raise ImportError(
+            "Stellar-spectrum calculations require 'stsynphot' and 'synphot'. Install "
+            "the project requirements and retry."
+        ) from exc
 
-    logg = [int(i) for i in str(param['Loggs']) if i.isdigit()]
-    if 0 <= logg[1] <= 2:
-        logg[1] = 0
-    elif 2 < logg[1] <= 7:
-        logg[1] = 5
-    elif 7 < logg[1] <= 9:
-        logg[1] = 0
-        logg[0] += 1
+    configured_cdbs = os.environ.get('PYSYN_CDBS')
+    if configured_cdbs:
+        stsyn.conf.rootdir = configured_cdbs
 
-    if logg[0] <= 1:
-        logg[0] = 2
-        logg[1] = 5
+    cache_signature = _stellar_model_signature(param)
+    temperature, metallicity, logg, stellar_dir = cache_signature
+    cached = param.get('_stellar_source_cache')
+    if cached is not None and cached.get('signature') == cache_signature:
+        return cached['spectrum'], copy.deepcopy(cached['metadata'])
 
-    if logg[0] > 5:
-        logg[0] = 5
-        logg[1] = 0
+    if stellar_dir is not None:
+        interpolation_models = _svo_interpolation_models(
+            stellar_dir,
+            temperature,
+            metallicity,
+            logg,
+            param.get('wkg_dir', os.getcwd()),
+        )
+        stellar_spectrum, source_models = _interpolate_svo_stellar_spectra(
+            interpolation_models, SourceSpectrum, Empirical1D, u
+        )
+        if not param.get('_stellar_source_message_emitted', False):
+            if len(source_models) == 1:
+                external_message = (
+                    "ExoReL: Using external high-resolution stellar spectrum "
+                    f"'{source_models[0]['file']}'"
+                )
+            else:
+                external_message = (
+                    "ExoReL: Using trilinear interpolation of "
+                    f"{len(source_models)} external high-resolution stellar spectra"
+                )
+            duplicate_count = sum(
+                model['duplicate_wavelengths_collapsed'] for model in source_models
+            )
+            print(
+                external_message
+                + f" for Teff={temperature:g} K, logg={logg:g}, [M/H]={metallicity:g}."
+                + (
+                    f" Collapsed {duplicate_count} rounded duplicate wavelengths "
+                    "across the source files."
+                    if duplicate_count else ""
+                ),
+                flush=True,
+            )
+            param['_stellar_source_message_emitted'] = True
+        model_metadata = {
+            'library': 'synphot',
+            'grid': 'external_svo_bt-settl',
+            'interpolation': 'exact' if len(source_models) == 1 else 'trilinear',
+            'temperature_K': temperature,
+            'metallicity': metallicity,
+            'logg_cgs': logg,
+            'source_models': source_models,
+        }
+    else:
+        _warn_if_stellar_grid_is_too_coarse(param, stellar_spectrum_required=True)
+        try:
+            stellar_spectrum = stsyn.grid_to_spec('phoenix', temperature, metallicity, logg)
+        except FileNotFoundError as exc:
+            raise RuntimeError(
+                "The configured stsynphot PHOENIX reference atlas was not found. "
+                "Run ExoReL.setup_stsynphot_data() or set PYSYN_CDBS to an STScI "
+                "reference-atlas directory containing grid/phoenix."
+            ) from exc
+        model_metadata = {
+            'library': 'stsynphot',
+            'grid': 'phoenix',
+            'temperature_K': temperature,
+            'metallicity': metallicity,
+            'logg_cgs': logg,
+        }
 
-    star_file = 'lte0' + str(t_star[0]) + str(t_star[1]) + '.0-' + str(logg[0]) + '.' + str(logg[1]) + '-0.0a+0.0.BT-Settl.spec.7'
+    param['_stellar_source_cache'] = {
+        'signature': cache_signature,
+        'spectrum': stellar_spectrum,
+        'metadata': copy.deepcopy(model_metadata),
+    }
+    return stellar_spectrum, model_metadata
 
-    # print('Loading star spectrum')
-    # print('Loading ' + star_file + ' from PHOENIX litterature')
 
-    wl = []
-    sp = []
+def _prepare_python_stellar_irradiance(param):
+    """Evaluate and dilute the selected stellar flux density on the opacity grid."""
+    try:
+        from astropy import units as u
+    except ImportError as exc:
+        raise ImportError(
+            "Python stellar irradiance requires 'astropy'. Install the project "
+            "requirements and retry."
+        ) from exc
+
+    if 'opacw' not in param:
+        raise RuntimeError('The opacity wavelength grid must be loaded before stellar irradiance.')
+    if param.get('Rs') is None or param.get('major-a') is None:
+        raise ValueError('Rs and major-a are required to dilute stellar flux to the planet.')
+
+    target_dtype = np.float32 if param.get('use_float32', False) else np.float64
+    wavelength_nm = np.asarray(param['opacw'], dtype=np.float64).reshape(-1) * 1.0e9
+    wavelength_micron = wavelength_nm * 1.0e-3
+    model_signature = _stellar_model_signature(param)
+    existing_irradiance = param.get('stellar_irradiance')
+    existing_wavelength = None
+    if existing_irradiance is not None:
+        existing_wavelength = np.asarray(
+            existing_irradiance.get('wavelength_nm', []), dtype=np.float64
+        ).reshape(-1)
+    reuse_surface_flux = (
+        existing_irradiance is not None
+        and tuple(existing_irradiance.get('model_signature', ())) == model_signature
+        and existing_wavelength.shape == wavelength_nm.shape
+        and np.allclose(existing_wavelength, wavelength_nm, rtol=5.0e-7, atol=1.0e-6)
+    )
+
+    if reuse_surface_flux:
+        surface_flux_per_nm = np.asarray(
+            existing_irradiance['surface_flux_density'], dtype=np.float64
+        )
+        model_metadata = copy.deepcopy(param['stellar_irradiance_model'])
+    else:
+        stellar_spectrum, model_metadata = _build_stellar_source_spectrum(param)
+        surface_flux_per_micron = np.asarray(
+            stellar_spectrum(
+                wavelength_micron * u.micron,
+                flux_unit=u.W / (u.m ** 2.0 * u.micron),
+            ).value,
+            dtype=np.float64,
+        )
+        # The Python radiative-transfer source and Planck function use spectral
+        # densities per nm. 1 micron contains 1000 nm.
+        surface_flux_per_nm = surface_flux_per_micron * 1.0e-3
+
+    stellar_radius_m = float(param['Rs']) * const.R_sun.value
+    orbital_distance_m = float(param['major-a']) * const.au.value
+    if stellar_radius_m <= 0.0 or orbital_distance_m <= 0.0:
+        raise ValueError('Rs and major-a must be positive to dilute stellar flux.')
+    dilution_factor = (stellar_radius_m / orbital_distance_m) ** 2.0
+    planet_flux_per_nm = surface_flux_per_nm * dilution_factor
+
+    if (
+        surface_flux_per_nm.shape != wavelength_nm.shape
+        or not np.all(np.isfinite(surface_flux_per_nm))
+        or np.any(surface_flux_per_nm <= 0.0)
+    ):
+        raise ValueError(
+            'The selected PHOENIX spectrum does not provide positive, finite flux '
+            'density across the opacity wavelength grid.'
+        )
+
+    param['stellar_irradiance'] = {
+        'wavelength_nm': np.asarray(wavelength_nm, dtype=target_dtype),
+        'surface_flux_density': np.asarray(surface_flux_per_nm, dtype=target_dtype),
+        'planet_flux_density': np.asarray(planet_flux_per_nm, dtype=target_dtype),
+        'wavelength_unit': 'nm',
+        'flux_density_unit': 'W m-2 nm-1',
+        'dilution_factor': float(dilution_factor),
+        'stellar_radius_Rsun': float(param['Rs']),
+        'orbital_distance_au': float(param['major-a']),
+        'model_signature': model_signature,
+    }
+    irradiance_metadata = copy.deepcopy(model_metadata)
+    irradiance_metadata.update({
+        'evaluation_grid': 'molecular-opacity wavelength grid',
+        'surface_flux_density_unit': 'W m-2 nm-1',
+        'planet_flux_density_unit': 'W m-2 nm-1',
+        'dilution': '(Rs * R_sun / (major-a * au))^2',
+        'dilution_factor': float(dilution_factor),
+        'dtype': np.dtype(target_dtype).name,
+        'model_signature': model_signature,
+    })
+    param['stellar_irradiance_model'] = irradiance_metadata
+    param.pop('_stellar_source_cache', None)
+    return param
+
+
+def take_star_spectrum(param, plot=False):
+    try:
+        from astropy import units as u
+    except ImportError as exc:
+        raise ImportError(
+            "take_star_spectrum requires 'astropy'. Install the project requirements "
+            "and retry."
+        ) from exc
+
+    stellar_spectrum, model_metadata = _build_stellar_source_spectrum(param)
+    temperature = float(model_metadata['temperature_K'])
+    logg = float(model_metadata['logg_cgs'])
+    target_dtype = np.float32 if param.get('use_float32', False) else np.float64
+
+    native_wavelength = np.asarray(
+        stellar_spectrum.waveset.to_value(u.micron), dtype=target_dtype
+    )
+    native_flux_density = np.asarray(stellar_spectrum(
+        stellar_spectrum.waveset,
+        flux_unit=u.W / (u.m ** 2.0 * u.micron),
+    ).value, dtype=target_dtype)
+
+    def rebin_for_observation(observation):
+        output_wavelength = np.asarray(observation['wl'], dtype=target_dtype)
+        if observation.get('wl_low') is not None and observation.get('wl_high') is not None:
+            wl_low = np.asarray(observation['wl_low'], dtype=target_dtype)
+            wl_high = np.asarray(observation['wl_high'], dtype=target_dtype)
+            integrated_flux = _spectres_integrated_flux(
+                native_wavelength, native_flux_density, wl_low, wl_high
+            )
+        else:
+            edges = _spectres_bin_edges(output_wavelength)
+            mean_flux_density = spectres(
+                output_wavelength,
+                native_wavelength,
+                native_flux_density,
+                fill=np.nan,
+                verbose=False,
+            )
+            integrated_flux = mean_flux_density * np.diff(edges)
+
+        integrated_flux = np.asarray(integrated_flux, dtype=target_dtype)
+
+        if output_wavelength.shape != integrated_flux.shape:
+            raise RuntimeError('Stellar wavelength and integrated-flux arrays have inconsistent shapes.')
+        if not np.all(np.isfinite(integrated_flux)):
+            raise ValueError('The PHOENIX spectrum does not fully cover the observation wavelength grid.')
+
+        return {
+            'x': output_wavelength,
+            'y': integrated_flux,
+            'x_unit': 'micron',
+            'y_unit': 'W m-2',
+        }
 
     if param['obs_numb'] is None:
-        min_wl, max_wl = (param['spectrum']['wl'][0] - 0.2), (param['spectrum']['wl'][-1] + 0.2)
+        param['starfx'] = rebin_for_observation(param['spectrum'])
+        plot_entries = [param['starfx']]
     else:
-        min_wl, max_wl = param['min_wl'], param['max_wl']
+        param['starfx'] = {}
+        for obs in range(0, int(param['obs_numb'])):
+            param['starfx'][str(obs)] = rebin_for_observation(param['spectrum'][str(obs)])
+        plot_entries = [param['starfx'][str(obs)] for obs in range(0, int(param['obs_numb']))]
 
-    with open(directory + star_file) as fp:
-        line = fp.readline()[:25]
-        line = line.replace("D", "e")
-        while line:
-            # line = line[:21] + 'e' + line[22:]
-            if min_wl <= float(float(line[:13]) * 1.0e-4) <= max_wl:
-                wl.append(float(line[:13]))                                             # Angstrom
-                sp.append(float(10.0 ** (float(line[13:]) - 8.0 - 3.0)))                # W/m^2/A
-            elif float(float(line[:13]) * 1.0e-4) < min_wl:
-                pass
-            elif float(float(line[:13]) * 1.0e-4) > max_wl:
-                break
-            line = fp.readline()[:25]
-            line = line.replace("D", "e")
-
-    wl = np.array(wl)
-    sp = np.array(sp)
-
-    wl2 = np.linspace(wl[0], wl[-1], num=(len(wl) * 2), endpoint=True)  # Double data pitch
-
-    tck = interp1d(wl, sp)
-    sp = tck(wl2)
-    wl = np.array(wl2) + 0.0
-
-    new_wl = []
-    new_sp = []
-
-    for i in range(0, len(wl) - 1):
-        new_wl.append(float((wl[i] + wl[i + 1]) / 2.0) * 1.0e-4)
-        new_sp.append(float(trapezoid(np.array([sp[i], sp[i + 1]]), x=np.array([wl[i], wl[i + 1]]))))
-
-    wl = np.array(new_wl)                                                               # micron
-    sp = np.array(new_sp)                                                               # W/m^2
-
-    if param['obs_numb'] is not None:
-        sp = spectres(param['spectrum']['0']['wl'], wl, sp, fill=False)
-    else:
-        sp = spectres(param['spectrum']['wl'], wl, sp, fill=False)
-
-    param['starfx'] = {'x': wl, 'y': sp}
+    model_metadata['dtype'] = np.dtype(target_dtype).name
+    model_metadata['model_signature'] = _stellar_model_signature(param)
+    param['starfx_model'] = model_metadata
+    if 'stellar_irradiance' in param:
+        param.pop('_stellar_source_cache', None)
 
     if plot:
-        plt.plot(wl, sp, 'k-')
+        for entry in plot_entries:
+            plt.plot(entry['x'], entry['y'], '-')
         plt.grid()
-        plt.xlim([0.4, 1.0])
-        plt.title('Stellar spectrum, R=' + str(int(param['Resolution'])))
         plt.xlabel(r'Wavelength ($\mu$m)')
-        plt.ylabel('Stellar flux (W/m$^2$)')
-        plt.savefig(param['wkg_dir'] + 'Retrieval/Star_spectrum.pdf')
+        plt.ylabel('Integrated stellar surface flux per bin (W/m$^2$)')
+        plt.title(f'PHOENIX stellar spectrum: T={temperature:g} K, log(g)={logg:.2f}')
+        plot_dir = os.path.join(param['wkg_dir'], 'Retrieval')
+        os.makedirs(plot_dir, exist_ok=True)
+        plt.savefig(os.path.join(plot_dir, 'Star_spectrum.pdf'))
         plt.close()
 
     return param
@@ -1284,10 +1927,10 @@ def pre_load_variables(param):
         if zone_data.ndim == 1 and zone_data.size:
             zone_data = zone_data.reshape(1, -1)
         param['zone_data'] = zone_data
-        param['solar_data'] = np.loadtxt(param['pkg_dir'] + 'forward_mod/Data/solar0.txt')
         param = load_reactions(param)
         param = load_photolysis(param)
         param = load_cross(param)
+        param = _prepare_python_stellar_irradiance(param)
         param = load_cia(param)
         param['aer_h2so4'] = np.loadtxt(param['pkg_dir'] + 'forward_mod/Data/H2SO4AER_CrossM_01.dat')
         param['aer_s8'] = np.loadtxt(param['pkg_dir'] + 'forward_mod/Data/S8AER_CrossM_01.dat')
@@ -1660,6 +2303,7 @@ def load_cross(param, for_plotting=False):
         for mol in molecules:
             param['opac' + mol.lower()] = param['opac' + mol.lower()][:endP + 1, strtT:endT + 1, strt:end]
 
+    _warn_if_stellar_grid_is_too_coarse(param)
     return param
 
 
@@ -2377,21 +3021,21 @@ def add_noise(param, data, noise_model=0):
         if noise_model != 0:
             # Check if star spectrum exists, and if not load it
             try:
-                param['starfx']['y'][0] += 0.0
-            except KeyError:
+                _star_spectrum_entry(param)['y'][0] += 0.0
+            except (KeyError, IndexError, TypeError):
                 param = take_star_spectrum(param)
 
-            F_s = param['starfx']['y'] * (((param['Rs'] * const.R_sun.value) / (param['distance'] * const.pc.value)) ** 2.0)
+            F_s = _star_spectrum_entry(param)['y'] * (((param['Rs'] * const.R_sun.value) / (param['distance'] * const.pc.value)) ** 2.0)
             F_p = data[:, 1] * F_s
     elif not param['fp_over_fs'] and not param['albedo_calc']:
         F_p = data[:, 1] + 0.0
         # Check if star spectrum exists, and if not load it
         try:
-            param['starfx']['y'][0] += 0.0
-        except KeyError:
+            _star_spectrum_entry(param)['y'][0] += 0.0
+        except (KeyError, IndexError, TypeError):
             param = take_star_spectrum(param)
 
-        F_s = param['starfx']['y'] * (((param['Rs'] * const.R_sun.value) / (param['distance'] * const.pc.value)) ** 2.0)
+        F_s = _star_spectrum_entry(param)['y'] * (((param['Rs'] * const.R_sun.value) / (param['distance'] * const.pc.value)) ** 2.0)
         contrast = data[:, 1] / F_s
     elif param['albedo_calc'] and not param['fp_over_fs']:
         raise TypeError('Cannot calculate the error on the albedo. Please, provide the contrast ratio or the planetary flux.')

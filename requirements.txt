@@ -5,6 +5,8 @@ astropy
 scikit-bio
 matplotlib
 spectres
+stsynphot
+synphot
 gdown
 arviz
 

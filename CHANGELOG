@@ -1,3 +1,12 @@
+## [3.0.3] - 07/21/26
+- Replaced direct BT-Settl text-file parsing in `take_star_spectrum()` with interpolated PHOENIX spectra from `stsynphot`, including metallicity-aware model selection and correctly derived cgs stellar gravity.
+- Stellar spectra are now rebinned with SpectRes over the explicit observation bin edges and stored as bin-integrated surface flux in W m⁻²; `starfx['x']` and `starfx['y']` now always have matching shapes, including separate grids for multi-observation retrievals.
+- Added one-time setup for the official STScI PHOENIX reference atlas under `stsynphot_data/grid/phoenix`, with automatic `PYSYN_CDBS` configuration and reuse of an existing complete external atlas.
+- Added optional high-resolution SVO BT-Settl stellar spectra through `stellar_dir`, including bounded trilinear interpolation in temperature, gravity, and metallicity, validated cgs/Angstrom headers, flux-conserving optical air-to-vacuum conversion, duplicate-wavelength consolidation, `synphot` unit handling, visible source messages, and `use_float32` support for returned stellar arrays without reducing native-grid precision.
+- Added a non-fatal warning when molecular-opacity resolving power exceeds 10,000 while the standard `stsynphot` PHOENIX atlas is selected.
+- Allowed overlapping observational channels from adjacent instrument segments when integrating stellar flux, while retaining each channel's exact wavelength boundaries.
+- Replaced the Python radiative-transfer branch's scaled `solar0.txt` illumination with the same `stsynphot` or external SVO PHOENIX model used by output and noise calculations, evaluated as flux density on the opacity grid, converted to W m⁻² nm⁻¹, and diluted to the planet by `(Rstar/a)²`; the C branch remains unchanged.
+
 ## [3.0.2] - 07/01/26
 - Improved compacted `GEN_DATASET` append behavior: new samples now extend existing `dataset_spectra.npx` and `dataset_errorbars.npx` files atomically, validate contiguous sample indexes, preserve the shared wavelength grid, and keep compaction metadata indexed from the full dataset.
 - Added fixed-radius, mass-only retrieval support in `MULTINEST` and `forward()`: when `Mp` is fitted while `Rp` is fixed and `gp` is not fitted, the model now updates gravity consistently from the sampled mass and fixed radius.
