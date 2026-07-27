@@ -15,7 +15,13 @@ from astropy import constants as const
 import arviz as az
 from scipy.interpolate import interp1d
 
-from .__utils import find_nearest, model_finalizzation, temp_profile, reso_range
+from .__utils import (
+    MULTI_SOLUTION_DELTA_LOG_EVIDENCE_THRESHOLD,
+    find_nearest,
+    model_finalizzation,
+    temp_profile,
+    reso_range,
+)
 # from .__forward import FORWARD_MODEL, FORWARD_DATASET, FORWARD_AI
 from .__forward import RADIATIVE_TRANSFER_C, RADIATIVE_TRANSFER_PYTHON
 
@@ -1451,16 +1457,13 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
     from skbio.stats.composition import clr_inv
     from astropy import constants as const
 
-    def _posteriors_gas_to_vmr(loc_prefix, modes=None):
+    def _posteriors_gas_to_vmr(data):
         """Convert gas posteriors to VMR space and append mean molecular mass.
-        Mirrors previous logic to preserve outputs.
+
+        The conversion is performed in memory so posterior plotting never
+        modifies the raw MultiNest chain files.
         """
-        if modes is None:
-            os.system('cp ' + loc_prefix + '.txt ' + loc_prefix + 'original.txt')
-            a = np.loadtxt(loc_prefix + '.txt')
-        else:
-            os.system('cp ' + loc_prefix + 'solution' + str(modes) + '.txt ' + loc_prefix + 'solution' + str(modes) + '_original.txt')
-            a = np.loadtxt(loc_prefix + 'solution' + str(modes) + '.txt')
+        a = np.atleast_2d(np.asarray(data, dtype=float))
 
         b = np.ones((len(a[:, 0]), len(a[0, :]) + 2))
 
@@ -1563,11 +1566,7 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
             b[:, g_col] = 10. ** (b[:, g_col] - 2.0)
 
         b[:, -1] = np.array(mmm) + 0.0
-
-        if modes is None:
-            np.savetxt(loc_prefix + '.txt', b)
-        else:
-            np.savetxt(loc_prefix + 'solution' + str(modes) + '.txt', b)
+        return b
 
     def _weighted_quantiles(x, qs, w=None):
         x = np.asarray(x)
@@ -1618,11 +1617,6 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
         plt.close(fig)
 
     def _corner_parameters():
-            if os.path.isfile(prefix + 'params_original.json'):
-                pass
-            else:
-                os.system('mv ' + prefix + 'params.json ' + prefix + 'params_original.json')
-
             par = []
             if mnest.param['fit_p0'] and mnest.param['gas_par_space'] != 'partial_pressure':
                 par.append("Log(P$_0$ [Pa])")
@@ -1686,7 +1680,9 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
             if mnest.param['fit_phi']:
                 par.append(r"$\phi$ [deg]")
             par.append(r"$\mu$ (derived)")
-            json.dump(par, open(prefix + 'params.json', 'w'))
+            with open(prefix + '_PostProcess.json', 'w') as postprocess_file:
+                json.dump(par, postprocess_file)
+            return par
 
     def _quantile(x, q, weights=None):
             """
@@ -2044,16 +2040,15 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
             return None
         return sorted(set(selected))
 
-    print('Generating the Posterior Distribution Functions (PDFs) plot')
+    print('\nGenerating the Posterior Distribution Functions (PDFs) plot')
 
-    _corner_parameters()
+    labels = _corner_parameters()
     # Single-mode
     if mds_orig < 2:
-        _posteriors_gas_to_vmr(prefix)
-
         # Read MultiNest data through Analyzer to be robust
         a = pymultinest.Analyzer(n_params=len(parameters), outputfiles_basename=prefix, verbose=False)
-        data = a.get_data()
+        data = _posteriors_gas_to_vmr(a.get_data())
+        np.savetxt(prefix + '_PostProcess.txt', data)
         s = a.get_stats()
         order = data[:, 1].argsort()[::-1]
         samples = data[order, 2:]
@@ -2066,8 +2061,6 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
         logvol = logvol - logvol.max()
 
         print("Solution global log-evidence: " + str(s['modes'][0]['local log-evidence']))
-
-        labels = json.load(open(prefix + 'params.json'))
 
         # Trace
         _traceplot(samples, weights, labels, prefix + 'Nest_trace.png')
@@ -2109,14 +2102,6 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
                                 prefix + 'Nest_selected_1D_posteriors.pdf', colors=['#404784'],
                                 truths=corner_truths)
 
-        # Restore modified files (if any)
-        if mnest.param['rocky'] and mnest.param['mod_prior']:
-            os.system('mv ' + prefix + '.txt ' + prefix + '_PostProcess.txt')
-            os.system('mv ' + prefix + 'original.txt ' + prefix + '.txt')
-        if os.path.isfile(prefix + 'params_original.json'):
-            os.system('mv ' + prefix + 'params.json ' + prefix + '_PostProcess.json')
-            os.system('mv ' + prefix + 'params_original.json ' + prefix + 'params.json')
-
     # Multi-modal
     else:
         colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c564b', '#e377c2', '#7f7f7f']
@@ -2134,12 +2119,22 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
         result = {}
         to_add = 0
         to_plot = []
-        kept_modes = []
 
-        # Build a small helper to read solution file -> samples/weights/logvol
+        # Convert each solution directly from the raw post_separate data.
         def _read_solution(midx):
-            _posteriors_gas_to_vmr(prefix, modes=midx)
-            data = np.loadtxt(prefix + 'solution' + str(midx) + '.txt')
+            solution = nest_out['solutions']['solution' + str(midx)]
+            raw_data = np.column_stack(
+                [
+                    solution['weights'],
+                    solution['loglike'],
+                    solution['tracedata'],
+                ]
+            )
+            data = _posteriors_gas_to_vmr(raw_data)
+            np.savetxt(
+                prefix + 'solution' + str(midx) + '_PostProcess.txt',
+                data,
+            )
             order = data[:, 1].argsort()[::-1]
             samples = data[order, 2:]
             weights = data[order, 0]
@@ -2153,23 +2148,24 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
         s0, w0, lv0 = _read_solution(max_idx)
         result[str(to_add)] = dict(samples=s0, weights=w0, logvol=lv0)
         to_plot.append(max_idx)
-        kept_modes.append(max_idx)
         to_add += 1
 
         # Add other significant modes
-        thresh = 11.0 if mnest.param.get('filter_multi_solutions') else 1000.0
+        filter_modes = mnest.param.get('filter_multi_solutions', False)
         for modes in range(0, mds_orig):
             if modes == max_idx:
                 continue
             local = nest_out['solutions']['solution' + str(modes)]['local_logE'][0]
-            if (max_ev - local) < thresh:
+            if (
+                not filter_modes
+                or (max_ev - local)
+                < MULTI_SOLUTION_DELTA_LOG_EVIDENCE_THRESHOLD
+            ):
                 s1, w1, lv1 = _read_solution(modes)
                 result[str(to_add)] = dict(samples=s1, weights=w1, logvol=lv1)
                 to_plot.append(modes)
-                kept_modes.append(modes)
                 to_add += 1
 
-        labels = json.load(open(prefix + 'params.json'))
         selected_idx = _corner_selected(labels)
         corner_labels_all = [labels[i] for i in selected_idx] if selected_idx else labels
 
@@ -2264,16 +2260,6 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
             _plot_1d_posteriors(sample_sets, weight_sets, plot_labels, plot_bounds,
                                 prefix + 'Nest_selected_1D_posteriors.pdf', colors=sel_colors,
                                 truths=plot_truths, legend_labels=legend_labels, max_idx=max_idx)
-
-        # Restore modified files (if any)
-        for modes in kept_modes:
-            if mnest.param['rocky'] and mnest.param['mod_prior']:
-                os.system('mv ' + prefix + 'solution' + str(modes) + '.txt ' + prefix + 'solution' + str(modes) + '_PostProcess.txt')
-                os.system('mv ' + prefix + 'solution' + str(modes) + '_original.txt ' + prefix + 'solution' + str(modes) + '.txt')
-        if os.path.isfile(prefix + 'params_original.json'):
-            os.system('mv ' + prefix + 'params.json ' + prefix + '_PostProcess.json')
-            os.system('mv ' + prefix + 'params_original.json ' + prefix + 'params.json')
-
 
 @_isolate_posterior_plot_style
 def plot_multi_posteriors(retrieval_dirs, out_dir, parameters=None, solution_idx=None):

@@ -277,14 +277,14 @@ class MULTINEST:
             if self.param['fit_Mp'] and self.param['fit_Rp']:
                 if self.param['Rp_prior_type'] != 'M_R_prior' and self.param['Mp_prior_type'] != 'M_R_prior':
                     cube[par] = Mp_Rp_prior(self.param, 'Mp', cube[par])  # Mass prior - independent or gaussian
-                    cube[par + 1] = Mp_Rp_prior(self.param, 'Rp', cube[par + 1])  # Radius prior - independent
+                    cube[par + 1] = Mp_Rp_prior(self.param, 'Rp', cube[par + 1])  # Radius prior - independent or gaussian
                     par += 2
                 elif self.param['Rp_prior_type'] == 'M_R_prior' and self.param['Mp_prior_type'] != 'M_R_prior':
                     cube[par] = Mp_Rp_prior(self.param, 'Mp', cube[par])  # Mass prior - independent or gaussian
                     cube[par + 1] = Mp_Rp_prior(self.param, 'Rp', cube[par + 1], mp_value=cube[par])  # Radius prior - 2D prior
                     par += 2
                 elif self.param['Rp_prior_type'] != 'M_R_prior' and self.param['Mp_prior_type'] == 'M_R_prior':
-                    cube[par + 1] = Mp_Rp_prior(self.param, 'Rp', cube[par + 1])  # Radius prior - independent
+                    cube[par + 1] = Mp_Rp_prior(self.param, 'Rp', cube[par + 1])  # Radius prior - independent or gaussian
                     cube[par] = Mp_Rp_prior(self.param, 'Mp', cube[par], rp_value=cube[par + 1])  # Mass prior - 2D prior
                     par += 2
             elif self.param['fit_Mp'] and not self.param['fit_Rp']:
@@ -373,7 +373,7 @@ class MULTINEST:
                 s = multinest_results.get_stats()
                 mds_orig = mds = len(s['modes'])
             
-            if self.param['multimodal'] and mds_orig > 1 and self.param['calc_likelihood_data']:
+            if self.param['multimodal'] and mds_orig > 1:
                 self.store_nest_solutions(prefix)
 
         if MPIimport and MPIsize > 1:
@@ -392,8 +392,8 @@ class MULTINEST:
                 if platform.system() != 'Darwin':
                     time.sleep(600)
                 loglike_dir = []
-                for mds in range(0, mds_orig):
-                    loglike_dir.append(self.param['out_dir'] + f'loglikelihood_per_datapoint_sol{mds}/')
+                for mode_idx in range(0, mds_orig):
+                    loglike_dir.append(self.param['out_dir'] + f'loglikelihood_per_datapoint_sol{mode_idx}/')
                 for idx, folder in enumerate(loglike_dir):
                     rank_0 = np.loadtxt(folder + 'loglike_0.dat')
                     rank_0_spec = np.loadtxt(folder + 'samples_0.dat')
@@ -436,30 +436,29 @@ class MULTINEST:
             for i in range(0, mds):
                 cube[:, i] = list(s['modes'][i]['maximum a posterior'])
 
-                if is_root:
+                if self.param['plot_models']:
                     print(f"\nPlotting solution {i + 1} of {mds} with log-evidence: {s['modes'][i]['local log-evidence']:.2f}\n")
 
-                plot_nest_spec(self, cube[:, i], solutions=i)
-                plot_chemistry(self.param, solutions=i)
-                if self.param['rocky']:
-                    plot_mass_radius(self, cube[:, i], solutions=i, sigma=s['modes'][i]['sigma'])
-                if self.param['surface_albedo_parameters'] > 1:
-                    plot_surface_albedo(self.param, solutions=i, sigma=s['modes'][i]['sigma'])
+                    plot_nest_spec(self, cube[:, i], solutions=i)
+                    plot_chemistry(self.param, solutions=i)
+                    if self.param['rocky']:
+                        plot_mass_radius(self, cube[:, i], solutions=i, sigma=s['modes'][i]['sigma'])
+                    if self.param['surface_albedo_parameters'] > 1:
+                        plot_surface_albedo(self.param, solutions=i, sigma=s['modes'][i]['sigma'])
 
-                if os.path.exists(self.param['out_dir'] + f'random_temp_samples_sol{i}.dat') and self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
-                    plot_PT_profile(self, cube[:, i], solutions=i)
-                else:
-                    if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
+                    if os.path.exists(self.param['out_dir'] + f'random_temp_samples_sol{i}.dat') and self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
+                        plot_PT_profile(self, cube[:, i], solutions=i)
+                    elif self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
                         print('\nTo plot P-T profiles, the calculation of the temperatures samples must be enabled (calc_likelihood_data = True).')
-                
-                if self.param['plot_contribution'] and self.param['obs_numb'] is None:
-                    plot_contribution(self, cube[:, i], solutions=i)
 
-                if os.path.exists(self.param['out_dir'] + f'loglike_per_datapoint_sol{i}.dat') and os.path.exists(self.param['out_dir'] + f'parameters_samples_sol{i}.dat') and self.param['plot_elpd_stats']:
-                    elpd_loo_stats(self, parameters, solutions=i)
-                else:
-                    if self.param['plot_elpd_stats']:
-                        print('\nTo plot elpd statistics, the calculation of the likelihood per data point must be enabled (calc_likelihood_data = True).') 
+                    if self.param['obs_numb'] is None:
+                        plot_contribution(self, cube[:, i], solutions=i)
+
+                    if os.path.exists(self.param['out_dir'] + f'loglike_per_datapoint_sol{i}.dat') and os.path.exists(self.param['out_dir'] + f'parameters_samples_sol{i}.dat') and self.param['plot_elpd_stats']:
+                        elpd_loo_stats(self, parameters, solutions=i)
+                    else:
+                        if self.param['plot_elpd_stats']:
+                            print('\nTo plot elpd statistics, the calculation of the likelihood per data point must be enabled (calc_likelihood_data = True).')
 
             if self.param['plot_posterior']:
                 # Delegate posterior plotting to centralized plotting module
@@ -477,7 +476,7 @@ class MULTINEST:
         if mds == 1:
             return mres.get_stats(), mds
         else:
-            max_ev, max_idx = 0, 0
+            max_ev, max_idx = -np.inf, 0
             for i in range(0, mds):
                 if mres.get_stats()['modes'][i]['local log-evidence'] > max_ev:
                     max_ev = mres.get_stats()['modes'][i]['local log-evidence'] + 0.0
@@ -490,7 +489,10 @@ class MULTINEST:
             for i in range(0, mds):
                 if i == max_idx:
                     pass
-                elif (max_ev - mres.get_stats()['modes'][i]['local log-evidence']) < 11.0:
+                elif (
+                    max_ev - mres.get_stats()['modes'][i]['local log-evidence']
+                    < MULTI_SOLUTION_DELTA_LOG_EVIDENCE_THRESHOLD
+                ):
                     filtered_modes.append(mres.get_stats()['modes'][i])
                     filtered_modes[len(filtered_modes) - 1]['index'] = len(filtered_modes) - 1
                 else:

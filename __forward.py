@@ -2814,6 +2814,9 @@ class RADIATIVE_TRANSFER_PYTHON:
         )
 
         geometric_albedo = np.zeros_like(wavelength_nm, dtype=float)
+        # Mirrored latitudes have identical incidence and emission cosines.
+        # Reuse their full solutions while retaining the original 81-term sum.
+        angle_solutions = {}
         for lat_idx in range(9):
             cos_lat = math.cos(lat[lat_idx])
             for lon_idx in range(9):
@@ -2821,7 +2824,16 @@ class RADIATIVE_TRANSFER_PYTHON:
                 gmiu = cos_lat * math.cos(lon[lon_idx])
                 if abs(gmiu0 - gmiu) < 1.0e-7:
                     gmiu = gmiu0 + 1.0e-7
-                rout = self._solve_reflection_angle(reflection_data, gmiu0, gmiu)
+                angle_key = (gmiu0, gmiu)
+                try:
+                    rout = angle_solutions[angle_key]
+                except KeyError:
+                    rout = self._solve_reflection_angle(
+                        reflection_data,
+                        gmiu0,
+                        gmiu,
+                    )
+                    angle_solutions[angle_key] = rout
                 geometric_albedo += (
                     wmiu[lat_idx]
                     * wmiu[lon_idx]

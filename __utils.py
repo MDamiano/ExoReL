@@ -3,6 +3,13 @@ import re
 import shutil
 
 
+MULTI_SOLUTION_SIGMA_THRESHOLD = 10.0
+# Gaussian-equivalent convention: sigma ~= sqrt(2 * delta ln Z).
+MULTI_SOLUTION_DELTA_LOG_EVIDENCE_THRESHOLD = (
+    0.5 * MULTI_SOLUTION_SIGMA_THRESHOLD ** 2
+)
+
+
 def default_parameters():
     param = {}
 
@@ -104,7 +111,7 @@ def default_parameters():
     param['wl_native'] = False  # use the opacity wl grid for the output
     param['mol_custom_wl'] = False  # use a custom wl grid for the output
     param['filter_multi_solutions'] = False  # whether to filter low Bayesian evidence solutions
-    param['plot_contribution'] = False  # whether to plot the spectral contribution of the individual gases
+    param['plot_models'] = False  # whether to plot spectrum, surface, and atmospheric chemistry graphs
     param['plot_posterior'] = False  # whether to plot the marginalized posterior distribution functions
     param['corner_selected_params'] = None  # list of parameter indices to plot in the corner plot
     param['truths'] = None  # whether to also plot the truths value in the posterior plot
@@ -2730,6 +2737,9 @@ def write_stats_summary_files(param, prefix, multinest_stats, n_fitted_parameter
         if len(modes) == 1:
             return [0]
 
+        if not filter_multi_solutions:
+            return list(range(len(modes)))
+
         local_loge = []
         for mode in modes:
             value = mode.get('local log-evidence')
@@ -2738,13 +2748,14 @@ def write_stats_summary_files(param, prefix, multinest_stats, n_fitted_parameter
             local_loge.append(float(value))
 
         max_idx = int(np.argmax(local_loge))
-        threshold = 11.0 if filter_multi_solutions else 1000.0
-
         selected = [max_idx]
         for mode_idx in range(0, len(modes)):
             if mode_idx == max_idx:
                 continue
-            if (local_loge[max_idx] - local_loge[mode_idx]) < threshold:
+            if (
+                local_loge[max_idx] - local_loge[mode_idx]
+                < MULTI_SOLUTION_DELTA_LOG_EVIDENCE_THRESHOLD
+            ):
                 selected.append(mode_idx)
 
         return selected
@@ -2768,6 +2779,18 @@ def write_stats_summary_files(param, prefix, multinest_stats, n_fitted_parameter
     modes = multinest_stats.get('modes', [])
     if len(modes) == 0:
         return
+
+    local_loge = np.asarray(
+        [
+            float(mode.get('local log-evidence', np.nan))
+            if mode.get('local log-evidence') is not None
+            else np.nan
+            for mode in modes
+        ],
+        dtype=float,
+    )
+    finite_loge = local_loge[np.isfinite(local_loge)]
+    highest_ln_z = float(np.max(finite_loge)) if finite_loge.size else np.nan
 
     mode_indices = _summary_mode_indices(multinest_stats, param.get('filter_multi_solutions', False))
     if len(mode_indices) == 0:
@@ -2858,6 +2881,11 @@ def write_stats_summary_files(param, prefix, multinest_stats, n_fitted_parameter
 
         ln_z = mode.get('local log-evidence', np.nan)
         ln_z_err = mode.get('local log-evidence error', np.nan)
+        sigma_from_highest_evidence = None
+        if np.isfinite(highest_ln_z) and ln_z is not None and np.isfinite(float(ln_z)):
+            delta_ln_z = highest_ln_z - float(ln_z)
+            if delta_ln_z > 0.0:
+                sigma_from_highest_evidence = float(np.sqrt(2.0 * delta_ln_z))
 
         txt_lines.append(f'*** SOLUTION {mode_idx} ***')
         txt_lines.append('############### SUMMARY STATISTICS ###############')
@@ -2865,6 +2893,12 @@ def write_stats_summary_files(param, prefix, multinest_stats, n_fitted_parameter
         txt_lines.append(f'chi-square (d.o.f) = {_summary_float_str(chi_square)} ({dof})')
         txt_lines.append(f'Reduced chi-square = {_summary_float_str(reduced_chi_square)}')
         txt_lines.append(f'ln Z               = {_summary_float_str(ln_z)} +- {_summary_float_str(ln_z_err)}')
+        if sigma_from_highest_evidence is not None:
+            txt_lines.append(
+                'Evidence separation = '
+                f'{_summary_float_str(sigma_from_highest_evidence)} sigma '
+                'from highest ln Z'
+            )
         txt_lines.append(f'AIC                = {_summary_float_str(aic)}')
         txt_lines.append(f'AICc               = {_summary_float_str(aicc)}')
         txt_lines.append(f'WAIC               = {_summary_float_str(waic)}')
@@ -2875,7 +2909,7 @@ def write_stats_summary_files(param, prefix, multinest_stats, n_fitted_parameter
         txt_lines.append('##################################################')
         txt_lines.append('')
 
-        summary_data['solutions'][f'solution{mode_idx}'] = {
+        solution_summary = {
             'solution_index': int(mode_idx),
             'n_data_points': int(n_data_points),
             'n_fitted_parameters': int(n_fit),
@@ -2892,6 +2926,11 @@ def write_stats_summary_files(param, prefix, multinest_stats, n_fitted_parameter
             'BPICs': _safe_json_number(bpics),
             'max_log_likelihood': _safe_json_number(lnl_hat),
         }
+        if sigma_from_highest_evidence is not None:
+            solution_summary['sigma_from_highest_evidence'] = (
+                _safe_json_number(sigma_from_highest_evidence)
+            )
+        summary_data['solutions'][f'solution{mode_idx}'] = solution_summary
 
     with open(param['out_dir'] + 'stats_summary.txt', 'w') as f_txt:
         f_txt.write('\n'.join(txt_lines).rstrip() + '\n')
@@ -3212,3 +3251,101 @@ def reso_range(start, finish, res, bins=False):
         return np.mean(bns, axis=1)
     else:
         return bns
+
+
+def orbital_configuration_to_phase_angle(
+    inclination,
+    orbital_phase,
+    phase_zero='inferior_conjunction',
+    eccentricity=0.0,
+    argument_of_periastron=0.0,  # planet's ω in degrees
+):
+    """Return the star-planet-observer phase angle in degrees.
+
+    ``inclination`` and the planet's ``argument_of_periastron`` are in
+    degrees, with 0 degrees inclination face-on and 90 degrees edge-on.
+    ``orbital_phase`` is the elapsed orbital-period fraction from the selected
+    conjunction. By default, phase zero is inferior conjunction, when the
+    planet is in front of the star. Superior conjunction can be selected
+    explicitly. Circular orbits are used unless ``eccentricity`` is provided.
+
+    ``argument_of_periastron`` must describe the planet's orbit. Radial-
+    velocity catalogs often report the host star's argument of periastron
+    instead; in that case, convert it with
+    ``omega_planet = (omega_star + 180 degrees) % 360 degrees``.
+    """
+
+    inclination = float(inclination)
+    orbital_phase = float(orbital_phase)
+    eccentricity = float(eccentricity)
+    argument_of_periastron = float(argument_of_periastron)
+    if not np.isfinite(inclination) or not 0.0 <= inclination <= 180.0:
+        raise ValueError('inclination must be finite and between 0 and 180 degrees')
+    if not np.isfinite(orbital_phase):
+        raise ValueError('orbital_phase must be finite')
+    if not np.isfinite(eccentricity) or not 0.0 <= eccentricity < 1.0:
+        raise ValueError('eccentricity must be finite and in the range [0, 1)')
+    if not np.isfinite(argument_of_periastron):
+        raise ValueError('argument_of_periastron must be finite')
+
+    if phase_zero == 'superior_conjunction':
+        phase_sign = 1.0
+        conjunction_longitude = 1.5 * math.pi
+    elif phase_zero == 'inferior_conjunction':
+        phase_sign = -1.0
+        conjunction_longitude = 0.5 * math.pi
+    else:
+        raise ValueError(
+            "phase_zero must be 'superior_conjunction' or "
+            "'inferior_conjunction'"
+        )
+
+    inclination_radians = math.radians(inclination)
+    if eccentricity == 0.0:
+        cos_phase_angle = (
+            phase_sign
+            * math.sin(inclination_radians)
+            * math.cos(2.0 * math.pi * orbital_phase)
+        )
+        return math.degrees(
+            math.acos(float(np.clip(cos_phase_angle, -1.0, 1.0)))
+        )
+
+    periastron_radians = math.radians(argument_of_periastron)
+    true_anomaly_zero = conjunction_longitude - periastron_radians
+    eccentric_anomaly_zero = 2.0 * math.atan2(
+        math.sqrt(1.0 - eccentricity) * math.sin(0.5 * true_anomaly_zero),
+        math.sqrt(1.0 + eccentricity) * math.cos(0.5 * true_anomaly_zero),
+    )
+    mean_anomaly_zero = (
+        eccentric_anomaly_zero
+        - eccentricity * math.sin(eccentric_anomaly_zero)
+    )
+    mean_anomaly = (
+        mean_anomaly_zero + 2.0 * math.pi * orbital_phase
+    ) % (2.0 * math.pi)
+
+    if mean_anomaly == 0.0:
+        eccentric_anomaly = 0.0
+    else:
+        eccentric_anomaly = sp.optimize.brentq(
+            lambda anomaly: (
+                anomaly
+                - eccentricity * math.sin(anomaly)
+                - mean_anomaly
+            ),
+            0.0,
+            2.0 * math.pi,
+        )
+
+    true_anomaly = 2.0 * math.atan2(
+        math.sqrt(1.0 + eccentricity) * math.sin(0.5 * eccentric_anomaly),
+        math.sqrt(1.0 - eccentricity) * math.cos(0.5 * eccentric_anomaly),
+    )
+    cos_phase_angle = (
+        -math.sin(inclination_radians)
+        * math.sin(periastron_radians + true_anomaly)
+    )
+    return math.degrees(
+        math.acos(float(np.clip(cos_phase_angle, -1.0, 1.0)))
+    )

@@ -1,3 +1,12 @@
+## [3.1.0] - 07/27/26
+- Reused identical reflected-light solutions across north/south disk-quadrature points in the Python radiative-transfer solver, reducing the usual 81 angle solves to 45 per atmospheric column without changing the disk-integration result.
+- Added `orbital_configuration_to_phase_angle()` to convert inclination and orbital-cycle phase into the phase angle used by the radiative-transfer calculation; orbital phase zero defaults to inferior conjunction, when the planet is in front of the star, with superior conjunction and Keplerian eccentric-orbit treatment available optionally.
+- Restored `plot_models` as the master switch for retrieval model diagnostics so spectrum, chemistry, mass-radius, surface-albedo, P-T, molecular-contribution, and enabled ELPD plots are skipped when plotting is disabled.
+- Fixed multimodal likelihood post-processing so its directory loop no longer overwrites the retained-mode count and omits the final solution from subsequent plotting.
+- Standardized optional multimodal filtering at a 10-sigma-equivalent threshold (`delta ln Z = 50`) across retrieval products, posterior plots, and summary statistics; disabling filtering now retains every mode.
+- Extended `stats_summary.txt` and `stats_summary.json` with each reported non-best solution's Gaussian-equivalent sigma separation from the highest local Bayesian evidence.
+- Made posterior plotting restart-safe by regenerating raw multimodal solution files from `post_separate.dat`, converting samples in memory, and writing only dedicated `*_PostProcess` products; interrupted or repeated plotting runs can no longer transform chain files multiple times and desynchronize samples from parameter labels.
+
 ## [3.0.3] - 07/21/26
 - Replaced direct BT-Settl text-file parsing in `take_star_spectrum()` with interpolated PHOENIX spectra from `stsynphot`, including metallicity-aware model selection and correctly derived cgs stellar gravity.
 - Stellar spectra are now rebinned with SpectRes over the explicit observation bin edges and stored as bin-integrated surface flux in W m⁻²; `starfx['x']` and `starfx['y']` now always have matching shapes, including separate grids for multi-observation retrievals.

@@ -1,4 +1,4 @@
-__version__ = '3.0.3'
+__version__ = '3.1.0'
 __fmod_version__ = '3.0'
 
 import os
