@@ -913,6 +913,9 @@ def ranges(param):
             elif (param['Rp_prior_type'] is None or param['Rp_prior_type'] == 'independent') and param['Mp_prior_type'] == 'gaussian':
                 param['Mp_range'] = [max(0.000032, param['Mp_orig'] - (5.0 * param['Mp_err'])), min(0.06, param['Mp_orig'] + (5.0 * param['Mp_err']))]
                 param['Rp_range'] = [0.044607088905052314, 0.8921417781010462]  # Planet radius - 0.5 to 10 Earth radii
+            elif param['Rp_prior_type'] == 'gaussian' and (param['Mp_prior_type'] is None or param['Mp_prior_type'] == 'independent'):
+                param['Rp_range'] = [max(0.044607088905052314, param['Rp_orig'] - (5.0 * param['Rp_err'])), min(0.8921417781010462, param['Rp_orig'] + (5.0 * param['Rp_err']))]
+                param['Mp_range'] = [0.000032, 0.06]  # Planet mass 0.01 to 19 Earth masses
             elif param['Rp_prior_type'] == 'M_R_prior':
                 if param['Mp_prior_type'] is None or param['Mp_prior_type'] == 'independent':
                     param['Mp_range'] = [0.000032, 0.06292703731012286]                   # 0.01 to 20 Earth masses

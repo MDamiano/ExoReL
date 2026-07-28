@@ -1,3 +1,8 @@
+## [3.1.1] - 07/28/26
+- Enabled the linear-in-optical-depth Planck-source correction for non-isothermal layers in the Python radiative-transfer solver, applying the thermal slope consistently to the two-stream boundary and pseudo-source terms and using `expm1`-based propagation kernels for optically thin stability.
+- Optimized the Python reflected-light angle solver by precomputing angle-independent tridiagonal coefficients and compact reverse-Thomas factors per reflection group, reusing the existing coefficient storage instead of retaining duplicate matrices, and preserving the original reverse-RHS/forward-reconstruction arithmetic.
+- Cached and reused `exp(-tau/mium)`, `expm1(-tau/mium)`, `exp(-lam*tau)`, and a unified optical-boundary attenuation array across the layer sweeps and bottom boundary; the Modern Earth regression remained bit-for-bit identical while the combined changes reduced end-to-end runtime by about 7% and angle-solver time by roughly 14–16%.
+
 ## [3.1.0] - 07/27/26
 - Reused identical reflected-light solutions across north/south disk-quadrature points in the Python radiative-transfer solver, reducing the usual 81 angle solves to 45 per atmospheric column without changing the disk-integration result.
 - Added `orbital_configuration_to_phase_angle()` to convert inclination and orbital-cycle phase into the phase angle used by the radiative-transfer calculation; orbital phase zero defaults to inferior conjunction, when the planet is in front of the star, with superior conjunction and Keplerian eccentric-orbit treatment available optionally.

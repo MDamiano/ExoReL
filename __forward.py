@@ -2451,6 +2451,14 @@ class RADIATIVE_TRANSFER_PYTHON:
             rr1 = rr_all[:ntau, wave_idx]
             tc1 = tc_all[:ntau + 1, wave_idx]
             planck1 = planck_boundary[:ntau + 1, wave_idx]
+            planck_top = planck1[:-1]
+            planck_delta = planck1[1:] - planck_top
+            planck_slope = np.divide(
+                planck_delta,
+                tau1,
+                out=np.zeros_like(planck_delta),
+                where=tau1 > 1.0e-12,
+            )
             solar_i = solar[wave_idx]
             surfaceref = np.where(wavelength_m[wave_idx] * 1.0e9 > 3000.0, 0.0, surface_albedo[wave_idx])
 
@@ -2463,6 +2471,49 @@ class RADIATIVE_TRANSFER_PYTHON:
             e2 = 1.0 - gamma * exp_term
             e3 = gamma + exp_term
             e4 = gamma - exp_term
+
+            nvector = 2 * int(ntau)
+            a = np.zeros((nvector, wave_idx.size), dtype=float)
+            b = np.zeros((nvector, wave_idx.size), dtype=float)
+            d = np.zeros((nvector, wave_idx.size), dtype=float)
+
+            a[0] = 0.0
+            b[0] = e1[0]
+            d[0] = -e2[0]
+
+            for layer_idx in range(ntau - 1):
+                even_row = 2 * layer_idx + 1
+                odd_row = 2 * layer_idx + 2
+                a[odd_row] = e2[layer_idx] * e3[layer_idx] - e4[layer_idx] * e1[layer_idx]
+                b[odd_row] = e1[layer_idx] * e1[layer_idx + 1] - e3[layer_idx] * e3[layer_idx + 1]
+                d[odd_row] = e3[layer_idx] * e4[layer_idx + 1] - e1[layer_idx] * e2[layer_idx + 1]
+
+                a[even_row] = e2[layer_idx + 1] * e1[layer_idx] - e3[layer_idx] * e4[layer_idx + 1]
+                b[even_row] = e2[layer_idx] * e2[layer_idx + 1] - e4[layer_idx] * e4[layer_idx + 1]
+                d[even_row] = e1[layer_idx + 1] * e4[layer_idx + 1] - e2[layer_idx + 1] * e3[layer_idx + 1]
+
+            a[-1] = e1[-1] - surfaceref * e3[-1]
+            b[-1] = e2[-1] - surfaceref * e4[-1]
+            d[-1] = 0.0
+
+            # Factor the angle-independent tridiagonal system in the same
+            # reverse direction used by the angle solver. Reuse the temporary
+            # coefficient arrays for the factors so a and b are not retained.
+            #
+            # The last b row deliberately remains a pivot rather than its
+            # reciprocal, preserving the existing e[-1] / b[-1] rounding.
+            # Every preceding b row is replaced by its reciprocal modified
+            # pivot and a is replaced by the corresponding as_ factor.
+            thomas_as = a
+            thomas_rhs_factor = b
+            thomas_as[-1] = thomas_as[-1] / thomas_rhs_factor[-1]
+            for row_idx in range(nvector - 2, -1, -1):
+                factor = 1.0 / (
+                    thomas_rhs_factor[row_idx]
+                    - d[row_idx] * thomas_as[row_idx + 1]
+                )
+                thomas_as[row_idx] = thomas_as[row_idx] * factor
+                thomas_rhs_factor[row_idx] = factor
 
             phase_function = rr1 * 0.75 * (cos_scattering * cos_scattering + 1.0)
             hg_term = (
@@ -2479,7 +2530,7 @@ class RADIATIVE_TRANSFER_PYTHON:
             groups.append(
                 {
                     'ntau': int(ntau),
-                    'nvector': 2 * int(ntau),
+                    'nvector': nvector,
                     'wave_idx': wave_idx,
                     'tau': tau1,
                     'w': w1,
@@ -2488,16 +2539,20 @@ class RADIATIVE_TRANSFER_PYTHON:
                     'gamma2': gamma2,
                     'lam': lam,
                     'gamma': gamma,
+                    'exp_term': exp_term,
                     'e1': e1,
                     'e2': e2,
                     'e3': e3,
                     'e4': e4,
+                    'd': d,
+                    'thomas_as': thomas_as,
+                    'thomas_rhs_factor': thomas_rhs_factor,
                     'tc': tc1,
                     'solar': solar_i,
                     'surface_reflectance': surfaceref,
                     'phase_function': phase_function,
-                    'aa1': 2.0 * np.pi * planck1[:-1],
-                    'planck_source': 2.0 * np.pi * 0.5 * planck1[:-1],
+                    'planck_top': planck_top,
+                    'planck_slope': planck_slope,
                     'bottom_planck': planck1[-1],
                 }
             )
@@ -2518,6 +2573,7 @@ class RADIATIVE_TRANSFER_PYTHON:
             gamma2 = group['gamma2']
             lam = group['lam']
             gamma = group['gamma']
+            exp_term = group['exp_term']
             e1 = group['e1']
             e2 = group['e2']
             e3 = group['e3']
@@ -2529,15 +2585,25 @@ class RADIATIVE_TRANSFER_PYTHON:
             gamma3 = (2.0 - 3.0 * g1 * miu0_diffuse) / 4.0
             gamma4 = 1.0 - gamma3
 
-            cp0 = group['planck_source'].copy()
-            cp1 = cp0.copy()
-            cm0 = cp0.copy()
-            cm1 = cp0.copy()
+            planck_top = group['planck_top']
+            planck_slope = group['planck_slope']
+            gamma_sum = gamma1 + gamma2
+            thermal_prefactor = 2.0 * np.pi * 0.5
+            cp0 = thermal_prefactor * (planck_top + planck_slope / gamma_sum)
+            cp1 = thermal_prefactor * (
+                planck_top + planck_slope * (tau1 + 1.0 / gamma_sum)
+            )
+            cm0 = thermal_prefactor * (planck_top - planck_slope / gamma_sum)
+            cm1 = thermal_prefactor * (
+                planck_top + planck_slope * (tau1 - 1.0 / gamma_sum)
+            )
 
             if miu0_diffuse > 0.0:
                 denom = lam * lam - 1.0 / (miu0_diffuse * miu0_diffuse)
-                exp_top = np.exp(-tc1[:-1] / miu0_diffuse)
-                exp_bottom = np.exp(-tc1[1:] / miu0_diffuse)
+                boundary_attenuation = np.exp(-tc1 / miu0_diffuse)
+                exp_top = boundary_attenuation[:-1]
+                exp_bottom = boundary_attenuation[1:]
+                bottom_attenuation = boundary_attenuation[-1]
                 solar_prefactor = solar_i[np.newaxis, :] * w1
                 cp0 += solar_prefactor * exp_top * (
                     ((gamma1 - 1.0 / miu0_diffuse) * gamma3 + gamma2 * gamma4) / denom
@@ -2553,57 +2619,54 @@ class RADIATIVE_TRANSFER_PYTHON:
                 )
 
             nvector = group['nvector']
-            a = np.zeros((nvector, wave_idx.size), dtype=float)
-            b = np.zeros((nvector, wave_idx.size), dtype=float)
-            d = np.zeros((nvector, wave_idx.size), dtype=float)
+            d = group['d']
+            thomas_as = group['thomas_as']
+            thomas_rhs_factor = group['thomas_rhs_factor']
             e = np.zeros((nvector, wave_idx.size), dtype=float)
 
-            a[0] = 0.0
-            b[0] = e1[0]
-            d[0] = -e2[0]
             e[0] = -cm0[0]
 
             for layer_idx in range(ntau - 1):
                 even_row = 2 * layer_idx + 1
                 odd_row = 2 * layer_idx + 2
-                a[odd_row] = e2[layer_idx] * e3[layer_idx] - e4[layer_idx] * e1[layer_idx]
-                b[odd_row] = e1[layer_idx] * e1[layer_idx + 1] - e3[layer_idx] * e3[layer_idx + 1]
-                d[odd_row] = e3[layer_idx] * e4[layer_idx + 1] - e1[layer_idx] * e2[layer_idx + 1]
                 e[odd_row] = e3[layer_idx] * (cp0[layer_idx + 1] - cp1[layer_idx]) - e1[layer_idx] * (
                     cm0[layer_idx + 1] - cm1[layer_idx]
                 )
 
-                a[even_row] = e2[layer_idx + 1] * e1[layer_idx] - e3[layer_idx] * e4[layer_idx + 1]
-                b[even_row] = e2[layer_idx] * e2[layer_idx + 1] - e4[layer_idx] * e4[layer_idx + 1]
-                d[even_row] = e1[layer_idx + 1] * e4[layer_idx + 1] - e2[layer_idx + 1] * e3[layer_idx + 1]
                 e[even_row] = e2[layer_idx + 1] * (cp0[layer_idx + 1] - cp1[layer_idx]) - e4[layer_idx + 1] * (
                     cm0[layer_idx + 1] - cm1[layer_idx]
                 )
 
-            a[-1] = e1[-1] - surfaceref * e3[-1]
-            b[-1] = e2[-1] - surfaceref * e4[-1]
-            d[-1] = 0.0
             e[-1] = -cp1[-1] + surfaceref * cm1[-1] + (1.0 - surfaceref) * np.pi * group['bottom_planck']
             if miu0_diffuse > 0.0:
-                e[-1] += surfaceref * miu0_diffuse * solar_i * np.exp(-tc1[-1] / miu0_diffuse)
+                e[-1] += surfaceref * miu0_diffuse * solar_i * bottom_attenuation
 
-            as_ = np.zeros_like(a)
-            ds_ = np.zeros_like(a)
-            y = np.zeros_like(a)
-            as_[-1] = a[-1] / b[-1]
-            ds_[-1] = e[-1] / b[-1]
+            ds_ = np.zeros_like(d)
+            y = np.zeros_like(d)
+            ds_[-1] = e[-1] / thomas_rhs_factor[-1]
             for row_idx in range(nvector - 2, -1, -1):
-                factor = 1.0 / (b[row_idx] - d[row_idx] * as_[row_idx + 1])
-                as_[row_idx] = a[row_idx] * factor
-                ds_[row_idx] = (e[row_idx] - d[row_idx] * ds_[row_idx + 1]) * factor
+                ds_[row_idx] = (
+                    e[row_idx] - d[row_idx] * ds_[row_idx + 1]
+                ) * thomas_rhs_factor[row_idx]
             y[0] = ds_[0]
             for row_idx in range(1, nvector):
-                y[row_idx] = ds_[row_idx] - as_[row_idx] * y[row_idx - 1]
+                y[row_idx] = (
+                    ds_[row_idx] - thomas_as[row_idx] * y[row_idx - 1]
+                )
             y1 = y[0::2]
             y2 = y[1::2]
 
-            aa1 = group['aa1']
-            aa2 = np.zeros_like(aa1)
+            aa1 = (
+                2.0 * np.pi * planck_top
+                + 3.0
+                * w1
+                * g1
+                * mium
+                * np.pi
+                * planck_slope
+                / gamma_sum
+            )
+            aa2 = 2.0 * np.pi * planck_slope
             aa3 = np.zeros_like(aa1)
             if miu0 > 0.0:
                 denom = lam * lam - 1.0 / (miu0 * miu0)
@@ -2629,38 +2692,45 @@ class RADIATIVE_TRANSFER_PYTHON:
 
             same_mu = abs(mium - miu0) == 0.0
             rid = np.zeros(wave_idx.size, dtype=float)
+            x_m = tau1 / mium
+            exp_m_cache = np.exp(-x_m)
+            expm1_m_cache = np.expm1(-x_m)
             for layer_idx in range(ntau):
-                exp_m = np.exp(-tau1[layer_idx] / mium)
+                x = x_m[layer_idx]
+                exp_m = exp_m_cache[layer_idx]
+                expm1_m = expm1_m_cache[layer_idx]
+                one_minus_exp = -expm1_m
+                downward_slope_kernel = mium * (x + expm1_m)
                 if same_mu:
                     rid = (
                         rid * exp_m
-                        + aa1[layer_idx] * (1.0 - exp_m)
-                        + aa2[layer_idx] * (tau1[layer_idx] - mium + mium * exp_m)
+                        + aa1[layer_idx] * one_minus_exp
+                        + aa2[layer_idx] * downward_slope_kernel
                         + aa3[layer_idx] * tau1[layer_idx] / mium * exp_m
                         + aa4r[layer_idx]
                         / (1.0 + mium * lam[layer_idx])
                         * (1.0 - np.exp(-tau1[layer_idx] / mium - lam[layer_idx] * tau1[layer_idx]))
                         + aa5[layer_idx]
                         / (1.0 - mium * lam[layer_idx])
-                        * (np.exp(-lam[layer_idx] * tau1[layer_idx]) - exp_m)
+                        * (exp_term[layer_idx] - exp_m)
                     )
                 elif miu0 < 0.0:
                     rid = (
                         rid * exp_m
-                        + aa1[layer_idx] * (1.0 - exp_m)
-                        + aa2[layer_idx] * (tau1[layer_idx] - mium + mium * exp_m)
+                        + aa1[layer_idx] * one_minus_exp
+                        + aa2[layer_idx] * downward_slope_kernel
                         + aa4r[layer_idx]
                         / (1.0 + mium * lam[layer_idx])
                         * (1.0 - np.exp(-tau1[layer_idx] / mium - lam[layer_idx] * tau1[layer_idx]))
                         + aa5[layer_idx]
                         / (1.0 - mium * lam[layer_idx])
-                        * (np.exp(-lam[layer_idx] * tau1[layer_idx]) - exp_m)
+                        * (exp_term[layer_idx] - exp_m)
                     )
                 else:
                     rid = (
                         rid * exp_m
-                        + aa1[layer_idx] * (1.0 - exp_m)
-                        + aa2[layer_idx] * (tau1[layer_idx] - mium + mium * exp_m)
+                        + aa1[layer_idx] * one_minus_exp
+                        + aa2[layer_idx] * downward_slope_kernel
                         + aa3[layer_idx]
                         * miu0
                         / (miu0 - mium)
@@ -2670,39 +2740,47 @@ class RADIATIVE_TRANSFER_PYTHON:
                         * (1.0 - np.exp(-tau1[layer_idx] / mium - lam[layer_idx] * tau1[layer_idx]))
                         + aa5[layer_idx]
                         / (1.0 - mium * lam[layer_idx])
-                        * (np.exp(-lam[layer_idx] * tau1[layer_idx]) - exp_m)
+                        * (exp_term[layer_idx] - exp_m)
                     )
 
             riu = rid * surfaceref + (1.0 - surfaceref) * 2.0 * np.pi * group['bottom_planck']
             if miu0_diffuse > 0.0:
-                riu += surfaceref * 2.0 * miu0_diffuse * solar_i * np.exp(-tc1[-1] / miu0_diffuse)
+                riu += surfaceref * 2.0 * miu0_diffuse * solar_i * bottom_attenuation
                 for layer_idx in range(ntau - 1, -1, -1):
-                    exp_m = np.exp(-tau1[layer_idx] / mium)
+                    x = x_m[layer_idx]
+                    exp_m = exp_m_cache[layer_idx]
+                    expm1_m = expm1_m_cache[layer_idx]
+                    one_minus_exp = -expm1_m
+                    upward_slope_kernel = mium * (-expm1_m - x * exp_m)
                     riu = (
                         riu * exp_m
-                        + aa1[layer_idx] * (1.0 - exp_m)
-                        + aa2[layer_idx] * (mium - (tau1[layer_idx] + mium) * exp_m)
+                        + aa1[layer_idx] * one_minus_exp
+                        + aa2[layer_idx] * upward_slope_kernel
                         + aa3[layer_idx]
                         * miu0
                         / (miu0 + mium)
                         * (1.0 - np.exp(-tau1[layer_idx] / miu0 - tau1[layer_idx] / mium))
                         + aa4r[layer_idx]
                         / (1.0 - mium * lam[layer_idx])
-                        * (np.exp(-lam[layer_idx] * tau1[layer_idx]) - exp_m)
+                        * (exp_term[layer_idx] - exp_m)
                         + aa5[layer_idx]
                         / (1.0 + mium * lam[layer_idx])
                         * (1.0 - np.exp(-tau1[layer_idx] / mium - lam[layer_idx] * tau1[layer_idx]))
                     )
             else:
                 for layer_idx in range(ntau - 1, -1, -1):
-                    exp_m = np.exp(-tau1[layer_idx] / mium)
+                    x = x_m[layer_idx]
+                    exp_m = exp_m_cache[layer_idx]
+                    expm1_m = expm1_m_cache[layer_idx]
+                    one_minus_exp = -expm1_m
+                    upward_slope_kernel = mium * (-expm1_m - x * exp_m)
                     riu = (
                         riu * exp_m
-                        + aa1[layer_idx] * (1.0 - exp_m)
-                        + aa2[layer_idx] * (mium - (tau1[layer_idx] + mium) * exp_m)
+                        + aa1[layer_idx] * one_minus_exp
+                        + aa2[layer_idx] * upward_slope_kernel
                         + aa4r[layer_idx]
                         / (1.0 - mium * lam[layer_idx])
-                        * (np.exp(-lam[layer_idx] * tau1[layer_idx]) - exp_m)
+                        * (exp_term[layer_idx] - exp_m)
                         + aa5[layer_idx]
                         / (1.0 + mium * lam[layer_idx])
                         * (1.0 - np.exp(-tau1[layer_idx] / mium - lam[layer_idx] * tau1[layer_idx]))
