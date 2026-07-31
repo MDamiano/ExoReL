@@ -1,5 +1,5 @@
-__version__ = '3.1.1'
-__fmod_version__ = '3.0'
+__version__ = '3.1.2'
+__fmod_version__ = '3.1'
 
 import os
 import shutil
@@ -195,7 +195,7 @@ def _ensure_required_data():
     missing = [d for d in required_dirs if not _is_nonempty_dir(os.path.join(pkg_dir, d))]
     if missing:
         # Attempt to download the full folder from Google Drive via gdown
-        drive_forward_mod = "16eKd2Dlefi4Hclzkp5k5A2fos5ou0VY8"
+        drive_forward_mod = "1eo4fql8vQorbQJ3HI69OKrD_PwEArjyC"
         try:
             import gdown  # type: ignore
             import zipfile

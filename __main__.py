@@ -50,6 +50,8 @@ class CREATE_SPECTRUM:
         self.param['fit_molecules'] = []
         sumb = 0.0
         for mol in self.param['supported_molecules']:
+            if mol == self.param['gas_fill']:
+                continue
             try:
                 if self.param['vmr_' + mol] != 0.0:
                     self.param['fit_molecules'].append(mol)
@@ -58,6 +60,9 @@ class CREATE_SPECTRUM:
                 pass
         if self.param['gas_fill'] is not None:
             self.param['vmr_' + self.param['gas_fill']] = 1.0 - sumb
+
+        self.param = validate_vmr_composition(self.param)
+        self.param = validate_cloud_species_configuration(self.param)
 
         if not self.param['albedo_calc'] and not self.param['fp_over_fs']:
             self.param = take_star_spectrum(self.param)
@@ -161,18 +166,6 @@ class CREATE_SPECTRUM:
         time1 = time.time()
 
         wl, model = forward(self.param, retrieval_mode=self.param['ret_mode'], albedo_calc=self.param['albedo_calc'], fp_over_fs=self.param['fp_over_fs'], canc_metadata=self.canc_metadata)
-
-        if self.param['cld_frac'] != 1.0 and (self.param['fit_wtr_cld'] or self.param['fit_amm_cld']):
-            fit_wtr_cld = self.param['fit_wtr_cld']
-            fit_amm_cld = self.param['fit_amm_cld']
-            self.param['fit_wtr_cld'] = False
-            self.param['fit_amm_cld'] = False
-            self.param['ret_mode'] = True
-            model_no_cld = forward(self.param, retrieval_mode=self.param['ret_mode'], albedo_calc=self.param['albedo_calc'], fp_over_fs=self.param['fp_over_fs'], canc_metadata=self.canc_metadata)
-            self.param['fit_wtr_cld'] = fit_wtr_cld
-            self.param['fit_amm_cld'] = fit_amm_cld
-            self.param['ret_mode'] = False
-            model = (self.param['cld_frac'] * model) + ((1.0 - self.param['cld_frac']) * model_no_cld)
 
         time2 = time.time()
         if self.param['verbose']:

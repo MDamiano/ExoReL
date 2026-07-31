@@ -208,7 +208,6 @@ __marimo__/
 
 # User defined
 meeting_room/
-PHO_STELLAR_MODEL/
 stsynphot_data/
 plotting_routine/
 forward_mod/

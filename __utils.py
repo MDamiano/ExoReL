@@ -44,7 +44,7 @@ def default_parameters():
     #### [ATMOSPHERIC_PAR] ####
     param['fhaze'] = 1e-36  # flux haze -- NOT IN USE
     param['cld_frac'] = 1.0  # cloud fraction
-    param['adjust_VMR_gases'] = True  # All the gases are adjusted to compensate water condensation depletion
+    param['adjust_VMR_gases'] = True  # Preserve dry-gas ratios when condensable vapor is depleted
     param['use_adaptive_grid'] = True  # Split the atmosphere altitude in the same number of layers below, within, and above the clouds
     param['n_layer'] = 100  # Number of layers of the atmosphere
     param['KE'] = 1.0  # Eddy diffusion coefficient in m2/s
@@ -98,6 +98,7 @@ def default_parameters():
     param['optimizer'] = None  # Which optimizer to use during retrieval. 'multinest' is the only possibility currently
     param['gen_dataset_mode'] = False
     param['random_seed'] = None  # Random seed for GEN_DATASET design matrix generation
+    param['verbose'] = False  # Emit informational forward-model messages
 
     #### [MULTINEST_PAR] ####
     param['multimodal'] = True
@@ -123,6 +124,7 @@ def default_parameters():
     #### [Create_spectrum_PAR] ####
     param['add_noise'] = False
     param['gaussian_noise'] = False
+    param['curated_noise'] = False
     param['noise_model'] = 0
     param['save_snr_array'] = False
     param['snr'] = 20
@@ -221,11 +223,6 @@ def setup_param_dict(param):
     if param['albedo_calc']:
         param['fp_over_fs'] = False
 
-    if param['fit_wtr_cld'] and param['fit_amm_cld']:
-        param['double_cloud'] = True
-    else:
-        param['double_cloud'] = False
-
     if param['gaseous_planet']:
         param['rocky'] = False
         param['fit_p0'] = False
@@ -300,8 +297,7 @@ def setup_param_dict(param):
     if param['PT_profile_type'] == 'parametric':
         param['wtr_cld_type'] = 'mixed'
 
-    if param['cld_frac'] > 1.0 or param['cld_frac'] < 0.0:
-        raise ValueError("The cloud fraction should be defined between [0.0, 1.0]. Please check the 'cld_frac' value in the parameter file.")
+    param['cld_frac'] = validate_cloud_fraction(param['cld_frac'])
 
     if param['optimizer'] == 'multinest':
         param['nlive_p'] = int(param['nlive_p'])
@@ -317,6 +313,7 @@ def setup_param_dict(param):
             param['vmr_' + mol] = 0.0
             if param['fit_' + mol]:
                 param['fit_molecules'].append(mol)
+        param = validate_cloud_species_configuration(param)
 
     param['n_layer'] = int(param['n_layer'])
     param['out_dir'] = resolve_output_dir(param)
@@ -390,7 +387,7 @@ def calc_mean_mol_mass(param):
             else:
                 param['mean_mol_weight'][i] += (param['vmr_' + param['gas_fill']][i] * param['mm'][param['gas_fill']]) + (param['vmr_He'][i] * param['mm']['He'])
 
-    if not param['ret_mode'] and param['verbose']:
+    if not param['ret_mode'] and param.get('verbose', False):
         print('mu \t\t = \t' + str(param['mean_mol_weight'][-1]))
 
     return param
@@ -2029,6 +2026,7 @@ def load_reactions(param):
 
 def load_photolysis(param):
     species_path = param['pkg_dir'] + 'forward_mod/Data/species_Earth_Full.dat'
+    photolysis_dir = param['pkg_dir'] + 'forward_mod/opac/photolysis/'
     species_data = np.genfromtxt(species_path, dtype=str, skip_header=1)
     if species_data.ndim == 1 and species_data.size:
         species_data = species_data.reshape(1, -1)
@@ -2046,7 +2044,7 @@ def load_photolysis(param):
         species_name = species_by_num.get(std_num)
         if species_name is None:
             continue
-        file_path = param['pkg_dir'] + 'forward_mod/' + species_name
+        file_path = os.path.join(photolysis_dir, species_name)
         if not os.path.exists(file_path):
             continue
         data = np.loadtxt(file_path)
@@ -3048,12 +3046,26 @@ def add_noise(param, data, noise_model=0):
             spec[i, 1] = point + 0.0
         return spec
 
+    def gaussian_noise_curated(spec):
+        spec_copy = spec + 0.0
+        spec_final = spec + 0.0
+        red_chi = 100.0
+
+        for _ in range(1000):
+            new_spec = gaussian_noise(spec_copy, no_less_zero=True)
+            new_red_chi = chi_square(new_spec, data[:, 1])[1]
+            if 1.0 < new_red_chi < red_chi:
+                red_chi = new_red_chi + 0.0
+                spec_final = new_spec + 0.0
+
+        return spec_final
+
     def chi_square(data, model, deg=None):
         chi = (data[:, 1] - model) / data[:, 2]
         chi = np.sum(chi ** 2.)
 
         if deg is None:
-            return chi, chi / (len(data[:, 0]) - 1)
+            return chi, chi / len(data[:, 0])
         else:
             return chi / deg
 
@@ -3140,16 +3152,10 @@ def add_noise(param, data, noise_model=0):
     spectrum = np.array([data[:, 0], data[:, 1], err]).T
 
     if param['gaussian_noise']:
-        spec_copy = spectrum + 0.0
-        chi = 1.0
-
-        for _ in range(1000):
-            new_spec = gaussian_noise(spec_copy, no_less_zero=True)
-            if chi_square(new_spec, data[:, 1])[1] < chi:
-                chi = chi_square(new_spec, data[:, 1])[1]
-                spectrum = new_spec + 0.0
-            else:
-                pass
+        if not param['curated_noise']:
+            spectrum = gaussian_noise(spectrum, no_less_zero=True)
+        else:
+            spectrum = gaussian_noise_curated(spectrum)
 
     return spectrum
 
@@ -3352,3 +3358,346 @@ def orbital_configuration_to_phase_angle(
     return math.degrees(
         math.acos(float(np.clip(cos_phase_angle, -1.0, 1.0)))
     )
+
+
+def validate_cloud_fraction(value):
+    """Return a finite cloud fraction in the closed interval [0, 1]."""
+    try:
+        cloud_fraction = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "The cloud fraction should be a finite number defined between "
+            "[0.0, 1.0]."
+        ) from exc
+
+    if (
+        not np.isfinite(cloud_fraction)
+        or cloud_fraction < 0.0
+        or cloud_fraction > 1.0
+    ):
+        raise ValueError(
+            "The cloud fraction should be a finite number defined between "
+            "[0.0, 1.0]."
+        )
+    return cloud_fraction
+
+
+class InvalidVMRCompositionError(ValueError):
+    """Raised when active atmospheric gas VMRs do not form a simplex."""
+
+
+def _vmr_species(param):
+    species = list(param.get('fit_molecules', []))
+    gas_fill = param.get('gas_fill')
+    if gas_fill is not None:
+        species.append(gas_fill)
+    return list(dict.fromkeys(species))
+
+
+def _vmr_profile(param, molecule, size):
+    key = 'vmr_' + molecule
+    if key not in param:
+        raise InvalidVMRCompositionError(
+            f"Missing atmospheric abundance '{key}'."
+        )
+
+    values = np.asarray(param[key], dtype=float)
+    if values.ndim == 0:
+        return np.full(size, float(values))
+    if values.ndim != 1:
+        raise InvalidVMRCompositionError(
+            f"'{key}' must be a scalar or one-dimensional profile."
+        )
+    if values.size == size:
+        return values.astype(float, copy=True)
+
+    standard_pressure = np.asarray(
+        param.get('P_standard', []),
+        dtype=float,
+    )
+    if standard_pressure.size and values.size == standard_pressure.size:
+        active_pressure = np.asarray(param.get('P', []), dtype=float)
+        if active_pressure.shape != (size,):
+            raise InvalidVMRCompositionError(
+                "The active pressure grid must match the requested VMR "
+                "profile size."
+            )
+        if (
+            standard_pressure.ndim != 1
+            or not np.all(np.isfinite(standard_pressure))
+            or np.any(standard_pressure <= 0.0)
+            or not np.all(np.diff(standard_pressure) > 0.0)
+        ):
+            raise InvalidVMRCompositionError(
+                "'P_standard' must be finite, positive, and strictly "
+                "increasing before interpolating a VMR profile."
+            )
+        if (
+            not np.all(np.isfinite(active_pressure))
+            or np.any(active_pressure <= 0.0)
+        ):
+            raise InvalidVMRCompositionError(
+                "The active pressure grid must be finite and positive before "
+                "interpolating a VMR profile."
+            )
+        return np.interp(
+            np.log(active_pressure),
+            np.log(standard_pressure),
+            values,
+        )
+
+    raise InvalidVMRCompositionError(
+        f"'{key}' size does not match the active pressure grid."
+    )
+
+
+def validate_vmr_composition(param, tolerance=1.0e-10):
+    """Require active gas VMRs to be finite, positive, and sum to unity."""
+    species = _vmr_species(param)
+    if not species:
+        raise InvalidVMRCompositionError(
+            "At least one atmospheric gas must be active."
+        )
+
+    profile_sizes = []
+    for molecule in species:
+        values = np.asarray(param.get('vmr_' + molecule), dtype=float)
+        if values.ndim > 1:
+            raise InvalidVMRCompositionError(
+                f"'vmr_{molecule}' must be a scalar or one-dimensional "
+                "profile."
+            )
+        if values.ndim == 1:
+            profile_sizes.append(values.size)
+
+    size = max(profile_sizes, default=1)
+    profiles = {}
+    for molecule in species:
+        values = np.asarray(param.get('vmr_' + molecule), dtype=float)
+        if values.ndim == 0:
+            profile = np.full(size, float(values))
+        elif values.size == size:
+            profile = values.astype(float, copy=False)
+        else:
+            raise InvalidVMRCompositionError(
+                "Active gas VMR profiles must have matching sizes."
+            )
+        if not np.all(np.isfinite(profile)) or np.any(profile <= 0.0):
+            raise InvalidVMRCompositionError(
+                f"'vmr_{molecule}' must be finite and strictly positive."
+            )
+        profiles[molecule] = profile
+
+    total = np.sum(np.vstack(list(profiles.values())), axis=0)
+    if not np.allclose(total, 1.0, rtol=0.0, atol=tolerance):
+        total_min = float(np.min(total))
+        total_max = float(np.max(total))
+        raise InvalidVMRCompositionError(
+            "Active gas VMRs must sum to 1 in every atmospheric layer; "
+            f"found totals between {total_min:.16g} and "
+            f"{total_max:.16g}."
+        )
+    return param
+
+
+def prepare_atmospheric_vmr(param):
+    """Prepare all condensables jointly and normalize dry gases once."""
+    validate_cloud_species_configuration(param)
+    validate_vmr_composition(param)
+
+    pressure = np.asarray(param['P'], dtype=float)
+    if pressure.ndim != 1 or pressure.size == 0:
+        raise InvalidVMRCompositionError(
+            "The active pressure grid must be one-dimensional and non-empty."
+        )
+
+    species = _vmr_species(param)
+    size = pressure.size
+    base_profiles = {
+        molecule: _vmr_profile(param, molecule, size)
+        for molecule in species
+    }
+    profiles = {
+        molecule: values.copy()
+        for molecule, values in base_profiles.items()
+    }
+
+    condensables = []
+    if param.get('fit_wtr_cld', False):
+        condensables.append('H2O')
+    if param.get('fit_amm_cld', False):
+        condensables.append('NH3')
+
+    for molecule in condensables:
+        cloud_param = param.copy()
+        cloud_param['vmr_' + molecule] = base_profiles[molecule].copy()
+        vapor_profile = np.asarray(
+            cloud_pos(cloud_param, condensed_gas=molecule),
+            dtype=float,
+        )
+        if vapor_profile.shape != pressure.shape:
+            raise InvalidVMRCompositionError(
+                f"Condensed {molecule} profile does not match the active "
+                "pressure grid."
+            )
+        if (
+            not np.all(np.isfinite(vapor_profile))
+            or np.any(vapor_profile < 0.0)
+            or np.any(vapor_profile > base_profiles[molecule] + 1.0e-12)
+        ):
+            raise InvalidVMRCompositionError(
+                f"Condensed {molecule} profile is outside its original "
+                "abundance bounds."
+            )
+        profiles[molecule] = vapor_profile
+
+        condensation_loss = np.zeros(size)
+        if size > 1:
+            condensation_loss[:-1] = np.maximum(
+                vapor_profile[1:] - vapor_profile[:-1],
+                0.0,
+            )
+        param['condensation_loss_' + molecule] = condensation_loss
+
+    if condensables:
+        condensed_total = np.sum(
+            np.vstack([profiles[molecule] for molecule in condensables]),
+            axis=0,
+        )
+        if np.any(condensed_total > 1.0 + 1.0e-12):
+            raise InvalidVMRCompositionError(
+                "The joint condensable VMR exceeds unity."
+            )
+
+        if param.get('adjust_VMR_gases', True):
+            dry_species = [
+                molecule
+                for molecule in species
+                if molecule not in condensables
+            ]
+            if not dry_species:
+                raise InvalidVMRCompositionError(
+                    "Cloud condensation requires at least one "
+                    "non-condensable gas or a configured gas_fill."
+                )
+
+            dry_base_total = np.sum(
+                np.vstack(
+                    [base_profiles[molecule] for molecule in dry_species]
+                ),
+                axis=0,
+            )
+            if np.any(dry_base_total <= 0.0):
+                raise InvalidVMRCompositionError(
+                    "The dry-gas abundance must be positive in every layer."
+                )
+
+            dry_remaining = 1.0 - condensed_total
+            for molecule in dry_species:
+                profiles[molecule] = (
+                    dry_remaining
+                    * base_profiles[molecule]
+                    / dry_base_total
+                )
+        else:
+            fill_species = param.get('gas_fill')
+            if fill_species is None:
+                if 'H2' in species and 'H2' not in condensables:
+                    fill_species = 'H2'
+                elif 'N2' in species and 'N2' not in condensables:
+                    fill_species = 'N2'
+            if fill_species is None or fill_species in condensables:
+                raise InvalidVMRCompositionError(
+                    "Fill-only cloud adjustment requires a "
+                    "non-condensable gas_fill, H2, or N2."
+                )
+
+            fixed_species = [
+                molecule
+                for molecule in species
+                if molecule not in condensables
+                and molecule != fill_species
+            ]
+            fixed_total = np.sum(
+                np.vstack(
+                    [base_profiles[molecule] for molecule in fixed_species]
+                ),
+                axis=0,
+            ) if fixed_species else np.zeros(size)
+            profiles[fill_species] = (
+                1.0 - condensed_total - fixed_total
+            )
+            if np.any(profiles[fill_species] < 0.0):
+                raise InvalidVMRCompositionError(
+                    f"Cloud adjustment would make vmr_{fill_species} "
+                    "negative."
+                )
+
+    for molecule, values in profiles.items():
+        param['vmr_' + molecule] = values
+
+    automatic_h2_he = (
+        not param.get('rocky', True)
+        and param.get('gas_fill') == 'H2'
+        and 'He' not in param.get('fit_molecules', [])
+        and param.get('H2_He_ratio', 0.0) > 0.0
+    )
+    final_species = species.copy()
+    if automatic_h2_he:
+        h2_fraction = float(param['H2_He_ratio'])
+        if not 0.0 < h2_fraction <= 1.0:
+            raise InvalidVMRCompositionError(
+                "'H2_He_ratio' must be in the interval (0, 1]."
+            )
+        background = np.asarray(param['vmr_H2'], dtype=float).copy()
+        param['vmr_H2'] = background * h2_fraction
+        param['vmr_He'] = background * (1.0 - h2_fraction)
+        final_species.append('He')
+
+    final_profiles = [
+        np.asarray(param['vmr_' + molecule], dtype=float)
+        for molecule in dict.fromkeys(final_species)
+    ]
+    if any(
+        not np.all(np.isfinite(values)) or np.any(values < 0.0)
+        for values in final_profiles
+    ):
+        raise InvalidVMRCompositionError(
+            "Prepared atmospheric VMR profiles must be finite and "
+            "non-negative."
+        )
+    final_total = np.sum(np.vstack(final_profiles), axis=0)
+    if not np.allclose(final_total, 1.0, rtol=0.0, atol=1.0e-10):
+        raise InvalidVMRCompositionError(
+            "Prepared atmospheric VMR profiles do not sum to 1 in every "
+            "layer."
+        )
+
+    return param
+
+
+def validate_cloud_species_configuration(param):
+    """Require each enabled cloud species to be an active model molecule."""
+    active_molecules = set(param.get('fit_molecules', []))
+    errors = []
+
+    if param.get('fit_wtr_cld', False) and 'H2O' not in active_molecules:
+        errors.append(
+            "fit_wtr_cld=True requires H2O in fit_molecules. "
+            "For retrievals, set fit_H2O=True. For forward spectra, "
+            "provide a positive vmr_H2O."
+        )
+
+    if param.get('fit_amm_cld', False) and 'NH3' not in active_molecules:
+        errors.append(
+            "fit_amm_cld=True requires NH3 in fit_molecules. "
+            "For retrievals, set fit_NH3=True. For forward spectra, "
+            "provide a positive vmr_NH3."
+        )
+
+    if errors:
+        raise ValueError(
+            "Invalid cloud configuration:\n- " + "\n- ".join(errors)
+        )
+
+    return param

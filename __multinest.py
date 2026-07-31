@@ -1,8 +1,6 @@
-from importlib.metadata import distributions
-
 from .__basics import *
 from .__utils import *
-from .__forward import *
+from .__forward import forward
 from .__plotting import *
 from . import __version__
 
@@ -50,6 +48,233 @@ class MULTINEST:
             self.param = take_star_spectrum(self.param)
         self.param = pre_load_variables(self.param)
         self.param = ranges(self.param)
+        self._base_vmr = {
+            key: copy.deepcopy(value)
+            for key, value in self.param.items()
+            if key.startswith('vmr_')
+        }
+
+    def _restore_base_vmr(self):
+        """Restore scalar input abundances before decoding a retrieval cube."""
+        if not hasattr(self, '_base_vmr'):
+            self._base_vmr = {
+                key: copy.deepcopy(value)
+                for key, value in self.param.items()
+                if key.startswith('vmr_')
+            }
+        for key, value in self._base_vmr.items():
+            self.param[key] = copy.deepcopy(value)
+
+    def _cube_to_evaluation(self, cube, n_obs=0):
+        """Map a physical MultiNest cube to the values consumed by ``forward``."""
+        evaluation = {}
+        par = 0
+        if self.param['fit_p0'] and self.param['gas_par_space'] != 'partial_pressure':
+            evaluation['P0'] = 10.0 ** cube[par]
+            par += 1
+
+        if self.param['fit_wtr_cld'] and self.param['PT_profile_type'] == 'isothermal':
+            evaluation['pH2O'] = 10.0 ** cube[par]
+            evaluation['dH2O'] = 10.0 ** cube[par + 1]
+            evaluation['crH2O'] = 10.0 ** cube[par + 2]
+            par += 3
+
+        if (
+            self.param['fit_amm_cld']
+            and self.param['PT_profile_type'] == 'isothermal'
+        ):
+            evaluation['pNH3'] = 10.0 ** cube[par]
+            evaluation['dNH3'] = 10.0 ** cube[par + 1]
+            evaluation['crNH3'] = 10.0 ** cube[par + 2]
+            par += 3
+
+        if self.param['gas_par_space'] in ('centered_log_ratio', 'clr'):
+            clr_values = list(
+                cube[par: par + len(self.param['fit_molecules'])]
+            )
+            clr_values.append(-np.sum(np.asarray(clr_values)))
+            vmr_values = clr_inv(clr_values)
+            for index, mol in enumerate(self.param['fit_molecules']):
+                evaluation[mol] = vmr_values[index]
+                par += 1
+            evaluation[self.param['gas_fill']] = 1.0
+            for mol in self.param['fit_molecules']:
+                evaluation[self.param['gas_fill']] -= evaluation[mol]
+        elif self.param['gas_par_space'] in ('volume_mixing_ratio', 'vmr'):
+            fitted_total = 0.0
+            for mol in self.param['fit_molecules']:
+                evaluation[mol] = 10.0 ** cube[par]
+                fitted_total += evaluation[mol]
+                par += 1
+            fill_vmr = 1.0 - fitted_total
+            if (
+                not np.isfinite(fitted_total)
+                or not np.isfinite(fill_vmr)
+                or fill_vmr <= 0.0
+            ):
+                raise InvalidVMRCompositionError(
+                    "Independent VMR retrieval proposal is outside the "
+                    "composition simplex: fitted gas VMRs must sum to less "
+                    "than 1 so the filling gas remains positive."
+                )
+            evaluation[self.param['gas_fill']] = fill_vmr
+        elif self.param['gas_par_space'] == 'partial_pressure':
+            partial_pressures = 10.0 ** np.asarray(
+                cube[par: par + len(self.param['fit_molecules'])]
+            )
+            evaluation['P0'] = np.sum(partial_pressures)
+            for mol in self.param['fit_molecules']:
+                evaluation[mol] = (10.0 ** cube[par]) / evaluation['P0']
+                par += 1
+
+        if self.param['fit_ag']:
+            if self.param['surface_albedo_parameters'] == 1:
+                evaluation['ag'] = cube[par] + 0.0
+                par += 1
+            elif self.param['surface_albedo_parameters'] == 3:
+                evaluation['ag1'] = cube[par] + 0.0
+                evaluation['ag2'] = cube[par + 1] + 0.0
+                evaluation['ag_x1'] = cube[par + 2] + 0.0
+                par += 3
+            elif self.param['surface_albedo_parameters'] == 5:
+                evaluation['ag1'] = cube[par] + 0.0
+                evaluation['ag2'] = cube[par + 1] + 0.0
+                evaluation['ag3'] = cube[par + 2] + 0.0
+                evaluation['ag_x1'] = cube[par + 3] + 0.0
+                evaluation['ag_x2'] = cube[par + 4] + 0.0
+                par += 5
+
+        if self.param['fit_T']:
+            if self.param['PT_profile_type'] == 'isothermal':
+                evaluation['Tp'] = cube[par] + 0.0
+                par += 1
+            elif self.param['PT_profile_type'] == 'parametric':
+                evaluation['kappa_th'] = 10.0 ** cube[par]
+                evaluation['gamma'] = 10.0 ** cube[par + 1]
+                evaluation['beta'] = cube[par + 2] + 0.0
+                par += 3
+                if self.param['fit_Tint']:
+                    evaluation['Tint'] = cube[par] + 0.0
+                    par += 1
+
+        if self.param['fit_cld_frac']:
+            evaluation['cld_frac'] = 10.0 ** cube[par]
+            par += 1
+
+        if self.param['fit_g']:
+            evaluation['gp'] = cube[par] + 0.0
+            par += 1
+        if self.param['fit_Mp']:
+            evaluation['Mp'] = cube[par] + 0.0
+            par += 1
+        if self.param['fit_Rp']:
+            evaluation['Rp'] = cube[par] + 0.0
+            par += 1
+
+        if self.param['fit_p_size']:
+            evaluation['p_size'] = 10.0 ** cube[par]
+            par += 1
+        if self.param['fit_phi']:
+            evaluation['phi'] = cube[par + n_obs] * math.pi / 180.0
+
+        return evaluation
+
+    def _forward_cube(
+        self,
+        cube,
+        phi=None,
+        n_obs=0,
+        retrieval_mode=True,
+    ):
+        """Evaluate one retrieval cube through the public forward pipeline."""
+        evaluation = self._cube_to_evaluation(cube, n_obs=n_obs)
+        forward_param = copy.deepcopy(self.param)
+        base_vmr = getattr(self, '_base_vmr', {})
+        for key, value in base_vmr.items():
+            forward_param[key] = copy.deepcopy(value)
+        forward_kwargs = {
+            'evaluation': evaluation,
+            'phi': phi,
+            'n_obs': n_obs,
+            'retrieval_mode': retrieval_mode,
+            'core_number': MPIrank,
+            'albedo_calc': self.param['albedo_calc'],
+            'fp_over_fs': self.param['fp_over_fs'],
+            'canc_metadata': True,
+        }
+
+        if platform.system() == 'Darwin':
+            return forward(forward_param, **forward_kwargs)
+
+        try:
+            return forward(forward_param, **forward_kwargs)
+        except InvalidVMRCompositionError:
+            raise
+        except Exception:
+            import traceback
+
+            msg = (
+                f"\nForward model failed on MPI rank {MPIrank}/{MPIsize}.\n"
+                + traceback.format_exc()
+            )
+            print(msg, file=sys.stderr, flush=True)
+
+            try:
+                os.makedirs(self.param['out_dir'], exist_ok=True)
+                with open(
+                    self.param['out_dir']
+                    + f'mpi_rank_{MPIrank}_error.log',
+                    'a',
+                ) as error_file:
+                    error_file.write(msg + '\n')
+            except Exception:
+                pass
+
+            if MPIimport:
+                MPI.COMM_WORLD.Abort(1)
+
+            raise
+
+    @staticmethod
+    def _spectrum_loglike(data, model, error):
+        chi = (data - model) / error
+        return (
+            -np.sum(np.log(error * np.sqrt(2.0 * math.pi)))
+            - 0.5 * np.sum(chi * chi)
+        )
+
+    def _loglike(self, cube):
+        """Return the retrieval log likelihood for one physical cube."""
+        try:
+            if self.param['obs_numb'] is None:
+                model = self._forward_cube(cube)
+                return self._spectrum_loglike(
+                    self.param['spectrum']['Fplanet'],
+                    model,
+                    self.param['spectrum']['error_p'],
+                )
+
+            loglikelihood = 0.0
+            for obs in range(self.param['obs_numb']):
+                phi = (
+                    None
+                    if self.param['fit_phi']
+                    else self.param['phi' + str(obs)]
+                )
+                model = self._forward_cube(
+                    cube,
+                    phi=phi,
+                    n_obs=obs,
+                )
+                observation = self.param['spectrum'][str(obs)]
+                loglikelihood += self._spectrum_loglike(
+                    observation['Fplanet'],
+                    model,
+                    observation['error_p'],
+                )
+            return loglikelihood
+        except InvalidVMRCompositionError:
+            return -1e99
 
     def run_retrieval(self):
         is_root = (not MPIimport) or MPIrank == 0
@@ -86,127 +311,6 @@ class MULTINEST:
 
     
                 MPI.COMM_WORLD.Barrier()  # wait for everybody to synchronize here
-
-        def internal_model(cube, phi=None, n_obs=0, free_cld_calc=False, retrieval_mode=True):
-            evaluation = {}
-            par = 0
-            if self.param['fit_p0'] and self.param['gas_par_space'] != 'partial_pressure':
-                evaluation['P0'] = (10.0 ** cube[par])  # P0, surface pressure
-                par += 1
-
-            if self.param['fit_wtr_cld'] and not free_cld_calc and self.param['PT_profile_type'] == 'isothermal':
-                evaluation['pH2O'], evaluation['dH2O'], evaluation['crH2O'] = (10.0 ** cube[par]), (10.0 ** cube[par + 1]), (10.0 ** cube[par + 2])  # pH2O, dH2O, crH2O
-                par += 3
-            elif not self.param['fit_wtr_cld'] and free_cld_calc and self.param['PT_profile_type'] == 'isothermal':
-                par += 3
-
-            if self.param['double_cloud']:
-                if self.param['fit_amm_cld'] and not free_cld_calc and self.param['PT_profile_type'] == 'isothermal':
-                    evaluation['pNH3'], evaluation['dNH3'], evaluation['crNH3'] = (10.0 ** cube[par]), (10.0 ** cube[par + 1]), (10.0 ** cube[par + 2])  # pNH3, dNH3, crNH3
-                    par += 3
-                elif not self.param['fit_amm_cld'] and free_cld_calc and self.param['PT_profile_type'] == 'isothermal':
-                    par += 3
-
-            if self.param['gas_par_space'] == 'centered_log_ratio' or self.param['gas_par_space'] == 'clr':
-                c_l_r = cube[par: par + len(self.param['fit_molecules'])]  # CLR Molecules
-                c_l_r.append(-np.sum(np.array(cube[par: par + len(self.param['fit_molecules'])])))
-                v_m_r = clr_inv(c_l_r)
-                for m, mol in enumerate(self.param['fit_molecules']):
-                    evaluation[mol] = v_m_r[m]
-                    par += 1
-                evaluation[self.param['gas_fill']] = 1.0
-                for mol in self.param['fit_molecules']:
-                    evaluation[self.param['gas_fill']] -= evaluation[mol]
-            elif self.param['gas_par_space'] == 'volume_mixing_ratio' or self.param['gas_par_space'] == 'vmr':
-                for mol in self.param['fit_molecules']:
-                    evaluation[mol] = 10.0 ** cube[par]
-                    par += 1
-                evaluation[self.param['gas_fill']] = 1.0
-                for mol in self.param['fit_molecules']:
-                    evaluation[self.param['gas_fill']] -= evaluation[mol]
-            elif self.param['gas_par_space'] == 'partial_pressure':
-                evaluation['P0'] = np.sum(10.0 ** np.array(cube[par: par + len(self.param['fit_molecules'])]))
-                for mol in self.param['fit_molecules']:
-                    evaluation[mol] = (10.0 ** cube[par]) / evaluation['P0']
-                    par += 1
-
-            if self.param['fit_ag']:
-                if self.param['surface_albedo_parameters'] == int(1):
-                    evaluation['ag'] = cube[par] + 0.0  # Ag, surface albedo
-                    par += 1
-                elif self.param['surface_albedo_parameters'] == int(3):
-                    for surf_alb in [1, 2]:
-                        evaluation['ag' + str(surf_alb)] = cube[par + (surf_alb - 1)] + 0.0  # Ag, surface albedo
-                    evaluation['ag_x1'] = cube[par + surf_alb] + 0.0
-                    par += 3
-                elif self.param['surface_albedo_parameters'] == int(5):
-                    for surf_alb in [1, 2, 3]:
-                        evaluation['ag' + str(surf_alb)] = cube[par + (surf_alb - 1)] + 0.0  # Ag, surface albedo
-                    evaluation['ag_x1'] = cube[par + surf_alb] + 0.0
-                    evaluation['ag_x2'] = cube[par + surf_alb + 1] + 0.0
-                    par += 5
-
-            if self.param['fit_T']:
-                if self.param['PT_profile_type'] == 'isothermal':
-                    evaluation['Tp'] = cube[par] + 0.0  # Planetary temperature
-                    par += 1
-                elif self.param['PT_profile_type'] == 'parametric':
-                    evaluation['kappa_th'] = 10.0 ** cube[par]
-                    evaluation['gamma'] = 10.0 ** cube[par + 1]
-                    evaluation['beta'] = cube[par + 2] + 0.0
-                    par += 3
-                    if self.param['fit_Tint']:
-                        evaluation['Tint'] = cube[par] + 0.0
-                        par += 1
-
-
-            if self.param['fit_cld_frac']:
-                self.param['cld_frac'] = (10.0 ** cube[par])  # cloud fraction
-                par += 1
-
-            if self.param['fit_g']:
-                evaluation['gp'] = cube[par] + 0.0  # g
-                par += 1
-            if self.param['fit_Mp']:
-                evaluation['Mp'] = cube[par] + 0.0  # Mp
-                par += 1
-            if self.param['fit_Rp']:
-                evaluation['Rp'] = cube[par] + 0.0  # Rp
-                par += 1
-
-            if self.param['fit_p_size']:
-                evaluation['p_size'] = (10. ** cube[par])  # p_size
-                par += 1
-            if self.param['fit_phi']:
-                evaluation['phi'] = cube[par + n_obs] * math.pi / 180.  # phi
-
-            if platform.system() == 'Darwin':
-                return forward(self.param, evaluation=evaluation, phi=phi, n_obs=n_obs, retrieval_mode=retrieval_mode, core_number=MPIrank,
-                               albedo_calc=self.param['albedo_calc'], fp_over_fs=self.param['fp_over_fs'], canc_metadata=True)
-            else:
-                try:
-                    return forward(self.param, evaluation=evaluation, phi=phi, n_obs=n_obs, retrieval_mode=retrieval_mode, core_number=MPIrank,
-                                   albedo_calc=self.param['albedo_calc'], fp_over_fs=self.param['fp_over_fs'], canc_metadata=True)
-                except Exception:
-                    import traceback
-
-                    msg = (
-                        f"\nForward model failed on MPI rank {MPIrank}/{MPIsize}.\n"
-                        + traceback.format_exc()
-                    )
-                    print(msg, file=sys.stderr, flush=True)
-
-                    try:
-                        os.makedirs(self.param['out_dir'], exist_ok=True)
-                        with open(self.param['out_dir'] + f'mpi_rank_{MPIrank}_error.log', 'a') as f:
-                            f.write(msg + '\n')
-                    except Exception:
-                        pass
-
-                    if MPIimport:
-                        MPI.COMM_WORLD.Abort(1)
-
-                    raise
 
         def prior(cube, ndim, nparams):
             par = 0
@@ -311,31 +415,7 @@ class MULTINEST:
                         par += 1
 
         def loglike(cube, ndim, nparams):
-            if self.param['obs_numb'] is None:
-                model = internal_model(cube)
-
-                if (self.param['fit_wtr_cld'] or self.param['fit_amm_cld']) and self.param['cld_frac'] != 1.0:
-                    self.param['fit_wtr_cld'] = False
-                    if self.param['double_cloud']:
-                        self.param['fit_amm_cld'] = False
-                    model_no_cld = internal_model(cube, free_cld_calc=True)
-                    self.param['fit_wtr_cld'] = True
-                    if self.param['double_cloud']:
-                        self.param['fit_amm_cld'] = True
-                    model = (self.param['cld_frac'] * model) + ((1.0 - self.param['cld_frac']) * model_no_cld)
-
-                chi = (self.param['spectrum']['Fplanet'] - model) / self.param['spectrum']['error_p']
-                loglikelihood = (-1.) * np.sum(np.log(self.param['spectrum']['error_p'] * np.sqrt(2.0 * math.pi))) - 0.5 * np.sum(chi * chi)
-            else:
-                loglikelihood = 0.0
-                for obs in range(0, self.param['obs_numb']):
-                    if self.param['fit_phi']:
-                        chi = (self.param['spectrum'][str(obs)]['Fplanet'] - internal_model(cube, phi=None, n_obs=obs)) / self.param['spectrum'][str(obs)]['error_p']
-                    else:
-                        chi = (self.param['spectrum'][str(obs)]['Fplanet'] - internal_model(cube, phi=self.param['phi' + str(obs)], n_obs=obs)) / self.param['spectrum'][str(obs)]['error_p']
-                    loglikelihood += (-1.) * np.sum(np.log(self.param['spectrum'][str(obs)]['error_p'] * np.sqrt(2.0 * math.pi))) - 0.5 * np.sum(chi * chi)
-
-            return loglikelihood
+            return self._loglike(cube)
 
         if is_root:
             time1 = time.time()
@@ -506,29 +586,25 @@ class MULTINEST:
             return s, len(s['modes'])
 
 
-    def cube_to_param(self, cube, n_obs=0, free_cld_calc=False):
+    def cube_to_param(self, cube, n_obs=0, prepare_atmosphere=True):
+        self._restore_base_vmr()
         par = 0
         if self.param['fit_p0'] and self.param['gas_par_space'] != 'partial_pressure':
             self.param['P0'] = 10. ** cube[par]
             par += 1
         
         if self.param['PT_profile_type'] == 'isothermal':
-            if self.param['fit_wtr_cld'] and not free_cld_calc:
+            if self.param['fit_wtr_cld']:
                 self.param['Pw_top'] = 10. ** cube[par]
                 self.param['cldw_depth'] = 10. ** cube[par + 1]
                 self.param['CR_H2O'] = 10. ** cube[par + 2]
                 par += 3
-            elif not self.param['fit_wtr_cld'] and free_cld_calc:
-                par += 3
 
-            if self.param['double_cloud']:
-                if self.param['fit_amm_cld'] and not free_cld_calc:
-                    self.param['Pa_top'] = 10. ** cube[par]
-                    self.param['clda_depth'] = 10. ** cube[par + 1]
-                    self.param['CR_NH3'] = 10. ** cube[par + 2]
-                    par += 3
-                elif not self.param['fit_amm_cld'] and free_cld_calc:
-                    par += 3
+            if self.param['fit_amm_cld']:
+                self.param['Pa_top'] = 10. ** cube[par]
+                self.param['clda_depth'] = 10. ** cube[par + 1]
+                self.param['CR_NH3'] = 10. ** cube[par + 2]
+                par += 3
 
         if self.param['gas_par_space'] == 'centered_log_ratio' or self.param['gas_par_space'] == 'clr':
             clr = {}
@@ -537,12 +613,23 @@ class MULTINEST:
                 par += 1
             self.param, _ = clr_to_vmr(self.param, clr)
         elif self.param['gas_par_space'] == 'volume_mixing_ratio' or self.param['gas_par_space'] == 'vmr':
+            fitted_total = 0.0
             for mol in self.param['fit_molecules']:
                 self.param['vmr_' + mol] = 10. ** cube[par]
+                fitted_total += self.param['vmr_' + mol]
                 par += 1
-            self.param['vmr_' + self.param['gas_fill']] = 1.0
-            for mol in self.param['fit_molecules']:
-                self.param['vmr_' + self.param['gas_fill']] -= self.param['vmr_' + mol]
+            fill_vmr = 1.0 - fitted_total
+            if (
+                not np.isfinite(fitted_total)
+                or not np.isfinite(fill_vmr)
+                or fill_vmr <= 0.0
+            ):
+                raise InvalidVMRCompositionError(
+                    "Independent VMR retrieval proposal is outside the "
+                    "composition simplex: fitted gas VMRs must sum to less "
+                    "than 1 so the filling gas remains positive."
+                )
+            self.param['vmr_' + self.param['gas_fill']] = fill_vmr
         elif self.param['gas_par_space'] == 'partial_pressure':
             self.param['P0'] = np.sum(10.0 ** np.array(cube[par: par + len(self.param['fit_molecules'])]))
             for mol in self.param['fit_molecules']:
@@ -628,12 +715,12 @@ class MULTINEST:
         if self.param['fit_phi']:
             self.param['phi'] = cube[par + n_obs] * math.pi / 180.  # phi
 
+        if not prepare_atmosphere:
+            self.param['core_number'] = None
+            return
+
         self.param['T'] = temp_profile(self.param)
-        if self.param['fit_amm_cld']:
-            self.param['vmr_NH3'] = cloud_pos(self.param, condensed_gas='NH3')
-            self.param = adjust_VMR(self.param, all_gases=self.param['adjust_VMR_gases'], condensed_gas='NH3')
-        self.param['vmr_H2O'] = cloud_pos(self.param, condensed_gas='H2O')
-        self.param = adjust_VMR(self.param, all_gases=self.param['adjust_VMR_gases'], condensed_gas='H2O')
+        self.param = prepare_atmospheric_vmr(self.param)
         if self.param['O3_earth']:
             self.param['vmr_O3'] = ozone_earth_mask(self.param)
         self.param = calc_mean_mol_mass(self.param)
@@ -717,19 +804,10 @@ class MULTINEST:
 
             for i, sample_idx in enumerate(range(start_idx, stop_idx)):
                 cube = sample_par[sample_idx, :]
-                self.cube_to_param(cube)
-                if self.param['physics_model'] == 'radiative_transfer':
-                    if self.param['physics_model_code_language'] == 'Python':
-                        mod = RADIATIVE_TRANSFER_PYTHON(self.param)
-                    else:
-                        mod = RADIATIVE_TRANSFER_C(self.param, retrieval=False, canc_metadata=True)
-                alb_wl, alb = mod.run_forward()
-
-                if self.param['fit_wtr_cld'] and self.param['rocky'] and self.param['cld_frac'] != 1.0:
-                    alb = self.adjust_for_cld_frac(alb, cube)
-                    self.cube_to_param(cube)
-
-                _, samples[:, i + 1] = model_finalizzation(self.param, alb_wl, alb, planet_albedo=self.param['albedo_calc'], fp_over_fs=self.param['fp_over_fs'])
+                _, samples[:, i + 1] = self._forward_cube(
+                    cube,
+                    retrieval_mode=False,
+                )
 
                 if self.param['spectrum']['bins']:
                     model = custom_spectral_binning(temp[:, :2], self.param['spectrum']['wl'], samples[:, i + 1], bins=True)
@@ -742,6 +820,7 @@ class MULTINEST:
 
                 # Calculate temperature profile
                 if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
+                    self.cube_to_param(cube, prepare_atmosphere=False)
                     T = temp_profile(self.param)
                     temp_samples[2:len(T)+2, i+1] = T
                     temp_samples[0, i+1] = self.param['P'][-1]
@@ -761,23 +840,6 @@ class MULTINEST:
             self.param['spectrum']['wl'] = temp + 0.0
         self.param['min_wl'] = temp_min + 0.0
         self.param['max_wl'] = temp_max + 0.0
-
-
-    def adjust_for_cld_frac(self, albedo, mlnst_cube):
-        self.param['fit_wtr_cld'] = False
-        if self.param['double_cloud']:
-            self.param['fit_amm_cld'] = False
-        self.cube_to_param(mlnst_cube, free_cld_calc=True)
-        if self.param['physics_model'] == 'radiative_transfer':
-            if self.param['physics_model_code_language'] == 'Python':
-                mod = RADIATIVE_TRANSFER_PYTHON(self.param)
-            else:
-                mod = RADIATIVE_TRANSFER_C(self.param, retrieval=False, canc_metadata=True)
-        _, alb_no_cld = mod.run_forward()
-        self.param['fit_wtr_cld'] = True
-        if self.param['double_cloud']:
-            self.param['fit_amm_cld'] = True
-        return (self.param['cld_frac'] * albedo) + ((1.0 - self.param['cld_frac']) * alb_no_cld)
 
 
     def store_nest_solutions(self, prefix):
