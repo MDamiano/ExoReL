@@ -1,6 +1,7 @@
 from .__basics import *
 from .__utils import *
 from .__forward import *
+from .utils.warnings_and_errors import InvalidVMRCompositionError
 from . import __version__
 
 # trying to initiate MPI parallelization

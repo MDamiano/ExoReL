@@ -3102,9 +3102,14 @@ class RADIATIVE_TRANSFER_PYTHON:
         return alb_wl, alb
 
 
-def forward(parameters_dictionary, evaluation=None, phi=None, n_obs=None, retrieval_mode=True, core_number=None, albedo_calc=False, fp_over_fs=False, canc_metadata=False):
+def apply_forward_evaluation(
+    parameters_dictionary,
+    evaluation=None,
+    phi=None,
+    core_number=None,
+):
+    """Apply decoded retrieval values to an isolated parameter dictionary."""
     param = copy.deepcopy(parameters_dictionary)
-    param = validate_cloud_species_configuration(param)
 
     if evaluation is not None:
         if param['fit_p0'] or param['gas_par_space'] == 'partial_pressure':
@@ -3124,13 +3129,13 @@ def forward(parameters_dictionary, evaluation=None, phi=None, n_obs=None, retrie
             param['vmr_' + param['gas_fill']] = evaluation[param['gas_fill']]
 
         if param['fit_ag']:
-            if param['surface_albedo_parameters'] == int(1):
+            if param['surface_albedo_parameters'] == 1:
                 param['Ag'] = evaluation['ag']
-            elif param['surface_albedo_parameters'] == int(3):
+            elif param['surface_albedo_parameters'] == 3:
                 for surf_alb in [1, 2]:
                     param['Ag' + str(surf_alb)] = evaluation['ag' + str(surf_alb)]
                 param['Ag_x1'] = evaluation['ag_x1']
-            elif param['surface_albedo_parameters'] == int(5):
+            elif param['surface_albedo_parameters'] == 5:
                 for surf_alb in [1, 2, 3]:
                     param['Ag' + str(surf_alb)] = evaluation['ag' + str(surf_alb)]
                 param['Ag_x1'] = evaluation['ag_x1']
@@ -3169,10 +3174,6 @@ def forward(parameters_dictionary, evaluation=None, phi=None, n_obs=None, retrie
             param['Rp'] = (np.sqrt((const.G.value * const.M_jup.value * param['Mp']) / param['gp'])) / const.R_jup.value        # Rp is in R_jup
         elif param['fit_Rp'] and not param['fit_Mp'] and not param['fit_g'] and param['Mp'] is not None:
             param['Rp'] = evaluation['Rp']                                                                                      # Rp is in R_jup
-            if param['Mp_err'] is not None and param['Mp_prior_type'] == 'random_error':
-                param['Mp'] = np.random.normal(param['Mp_orig'], param['Mp_err'])
-            else:
-                param['Mp'] = param['Mp_orig'] + 0.0
             param['gp'] = (const.G.value * const.M_jup.value * param['Mp']) / ((const.R_jup.value * param['Rp']) ** 2.)         # g is in m/s2
         elif not param['fit_g'] and not param['fit_Mp'] and not param['fit_Rp']:
             if not param['Mp_provided']:
@@ -3188,19 +3189,94 @@ def forward(parameters_dictionary, evaluation=None, phi=None, n_obs=None, retrie
         if param['fit_phi']:
             param['phi'] = evaluation['phi']
 
-    param = validate_vmr_composition(param)
-
     if phi is not None:
         param['phi'] = phi
 
     param['core_number'] = core_number
+    return param
+
+
+def _prepare_forward_column(parameters_dictionary, clear_clouds=False):
+    """Prepare one cloudy or clear atmospheric column for radiative transfer."""
+    column_param = copy.deepcopy(parameters_dictionary)
+    if clear_clouds:
+        column_param['fit_wtr_cld'] = False
+        column_param['fit_amm_cld'] = False
+
+    if column_param['PT_profile_type'] in ('isothermal', 'parametric'):
+        column_param['P'] = 10. ** np.arange(
+            0.0,
+            np.log10(column_param['P0']) + 0.01,
+            step=0.01,
+        )
+        column_param['T'] = temp_profile(column_param)
+    else:
+        column_param['P'] = column_param['Pp'] + 0.0
+        column_param['T'] = column_param['Tp'] + 0.0
+
+    column_param = prepare_atmospheric_vmr(column_param)
+    if column_param['O3_earth']:
+        column_param['vmr_O3'] = ozone_earth_mask(column_param)
+    return calc_mean_mol_mass(column_param)
+
+
+def prepare_forward_parameters(
+    parameters_dictionary,
+    evaluation=None,
+    phi=None,
+    core_number=None,
+    clear_clouds=False,
+):
+    """Apply an evaluation and return its prepared atmospheric column."""
+    param = apply_forward_evaluation(
+        parameters_dictionary,
+        evaluation=evaluation,
+        phi=phi,
+        core_number=core_number,
+    )
+    return _prepare_forward_column(param, clear_clouds=clear_clouds)
+
+
+def forward(parameters_dictionary, evaluation=None, phi=None, n_obs=None, retrieval_mode=True, core_number=None, albedo_calc=False, fp_over_fs=False, canc_metadata=False):
+    validate_cloud_species_configuration(parameters_dictionary)
+    param = apply_forward_evaluation(
+        parameters_dictionary,
+        evaluation=evaluation,
+        phi=phi,
+        core_number=core_number,
+    )
+    if (
+        evaluation is not None
+        and param['fit_Rp']
+        and not param['fit_Mp']
+        and not param['fit_g']
+        and param['Mp'] is not None
+    ):
+        if param['Mp_err'] is not None and param['Mp_prior_type'] == 'random_error':
+            param['Mp'] = np.random.normal(param['Mp_orig'], param['Mp_err'])
+        else:
+            param['Mp'] = param['Mp_orig'] + 0.0
+        param['gp'] = (const.G.value * const.M_jup.value * param['Mp']) / ((const.R_jup.value * param['Rp']) ** 2.)
+    param = validate_vmr_composition(param)
     if param['gas_par_space'] == 'partial_pressure' and np.log10(param['P0']) < 0.0:
         param['P0'] = 1.1
-
     cloud_fraction = validate_cloud_fraction(param.get('cld_frac', 1.0))
 
-    if not retrieval_mode and param.get('verbose', False):
-        if n_obs == 0 or n_obs is None:
+    def _run_column(column_param, auxiliary=False, clear_clouds=False):
+        column_param = _prepare_forward_column(
+            column_param,
+            clear_clouds=clear_clouds,
+        )
+        if (
+            not retrieval_mode
+            and column_param.get('verbose', False)
+            and not auxiliary
+            and (n_obs == 0 or n_obs is None)
+        ):
+            print(
+                'mu \t\t = \t'
+                + str(column_param['mean_mol_weight'][-1])
+            )
             if albedo_calc and not fp_over_fs:
                 print('Calculating the planetary albedo as function of wavelength')
             elif fp_over_fs and not albedo_calc:
@@ -3208,26 +3284,6 @@ def forward(parameters_dictionary, evaluation=None, phi=None, n_obs=None, retrie
             else:
                 print('Calculating the planetary flux as function of wavelength')
 
-    def _prepare_column(column_param):
-        column_param = copy.deepcopy(column_param)
-        if column_param['PT_profile_type'] in ('isothermal', 'parametric'):
-            column_param['P'] = 10. ** np.arange(
-                0.0,
-                np.log10(column_param['P0']) + 0.01,
-                step=0.01,
-            )
-            column_param['T'] = temp_profile(column_param)
-        else:
-            column_param['P'] = column_param['Pp'] + 0.0
-            column_param['T'] = column_param['Tp'] + 0.0
-
-        column_param = prepare_atmospheric_vmr(column_param)
-        if column_param['O3_earth']:
-            column_param['vmr_O3'] = ozone_earth_mask(column_param)
-        return calc_mean_mol_mass(column_param)
-
-    def _run_column(column_param, auxiliary=False):
-        column_param = _prepare_column(column_param)
         if column_param['physics_model'] != 'radiative_transfer':
             raise ValueError(
                 'Unknown physics_model: ' + str(column_param['physics_model'])
@@ -3252,17 +3308,18 @@ def forward(parameters_dictionary, evaluation=None, phi=None, n_obs=None, retrie
     if not has_clouds or cloud_fraction == 1.0:
         result_param, alb_wl, alb = _run_column(param)
     elif cloud_fraction == 0.0:
-        clear_param = copy.deepcopy(param)
-        clear_param['fit_wtr_cld'] = False
-        clear_param['fit_amm_cld'] = False
-        result_param, alb_wl, alb = _run_column(clear_param)
+        result_param, alb_wl, alb = _run_column(
+            param,
+            clear_clouds=True,
+        )
     else:
         cloudy_param, cloudy_wl, cloudy_alb = _run_column(param)
 
-        clear_param = copy.deepcopy(param)
-        clear_param['fit_wtr_cld'] = False
-        clear_param['fit_amm_cld'] = False
-        _, clear_wl, clear_alb = _run_column(clear_param, auxiliary=True)
+        _, clear_wl, clear_alb = _run_column(
+            param,
+            auxiliary=True,
+            clear_clouds=True,
+        )
 
         if not np.array_equal(cloudy_wl, clear_wl):
             raise ValueError(

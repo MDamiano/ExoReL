@@ -138,15 +138,44 @@ def plot_nest_spec(mnest, cube, solutions=0):
         # Optional credible intervals from random samples
         rs_path = mnest.param['out_dir'] + f'random_samples_sol{solutions}.dat'
         if os.path.isfile(rs_path):
-            fl = np.loadtxt(rs_path)
+            fl = np.loadtxt(rs_path, ndmin=2)
+            if fl.shape[1] < 2:
+                raise ValueError(
+                    'Posterior spectrum samples must contain a wavelength '
+                    'column and at least one spectrum.'
+                )
+            sample_wavelength = fl[:, 0]
+            if (
+                not np.all(np.isfinite(sample_wavelength))
+                or np.any(np.diff(sample_wavelength) <= 0.0)
+            ):
+                raise ValueError(
+                    'Posterior spectrum wavelengths must be finite and '
+                    'strictly increasing.'
+                )
             q50 = np.nanquantile(fl[:, 1:], 0.5, axis=1)
             q16, q84 = np.nanquantile(fl[:, 1:], [0.16, 0.84], axis=1)
             q2, q98 = np.nanquantile(fl[:, 1:], [0.0225, 0.9775], axis=1)
             q003, q997 = np.nanquantile(fl[:, 1:], [0.00135, 0.99865], axis=1)
 
-            p16, p84 = best_fit[:, 1] + (q16 - q50), best_fit[:, 1] + (q84 - q50)
-            p2, p98 = best_fit[:, 1] + (q2 - q50), best_fit[:, 1] + (q98 - q50)
-            p003, p997 = best_fit[:, 1] + (q003 - q50), best_fit[:, 1] + (q997 - q50)
+            plot_wavelength = best_fit[:, 0]
+
+            def interval_delta_on_plot_grid(quantile):
+                delta = quantile - q50
+                if np.array_equal(sample_wavelength, plot_wavelength):
+                    return delta
+                return np.interp(
+                    plot_wavelength,
+                    sample_wavelength,
+                    delta,
+                )
+
+            p16 = best_fit[:, 1] + interval_delta_on_plot_grid(q16)
+            p84 = best_fit[:, 1] + interval_delta_on_plot_grid(q84)
+            p2 = best_fit[:, 1] + interval_delta_on_plot_grid(q2)
+            p98 = best_fit[:, 1] + interval_delta_on_plot_grid(q98)
+            p003 = best_fit[:, 1] + interval_delta_on_plot_grid(q003)
+            p997 = best_fit[:, 1] + interval_delta_on_plot_grid(q997)
 
             np.maximum(p16, 0.0, out=p16)
             np.maximum(p84, 0.0, out=p84)
@@ -157,9 +186,9 @@ def plot_nest_spec(mnest, cube, solutions=0):
 
             best_fit = np.column_stack([best_fit, p84, p16, p98, p2, p997, p003])
 
-            plt.fill_between(fl[:, 0], p003, p997, ec=(0, 0, 0, 0), fc=(64/255, 71/255, 132/255, 0.20), label='3σ')
-            plt.fill_between(fl[:, 0], p2, p98, ec=(0, 0, 0, 0), fc=(64/255, 71/255, 132/255, 0.35), label='2σ')
-            plt.fill_between(fl[:, 0], p16, p84, ec=(0, 0, 0, 0), fc=(64/255, 71/255, 132/255, 0.50), label='1σ')
+            plt.fill_between(plot_wavelength, p003, p997, ec=(0, 0, 0, 0), fc=(64/255, 71/255, 132/255, 0.20), label='3σ')
+            plt.fill_between(plot_wavelength, p2, p98, ec=(0, 0, 0, 0), fc=(64/255, 71/255, 132/255, 0.35), label='2σ')
+            plt.fill_between(plot_wavelength, p16, p84, ec=(0, 0, 0, 0), fc=(64/255, 71/255, 132/255, 0.50), label='1σ')
 
         # Save best fit table
         np.savetxt(mnest.param['out_dir'] + f'Best_fit_sol{solutions}.dat', best_fit)

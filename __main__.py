@@ -20,6 +20,11 @@ class RETRIEVAL:
             raise RuntimeError("Please, convert your '.dat' partfile to a JSON file. '.dat' files have been phased out.")
         self.param = read_parfile(self.param, parfile)
         self.param = setup_param_dict(self.param)
+        self.param = load_input_spectrum(self.param)
+        self.param = par_and_calc(self.param)
+        if not self.param['albedo_calc'] and not self.param['fp_over_fs']:
+            self.param = take_star_spectrum(self.param)
+
         if self.param['optimizer'] == 'multinest':
             from ExoReL.__multinest import MULTINEST # type: ignore
             bayes = MULTINEST(self.param)

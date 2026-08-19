@@ -1,7 +1,16 @@
+import shutil
+
 from .__basics import *
 from .__utils import *
-from .__forward import forward
+from .__forward import (
+    apply_forward_evaluation,
+    forward,
+    prepare_forward_parameters,
+)
 from .__plotting import *
+from .utils.likelihood import gaussian_loglike
+from .utils.prior import Mp_Rp_prior, gaussian_prior, uniform_prior
+from .utils.warnings_and_errors import InvalidVMRCompositionError
 from . import __version__
 
 # trying to initiate MPI parallelization
@@ -41,29 +50,10 @@ else:
 
 class MULTINEST:
     def __init__(self, par):
-        self.param = copy.deepcopy(par)
-        self.param = par_and_calc(self.param)
-        self.param = load_input_spectrum(self.param)
-        if not self.param['albedo_calc'] and not self.param['fp_over_fs']:
-            self.param = take_star_spectrum(self.param)
-        self.param = pre_load_variables(self.param)
-        self.param = ranges(self.param)
-        self._base_vmr = {
-            key: copy.deepcopy(value)
-            for key, value in self.param.items()
-            if key.startswith('vmr_')
-        }
-
-    def _restore_base_vmr(self):
-        """Restore scalar input abundances before decoding a retrieval cube."""
-        if not hasattr(self, '_base_vmr'):
-            self._base_vmr = {
-                key: copy.deepcopy(value)
-                for key, value in self.param.items()
-                if key.startswith('vmr_')
-            }
-        for key, value in self._base_vmr.items():
-            self.param[key] = copy.deepcopy(value)
+        self.param = par.copy()
+        if MPIrank == 0:
+            self.param = pre_load_variables(self.param)
+            self.param = ranges(self.param)
 
     def _cube_to_evaluation(self, cube, n_obs=0):
         """Map a physical MultiNest cube to the values consumed by ``forward``."""
@@ -106,18 +96,7 @@ class MULTINEST:
                 evaluation[mol] = 10.0 ** cube[par]
                 fitted_total += evaluation[mol]
                 par += 1
-            fill_vmr = 1.0 - fitted_total
-            if (
-                not np.isfinite(fitted_total)
-                or not np.isfinite(fill_vmr)
-                or fill_vmr <= 0.0
-            ):
-                raise InvalidVMRCompositionError(
-                    "Independent VMR retrieval proposal is outside the "
-                    "composition simplex: fitted gas VMRs must sum to less "
-                    "than 1 so the filling gas remains positive."
-                )
-            evaluation[self.param['gas_fill']] = fill_vmr
+            evaluation[self.param['gas_fill']] = 1.0 - fitted_total
         elif self.param['gas_par_space'] == 'partial_pressure':
             partial_pressures = 10.0 ** np.asarray(
                 cube[par: par + len(self.param['fit_molecules'])]
@@ -188,10 +167,6 @@ class MULTINEST:
     ):
         """Evaluate one retrieval cube through the public forward pipeline."""
         evaluation = self._cube_to_evaluation(cube, n_obs=n_obs)
-        forward_param = copy.deepcopy(self.param)
-        base_vmr = getattr(self, '_base_vmr', {})
-        for key, value in base_vmr.items():
-            forward_param[key] = copy.deepcopy(value)
         forward_kwargs = {
             'evaluation': evaluation,
             'phi': phi,
@@ -204,10 +179,10 @@ class MULTINEST:
         }
 
         if platform.system() == 'Darwin':
-            return forward(forward_param, **forward_kwargs)
+            return forward(self.param, **forward_kwargs)
 
         try:
-            return forward(forward_param, **forward_kwargs)
+            return forward(self.param, **forward_kwargs)
         except InvalidVMRCompositionError:
             raise
         except Exception:
@@ -235,20 +210,12 @@ class MULTINEST:
 
             raise
 
-    @staticmethod
-    def _spectrum_loglike(data, model, error):
-        chi = (data - model) / error
-        return (
-            -np.sum(np.log(error * np.sqrt(2.0 * math.pi)))
-            - 0.5 * np.sum(chi * chi)
-        )
-
-    def _loglike(self, cube):
+    def _loglike(self, cube, ndim=None, nparams=None):
         """Return the retrieval log likelihood for one physical cube."""
         try:
             if self.param['obs_numb'] is None:
                 model = self._forward_cube(cube)
-                return self._spectrum_loglike(
+                return gaussian_loglike(
                     self.param['spectrum']['Fplanet'],
                     model,
                     self.param['spectrum']['error_p'],
@@ -267,7 +234,7 @@ class MULTINEST:
                     n_obs=obs,
                 )
                 observation = self.param['spectrum'][str(obs)]
-                loglikelihood += self._spectrum_loglike(
+                loglikelihood += gaussian_loglike(
                     observation['Fplanet'],
                     model,
                     observation['error_p'],
@@ -289,14 +256,14 @@ class MULTINEST:
                 clean_c_files(self.param['pkg_dir'])
             if self.param['rocky']:
                 print('Using ExoReL-R for small planets')
-                if self.param['gas_par_space'] == 'clr' or self.param['gas_par_space'] == 'centered_log_ratio':
+                if self.param['gas_par_space'] in ('clr', 'centered_log_ratio'):
                     print('Using modified priors: ' + str(self.param['mod_prior']))
             else:
                 print('Using ExoReL-R for giant gaseous planets')
 
         parameters, n_params = retrieval_par_and_npar(self.param)
         self.param['fitting_parameters'] = parameters
-        if (self.param['gas_par_space'] == 'clr' or self.param['gas_par_space'] == 'centered_log_ratio') and self.param['mod_prior']:
+        if self.param['gas_par_space'] in ('clr', 'centered_log_ratio') and self.param['mod_prior']:
             ppf = np.loadtxt(self.param['pkg_dir'] + 'forward_mod/Data/prior/prior_cube_' + str(len(self.param['fit_molecules'])) + 'gas.dat')
 
         if self.param['physics_model'] == 'dataset':
@@ -305,12 +272,9 @@ class MULTINEST:
                 self.param = adjust_ranges_from_dataset(self.param)
 
         if MPIimport and MPIsize > 1:
-                MPI.COMM_WORLD.Barrier()  # wait for everybody to synchronize here
-            
-                self.param = MPI.COMM_WORLD.bcast(self.param, root=0)
-
-    
-                MPI.COMM_WORLD.Barrier()  # wait for everybody to synchronize here
+            MPI.COMM_WORLD.Barrier()  # wait for everybody to synchronize here
+            self.param = MPI.COMM_WORLD.bcast(self.param, root=0)
+            MPI.COMM_WORLD.Barrier()  # wait for everybody to synchronize here
 
         def prior(cube, ndim, nparams):
             par = 0
@@ -330,27 +294,27 @@ class MULTINEST:
                 par += 3
 
             for mol in self.param['fit_molecules']:
-                if self.param['gas_par_space'] == 'centered_log_ratio' or self.param['gas_par_space'] == 'clr':
+                if self.param['gas_par_space'] in ('centered_log_ratio', 'clr'):
                     if self.param['mod_prior']:
                         cube[par] = ppf[find_nearest(ppf[:, 0], cube[par]), 1]  # modified prior for clr
                     else:
                         cube[par] = uniform_prior(self.param, 'clr' + mol, cube[par])  # uniform clr prior between -25 : 25
-                elif self.param['gas_par_space'] == 'volume_mixing_ratio' or self.param['gas_par_space'] == 'vmr':
+                elif self.param['gas_par_space'] in ('volume_mixing_ratio', 'vmr'):
                     cube[par] = uniform_prior(self.param, 'vmr' + mol, cube[par])  # uniform vmr prior between -12 : 0
                 elif self.param['gas_par_space'] == 'partial_pressure':
                     cube[par] = uniform_prior(self.param, 'pp' + mol, cube[par])  # uniform partial pressure prior between -10 : 10
                 par += 1
 
             if self.param['fit_ag']:
-                if self.param['surface_albedo_parameters'] == int(1):
+                if self.param['surface_albedo_parameters'] == 1:
                     cube[par] = uniform_prior(self.param, 'ag', cube[par])  # uniform prior between   0.0  :  0.5     -> Ag, surface albedo
                     par += 1
-                elif self.param['surface_albedo_parameters'] == int(3):
+                elif self.param['surface_albedo_parameters'] == 3:
                     for surf_alb in [1, 2]:
                         cube[par + (surf_alb - 1)] = uniform_prior(self.param, 'ag' + str(surf_alb), cube[par + (surf_alb - 1)])
                     cube[par + surf_alb] = uniform_prior(self.param, 'ag_x1', cube[par + surf_alb])
                     par += 3
-                elif self.param['surface_albedo_parameters'] == int(5):
+                elif self.param['surface_albedo_parameters'] == 5:
                     for surf_alb in [1, 2, 3]:
                         cube[par + (surf_alb - 1)] = uniform_prior(self.param, 'ag' + str(surf_alb), cube[par + (surf_alb - 1)])
                     cube[par + surf_alb] = uniform_prior(self.param, 'ag_x1', cube[par + surf_alb])
@@ -414,13 +378,10 @@ class MULTINEST:
                         cube[par] = uniform_prior(self.param, 'phi', cube[par])  # uniform prior between   0  :  180   -> deg
                         par += 1
 
-        def loglike(cube, ndim, nparams):
-            return self._loglike(cube)
-
         if is_root:
             time1 = time.time()
 
-        pymultinest.run(LogLikelihood=loglike,
+        pymultinest.run(LogLikelihood=self._loglike,
                         Prior=prior,
                         n_dims=n_params,
                         multimodal=self.param['multimodal'],
@@ -460,7 +421,9 @@ class MULTINEST:
             MPI.COMM_WORLD.Barrier()  # wait for everybody to synchronize here
             mds_orig = MPI.COMM_WORLD.bcast(mds_orig if MPIrank == 0 else None, root=0)
 
-        check_files = os.path.exists(self.param['out_dir'] + 'loglike_per_datapoint_sol0.dat')
+        check_files = os.path.exists(
+            self.param['out_dir'] + 'loglike_per_datapoint_sol0.dat'
+        )
 
         if self.param['calc_likelihood_data'] and not check_files:
             self.calc_spectra(prefix, mds_orig)
@@ -469,26 +432,24 @@ class MULTINEST:
                 MPI.COMM_WORLD.Barrier()  # wait for everybody to synchronize here
 
             if is_root:
-                if platform.system() != 'Darwin':
-                    time.sleep(600)
                 loglike_dir = []
                 for mode_idx in range(0, mds_orig):
                     loglike_dir.append(self.param['out_dir'] + f'loglikelihood_per_datapoint_sol{mode_idx}/')
                 for idx, folder in enumerate(loglike_dir):
-                    rank_0 = np.loadtxt(folder + 'loglike_0.dat')
-                    rank_0_spec = np.loadtxt(folder + 'samples_0.dat')
-                    rank_0_par = np.loadtxt(folder + 'samples_par_0.dat')
+                    rank_0 = np.loadtxt(folder + 'loglike_0.dat', ndmin=2)
+                    rank_0_spec = np.loadtxt(folder + 'samples_0.dat', ndmin=2)
+                    rank_0_par = np.loadtxt(folder + 'samples_par_0.dat', ndmin=2)
                     if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
-                        rank_0_temp = np.loadtxt(folder + 'temp_samples_0.dat')
+                        rank_0_temp = np.loadtxt(folder + 'temp_samples_0.dat', ndmin=2)
                     for i in range(1, MPIsize):
-                        rank_n = np.loadtxt(folder + f'loglike_{i}.dat')
-                        rank_n_spec = np.loadtxt(folder + f'samples_{i}.dat')
-                        rank_n_par = np.loadtxt(folder + f'samples_par_{i}.dat')
+                        rank_n = np.loadtxt(folder + f'loglike_{i}.dat', ndmin=2)
+                        rank_n_spec = np.loadtxt(folder + f'samples_{i}.dat', ndmin=2)
+                        rank_n_par = np.loadtxt(folder + f'samples_par_{i}.dat', ndmin=2)
                         rank_0 = np.concatenate((rank_0, rank_n), axis=0)
                         rank_0_spec = np.concatenate((rank_0_spec, rank_n_spec[:, 1:]), axis=1)
                         rank_0_par = np.concatenate((rank_0_par, rank_n_par), axis=0)
                         if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
-                            rank_n_temp = np.loadtxt(folder + f'temp_samples_{i}.dat')
+                            rank_n_temp = np.loadtxt(folder + f'temp_samples_{i}.dat', ndmin=2)
                             rank_0_temp = np.concatenate((rank_0_temp, rank_n_temp[:, 1:]), axis=1)
                     np.savetxt(self.param['out_dir'] + f'loglike_per_datapoint_sol{idx}.dat', rank_0)
                     np.savetxt(self.param['out_dir'] + f'random_samples_sol{idx}.dat', rank_0_spec)
@@ -496,7 +457,7 @@ class MULTINEST:
                     if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
                         np.savetxt(self.param['out_dir'] + f'random_temp_samples_sol{idx}.dat', rank_0_temp)
                         del rank_0_temp
-                    os.system('rm -rf ' + self.param['out_dir'] + f'loglikelihood_per_datapoint_sol{idx}/')
+                    shutil.rmtree(folder)
 
                     self.param['spec_sample'] = rank_0_spec + 0.0
                     del rank_0, rank_0_spec, rank_0_par
@@ -555,216 +516,78 @@ class MULTINEST:
         mds = len(mres.get_stats()['modes'])
         if mds == 1:
             return mres.get_stats(), mds
-        else:
-            max_ev, max_idx = -np.inf, 0
-            for i in range(0, mds):
-                if mres.get_stats()['modes'][i]['local log-evidence'] > max_ev:
-                    max_ev = mres.get_stats()['modes'][i]['local log-evidence'] + 0.0
-                    max_idx = i
-                else:
-                    pass
 
-            filtered_modes = [mres.get_stats()['modes'][max_idx]]
-            filtered_modes[len(filtered_modes) - 1]['index'] = len(filtered_modes) - 1
-            for i in range(0, mds):
-                if i == max_idx:
-                    pass
-                elif (
-                    max_ev - mres.get_stats()['modes'][i]['local log-evidence']
-                    < MULTI_SOLUTION_DELTA_LOG_EVIDENCE_THRESHOLD
-                ):
-                    filtered_modes.append(mres.get_stats()['modes'][i])
-                    filtered_modes[len(filtered_modes) - 1]['index'] = len(filtered_modes) - 1
-                else:
-                    pass
+        max_ev, max_idx = -np.inf, 0
+        for i in range(mds):
+            if mres.get_stats()['modes'][i]['local log-evidence'] > max_ev:
+                max_ev = mres.get_stats()['modes'][i]['local log-evidence'] + 0.0
+                max_idx = i
 
-            s = mres.get_stats()
-            s['modes'] = filtered_modes
-
-            if mds - len(s['modes']) > 0:
-                print("\n" + str(mds - len(s['modes'])) + " modes have been filtered due to low significance")
-            return s, len(s['modes'])
-
-
-    def cube_to_param(self, cube, n_obs=0, prepare_atmosphere=True):
-        self._restore_base_vmr()
-        par = 0
-        if self.param['fit_p0'] and self.param['gas_par_space'] != 'partial_pressure':
-            self.param['P0'] = 10. ** cube[par]
-            par += 1
-        
-        if self.param['PT_profile_type'] == 'isothermal':
-            if self.param['fit_wtr_cld']:
-                self.param['Pw_top'] = 10. ** cube[par]
-                self.param['cldw_depth'] = 10. ** cube[par + 1]
-                self.param['CR_H2O'] = 10. ** cube[par + 2]
-                par += 3
-
-            if self.param['fit_amm_cld']:
-                self.param['Pa_top'] = 10. ** cube[par]
-                self.param['clda_depth'] = 10. ** cube[par + 1]
-                self.param['CR_NH3'] = 10. ** cube[par + 2]
-                par += 3
-
-        if self.param['gas_par_space'] == 'centered_log_ratio' or self.param['gas_par_space'] == 'clr':
-            clr = {}
-            for mol in self.param['fit_molecules']:
-                clr[mol] = cube[par]
-                par += 1
-            self.param, _ = clr_to_vmr(self.param, clr)
-        elif self.param['gas_par_space'] == 'volume_mixing_ratio' or self.param['gas_par_space'] == 'vmr':
-            fitted_total = 0.0
-            for mol in self.param['fit_molecules']:
-                self.param['vmr_' + mol] = 10. ** cube[par]
-                fitted_total += self.param['vmr_' + mol]
-                par += 1
-            fill_vmr = 1.0 - fitted_total
+        filtered_modes = [mres.get_stats()['modes'][max_idx]]
+        filtered_modes[-1]['index'] = len(filtered_modes) - 1
+        for i in range(mds):
             if (
-                not np.isfinite(fitted_total)
-                or not np.isfinite(fill_vmr)
-                or fill_vmr <= 0.0
+                i != max_idx
+                and max_ev - mres.get_stats()['modes'][i]['local log-evidence']
+                < MULTI_SOLUTION_DELTA_LOG_EVIDENCE_THRESHOLD
             ):
-                raise InvalidVMRCompositionError(
-                    "Independent VMR retrieval proposal is outside the "
-                    "composition simplex: fitted gas VMRs must sum to less "
-                    "than 1 so the filling gas remains positive."
-                )
-            self.param['vmr_' + self.param['gas_fill']] = fill_vmr
-        elif self.param['gas_par_space'] == 'partial_pressure':
-            self.param['P0'] = np.sum(10.0 ** np.array(cube[par: par + len(self.param['fit_molecules'])]))
-            for mol in self.param['fit_molecules']:
-                self.param['vmr_' + mol] = (10.0 ** cube[par]) / self.param['P0']
-                par += 1
+                filtered_modes.append(mres.get_stats()['modes'][i])
+                filtered_modes[-1]['index'] = len(filtered_modes) - 1
 
-        self.param['P'] = 10. ** np.arange(0.0, np.log10(self.param['P0']) + 0.01, step=0.01)
+        s = mres.get_stats()
+        s['modes'] = filtered_modes
 
-        if self.param['fit_ag']:
-            if self.param['surface_albedo_parameters'] == int(1):
-                self.param['Ag'] = cube[par] + 0.0  # Ag, surface albedo
-                par += 1
-            elif self.param['surface_albedo_parameters'] == int(3):
-                for surf_alb in [1, 2]:
-                    self.param['Ag' + str(surf_alb)] = cube[par + (surf_alb - 1)] + 0.0  # Ag, surface albedo
-                self.param['Ag_x1'] = cube[par + surf_alb] + 0.0
-                par += 3
-            elif self.param['surface_albedo_parameters'] == int(5):
-                for surf_alb in [1, 2, 3]:
-                    self.param['Ag' + str(surf_alb)] = cube[par + (surf_alb - 1)] + 0.0  # Ag, surface albedo
-                self.param['Ag_x1'] = cube[par + surf_alb] + 0.0
-                self.param['Ag_x2'] = cube[par + surf_alb + 1] + 0.0
-                par += 5
+        filtered_count = mds - len(s['modes'])
+        if filtered_count > 0:
+            print(
+                f"\n{filtered_count} modes have been filtered due to low "
+                "significance"
+            )
+        return s, len(s['modes'])
 
-        if self.param['fit_T']:
-            if self.param['PT_profile_type'] == 'isothermal':
-                self.param['Tp'] = cube[par] + 0.0  # Planetary temperature
-                par += 1
-            elif self.param['PT_profile_type'] == 'parametric':
-                self.param['kappa_th'] = 10 ** cube[par] # thermal radiation opacity
-                self.param['gamma'] = 10 ** cube[par + 1]  # ratio optical to thermal opacity
-                self.param['beta'] = cube[par + 2]         # scale factor for equilibrium temperature
-                par += 3
-                if self.param['fit_Tint']:
-                    self.param['Tint'] = cube[par] # internal temperature
-                    par += 1
-        else:
-            pass
 
-        if self.param['fit_cld_frac']:
-            self.param['cld_frac'] = (10.0 ** cube[par])  # Cloud fraction
-            par += 1
-
-        if self.param['fit_g'] and self.param['fit_Mp'] and not self.param['fit_Rp']:
-            self.param['gp'] = 10. ** (cube[par] - 2.0)  # g is in m/s2 but it was defined in cgs
-            self.param['Mp'] = cube[par + 1]  # Mp is in M_jup
-            self.param['Rp'] = (np.sqrt((const.G.value * const.M_jup.value * self.param['Mp']) / self.param['gp'])) / const.R_jup.value  # Rp is in R_jup
-            par += 2
-        elif self.param['fit_g'] and self.param['fit_Rp'] and not self.param['fit_Mp']:
-            self.param['gp'] = (10. ** (cube[par] - 2.0))  # g is in m/s2 but it was defined in cgs
-            self.param['Rp'] = cube[par + 1]  # Rp is in R_jup
-            self.param['Mp'] = ((self.param['gp'] * ((self.param['Rp'] * const.R_jup.value) ** 2.)) / const.G.value) / const.M_jup.value  # Mp is in M_jup
-            par += 2
-        elif self.param['fit_Mp'] and self.param['fit_Rp'] and not self.param['fit_g']:
-            self.param['Mp'] = cube[par]  # Mp is in M_jup
-            self.param['Rp'] = cube[par + 1]  # Rp is in R_jup
-            self.param['gp'] = (const.G.value * const.M_jup.value * self.param['Mp']) / ((const.R_jup.value * self.param['Rp']) ** 2.)  # g is in m/s2
-            par += 2
-        elif self.param['fit_Mp'] and not self.param['fit_Rp'] and not self.param['fit_g'] and self.param['Rp'] is not None:
-            self.param['Mp'] = cube[par]  # Mp is in M_jup
-            self.param['gp'] = (const.G.value * const.M_jup.value * self.param['Mp']) / ((const.R_jup.value * self.param['Rp']) ** 2.)  # g is in m/s2
-            par += 1
-        elif self.param['fit_g'] and not self.param['fit_Mp'] and not self.param['fit_Rp'] and self.param['Mp'] is not None:
-            self.param['gp'] = (10. ** (cube[par] - 2.0))  # g is in m/s2 but it was defined in cgs
-            self.param['Rp'] = (np.sqrt((const.G.value * const.M_jup.value * self.param['Mp']) / self.param['gp'])) / const.R_jup.value  # Rp is in R_jup
-            par += 1
-        elif self.param['fit_Rp'] and not self.param['fit_Mp'] and not self.param['fit_g'] and self.param['Mp'] is not None:
-            self.param['Rp'] = cube[par]  # Rp is in R_jup
-            self.param['gp'] = (const.G.value * const.M_jup.value * self.param['Mp']) / ((const.R_jup.value * self.param['Rp']) ** 2.)  # g is in m/s2
-            par += 1
-        elif not self.param['fit_g'] and not self.param['fit_Mp'] and not self.param['fit_Rp']:
-            if not self.param['Mp_provided']:
-                self.param['Mp'] = ((self.param['gp'] * ((self.param['Rp'] * const.R_jup.value) ** 2.)) / const.G.value) / const.M_jup.value  # Mp is in M_jup
-            if not self.param['Rp_provided']:
-                self.param['Rp'] = (np.sqrt((const.G.value * const.M_jup.value * self.param['Mp']) / self.param['gp'])) / const.R_jup.value  # Rp is in R_jup
-            if not self.param['gp_provided']:
-                self.param['gp'] = (const.G.value * const.M_jup.value * self.param['Mp']) / ((const.R_jup.value * self.param['Rp']) ** 2.)  # g is in m/s2
-
-        if self.param['fit_p_size']:  # particle size, constant
-            self.param['p_size'] = (10. ** cube[par])
-            par += 1
-
-        if self.param['fit_phi']:
-            self.param['phi'] = cube[par + n_obs] * math.pi / 180.  # phi
-
-        if not prepare_atmosphere:
-            self.param['core_number'] = None
-            return
-
-        self.param['T'] = temp_profile(self.param)
-        self.param = prepare_atmospheric_vmr(self.param)
-        if self.param['O3_earth']:
-            self.param['vmr_O3'] = ozone_earth_mask(self.param)
-        self.param = calc_mean_mol_mass(self.param)
-
-        self.param['core_number'] = None
+    def cube_to_param(self, cube, n_obs=0):
+        """Prepare plotting/post-processing parameters from a retrieval cube."""
+        evaluation = self._cube_to_evaluation(cube, n_obs=n_obs)
+        self.param = prepare_forward_parameters(
+            self.param,
+            evaluation=evaluation,
+            core_number=None,
+        )
 
 
     def calc_spectra(self, prefix, mds_orig):
-        def sample_from_weighted_distr(x, w, m, rng=None, replace=True):
+        """Draw posterior samples and evaluate them on the observed grid."""
+        def sample_from_weighted_distr(x, w, m, rng=None):
             rng = np.random.default_rng() if rng is None else rng
+            x = np.asarray(x)
             w = np.asarray(w, dtype=float)
-            w = np.clip(w, 0, np.inf)
-            p = w / w.sum()
-            idx = rng.choice(len(x), size=m, replace=replace, p=p)
+            if m <= 0:
+                raise ValueError("'n_likelihood_data' must be a positive integer.")
+            if not np.all(np.isfinite(w)) or np.any(w < 0.0):
+                raise ValueError('Posterior weights must be finite and non-negative.')
+            weight_sum = np.sum(w)
+            if not np.isfinite(weight_sum) or weight_sum <= 0.0:
+                raise ValueError('Posterior weights must have a positive finite sum.')
+            p = w / weight_sum
+            idx = rng.choice(len(x), size=m, replace=True, p=p)
             return x[idx, :]
 
         if MPIrank == 0:
             print('\nCalculating the likelihood per data point')
 
-        new_wl = reso_range(0.2, 20.0, res=500, bins=True)
-        if self.param['mol_custom_wl']:
-            new_wl_central = np.mean(new_wl, axis=1)
-            start = 0
-            stop = len(new_wl_central) - 1
-        else:
-            new_wl_central = np.mean(new_wl, axis=1)
-            start = find_nearest(new_wl_central, min(self.param['spectrum']['wl']) - 0.05)
-            stop = find_nearest(new_wl_central, max(self.param['spectrum']['wl']) + 0.05)
-
-        wl_len = len(self.param['spectrum']['wl'])
-        if self.param['spectrum']['bins']:
-            temp = np.array([self.param['spectrum']['wl_low'], self.param['spectrum']['wl_high'], self.param['spectrum']['wl']]).T
-        else:
-            temp = self.param['spectrum']['wl']
-        self.param['spectrum']['wl'] = new_wl_central[start:stop]
-        self.param['spectrum']['wl_low'] = new_wl[start:stop, 0]
-        self.param['spectrum']['wl_high'] = new_wl[start:stop, 1]
-
-        temp_min, temp_max = self.param['min_wl'] + 0.0, self.param['max_wl'] + 0.0
-        self.param['min_wl'] = min(self.param['spectrum']['wl'])
-        self.param['max_wl'] = max(self.param['spectrum']['wl'])
-        if self.param['physics_model_code_language'] == 'C':
-            self.param['start_c_wl_grid'] = find_nearest(self.param['wl_C_grid'], self.param['min_wl']) - 35
-            self.param['stop_c_wl_grid'] = find_nearest(self.param['wl_C_grid'], self.param['max_wl']) + 35
+        input_wavelength = np.asarray(
+            self.param['spectrum']['wl'],
+            dtype=float,
+        )
+        wl_len = len(input_wavelength)
+        n_samples = int(self.param['n_likelihood_data'])
+        if n_samples <= 0:
+            raise ValueError("'n_likelihood_data' must be a positive integer.")
+        if n_samples < MPIsize:
+            raise ValueError(
+                "'n_likelihood_data' must be at least the number of MPI ranks."
+            )
 
         distributions = []
 
@@ -775,27 +598,31 @@ class MULTINEST:
             distributions.append(np.loadtxt(prefix + '.txt'))
 
         for mds in range(len(distributions)):
-            mc_samples = distributions[mds]
+            mc_samples = np.atleast_2d(distributions[mds])
+            if mc_samples.shape[1] < 3:
+                raise ValueError(
+                    'Posterior sample files must contain weight, likelihood, '
+                    'and at least one fitted parameter.'
+                )
 
             loglike_dir = self.param['out_dir'] + f'loglikelihood_per_datapoint_sol{mds}/'
 
             os.makedirs(loglike_dir, exist_ok=True)
 
-            if mc_samples.shape[0] < self.param['n_likelihood_data']:
-                self.param['n_likelihood_data'] = mc_samples.shape[0] - MPIsize
-            else:
-                pass
-            
-            sample_par = sample_from_weighted_distr(mc_samples[:, 2:], mc_samples[:, 0], m=self.param['n_likelihood_data'], rng=np.random.default_rng(42), replace=False)
+            sample_par = sample_from_weighted_distr(
+                mc_samples[:, 2:],
+                mc_samples[:, 0],
+                m=n_samples,
+                rng=np.random.default_rng(42),
+            )
 
-            n_samples = int(self.param['n_likelihood_data'])
             base_per_rank, extra = divmod(n_samples, MPIsize)
             local_n = base_per_rank + (1 if MPIrank < extra else 0)
             start_idx = MPIrank * base_per_rank + min(MPIrank, extra)
             stop_idx = start_idx + local_n
 
-            samples = np.zeros((len(self.param['spectrum']['wl']), local_n + 1))
-            samples[:, 0] = self.param['spectrum']['wl']
+            samples = np.zeros((wl_len, local_n + 1))
+            samples[:, 0] = input_wavelength
             loglike_data = np.zeros((local_n, wl_len))
 
             if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
@@ -804,15 +631,16 @@ class MULTINEST:
 
             for i, sample_idx in enumerate(range(start_idx, stop_idx)):
                 cube = sample_par[sample_idx, :]
-                _, samples[:, i + 1] = self._forward_cube(
+                model_wavelength, model = self._forward_cube(
                     cube,
                     retrieval_mode=False,
                 )
-
-                if self.param['spectrum']['bins']:
-                    model = custom_spectral_binning(temp[:, :2], self.param['spectrum']['wl'], samples[:, i + 1], bins=True)
-                else:
-                    model = spectres(temp, self.param['spectrum']['wl'], samples[:, i + 1], fill=False)
+                if not np.array_equal(model_wavelength, input_wavelength):
+                    raise ValueError(
+                        'Posterior spectrum wavelength grid does not match '
+                        'the input spectrum grid.'
+                    )
+                samples[:, i + 1] = model
 
                 # Calculate likelihood per single datapoint
                 chi = (self.param['spectrum']['Fplanet'] - model) / self.param['spectrum']['error_p']
@@ -820,10 +648,20 @@ class MULTINEST:
 
                 # Calculate temperature profile
                 if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
-                    self.cube_to_param(cube, prepare_atmosphere=False)
-                    T = temp_profile(self.param)
+                    evaluation = self._cube_to_evaluation(cube)
+                    temp_param = apply_forward_evaluation(
+                        self.param,
+                        evaluation=evaluation,
+                        core_number=None,
+                    )
+                    temp_param['P'] = 10. ** np.arange(
+                        0.0,
+                        np.log10(temp_param['P0']) + 0.01,
+                        step=0.01,
+                    )
+                    T = temp_profile(temp_param)
                     temp_samples[2:len(T)+2, i+1] = T
-                    temp_samples[0, i+1] = self.param['P'][-1]
+                    temp_samples[0, i+1] = temp_param['P'][-1]
                     temp_samples[1, i+1] = T[-1]
 
             np.savetxt(loglike_dir + 'loglike_' + str(MPIrank) + '.dat', loglike_data)
@@ -831,15 +669,6 @@ class MULTINEST:
             np.savetxt(loglike_dir + 'samples_par_' + str(MPIrank) + '.dat', sample_par[start_idx:stop_idx, :])
             if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
                 np.savetxt(loglike_dir + 'temp_samples_' + str(MPIrank) + '.dat', temp_samples)
-
-        if self.param['spectrum']['bins']:
-            self.param['spectrum']['wl'] = temp[:, 2] + 0.0
-            self.param['spectrum']['wl_low'] = temp[:, 0] + 0.0
-            self.param['spectrum']['wl_high'] = temp[:, 1] + 0.0
-        else:
-            self.param['spectrum']['wl'] = temp + 0.0
-        self.param['min_wl'] = temp_min + 0.0
-        self.param['max_wl'] = temp_max + 0.0
 
 
     def store_nest_solutions(self, prefix):
