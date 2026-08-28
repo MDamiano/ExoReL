@@ -422,7 +422,7 @@ def plot_contribution(mnest, cube, solutions=0):
 
 
 def plot_chemistry(param, solutions=0):
-    """Plot retrieved atmospheric chemistry profiles and mean molecular mass.
+    """Plot retrieved atmospheric chemistry, cloud density, and molecular mass.
 
     Parameters
     - param: Parameter dictionary containing atmospheric structure, fitted molecules
@@ -433,11 +433,13 @@ def plot_chemistry(param, solutions=0):
       between multiple solutions.
 
     Behavior
-    - Creates two figures:
+    - Creates two figures, plus a cloud-density figure when clouds are enabled:
       1) Volume mixing ratio (VMR) profiles vs pressure for each fitted molecule
          (and optional background gases), with markers for surface and cloud
          boundaries when applicable. Saved as `Nest_chemistry[ (solution N)].pdf`.
       2) Mean molecular mass vs pressure, saved as `Nest_MMM[ (solution N)].pdf`.
+      3) Cloud density vs pressure, saved as
+         `Nest_cloud_density[ (solution N)].pdf`.
     - Prints top and bottom VMRs (or stratospheric value for O3 when `O3_earth`).
     - Uses Pa on the primary y-axis and adds a secondary axis in bar.
     """
@@ -598,6 +600,37 @@ def plot_chemistry(param, solutions=0):
     fig.tight_layout()
     fig.savefig(param['out_dir'] + f'Nest_MMM_sol{solutions}.pdf', bbox_inches='tight')
     plt.close()
+
+    # Cloud density plot
+    cloud_profiles = []
+    pressure = np.asarray(param['P'], dtype=float)
+    temperature = np.broadcast_to(np.asarray(param['T'], dtype=float), pressure.shape)
+    for enabled, molecule, molar_mass in (
+        (param['fit_wtr_cld'], 'H2O', 0.018),
+        (param['fit_amm_cld'], 'NH3', 0.017),
+    ):
+        if enabled:
+            condensation_loss = np.asarray(param['condensation_loss_' + molecule], dtype=float)
+            density = np.full(len(pressure), 1.0e-36)
+            density[:-1] = np.maximum(
+                condensation_loss[:-1] * molar_mass * pressure[:-1]
+                / const.R.value / temperature[:-1],
+                1.0e-25,
+            )
+            cloud_profiles.append((molecule, density))
+
+    if cloud_profiles:
+        fig, ax = plt.subplots()
+        for molecule, density in cloud_profiles:
+            ax.loglog(density, pressure, label=molecule)
+        ax.set_xlabel(r'Cloud density [kg m$^{-3}$]')
+        ax.set_ylabel('Pressure [Pa]')
+        ax.secondary_yaxis('right', functions=(pa_to_bar, bar_to_pa)).set_ylabel('Pressure [bar]')
+        ax.invert_yaxis()
+        ax.legend(frameon=False)
+        fig.tight_layout()
+        fig.savefig(param['out_dir'] + f'Nest_cloud_density_sol{solutions}.pdf', bbox_inches='tight')
+        plt.close()
 
 
 def _surface_albedo_sigma_slice(param, sigma):
