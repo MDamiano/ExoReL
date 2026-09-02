@@ -18,12 +18,9 @@ from scipy.interpolate import interp1d
 from .__utils import (
     MULTI_SOLUTION_DELTA_LOG_EVIDENCE_THRESHOLD,
     find_nearest,
-    model_finalizzation,
     temp_profile,
     reso_range,
 )
-# from .__forward import FORWARD_MODEL, FORWARD_DATASET, FORWARD_AI
-from .__forward import RADIATIVE_TRANSFER_C, RADIATIVE_TRANSFER_PYTHON
 
 _COMMON_PLOT_STYLE = 'seaborn-v0_8-white'
 _COMMON_PLOT_RCPARAMS = {
@@ -60,25 +57,22 @@ def _isolate_posterior_plot_style(plot_fn):
     return wrapped
 
 
-def _instantiate_forward_model(param):
-    model_type = param.get('physics_model')
-    if model_type == 'radiative_transfer':
-        if param['physics_model_code_language'] == 'Python':
-            return RADIATIVE_TRANSFER_PYTHON(param)
-        else:
-            return RADIATIVE_TRANSFER_C(param, retrieval=False, canc_metadata=True)
-    # if model_type == 'dataset':
-    #     return FORWARD_DATASET(param, dataset_dir=param['dataset_dir'])
-    # if model_type == 'AI_model':
-    #     return FORWARD_AI(param)
-    raise ValueError('Unknown physics_model: ' + str(model_type))
+def _forward_plot_spectrum(mnest, cube, n_obs=0, phi=None):
+    """Return the finalized, cloud-fraction-corrected plotting spectrum."""
+    return mnest._forward_cube(
+        cube,
+        phi=phi,
+        n_obs=n_obs,
+        retrieval_mode=False,
+    )
 
 
 def plot_nest_spec(mnest, cube, solutions=0):
     """Plot retrieved spectrum and confidence bands.
 
     Parameters
-    - mnest: MULTINEST instance (provides `param`, `cube_to_param`, `adjust_for_cld_frac`).
+    - mnest: MULTINEST instance (provides `param`, `_forward_cube`, and
+      `cube_to_param`).
     - cube: parameter cube (array-like)
     - solutions: Optional solution index for filenames
 
@@ -87,8 +81,6 @@ def plot_nest_spec(mnest, cube, solutions=0):
       repeated I/O where possible.
     """
     _apply_plot_style()
-
-    mnest.cube_to_param(cube)
 
     def _load_target_bins():
         new_wl = reso_range(0.2, 20.0, res=500, bins=True)
@@ -115,20 +107,6 @@ def plot_nest_spec(mnest, cube, solutions=0):
             markerfacecolor='#e24a33', markeredgecolor='#222222', markersize=4.5,
             capsize=2.0, label='Data')
 
-        # Model on native grid
-        # mod = _instantiate_forward_model(mnest.param)
-        # alb_wl, alb = mod.run_forward()
-        # if mnest.param['fit_wtr_cld'] and mnest.param['cld_frac'] != 1.0:
-        #     alb = mnest.adjust_for_cld_frac(alb, cube)
-        #     mnest.cube_to_param(cube)
-        # _, model_native = model_finalizzation(mnest.param, alb_wl, alb,
-        #                                       planet_albedo=mnest.param['albedo_calc'],
-        #                                       fp_over_fs=mnest.param['fp_over_fs'])
-        # plt.plot(
-        #     mnest.param['spectrum']['wl'], model_native, linestyle='', color='#1f77b4',
-        #     marker='D', markerfacecolor='#4c78a8', markeredgecolor='#1f77b4', markersize=4.0,
-        #     label='MAP (data native)')
-
         # Prepare R=500 grid once
         new_wl, new_wl_central = _load_target_bins()
 
@@ -151,15 +129,8 @@ def plot_nest_spec(mnest, cube, solutions=0):
             mnest.param['start_c_wl_grid'] = find_nearest(mnest.param['wl_C_grid'], mnest.param['min_wl']) - 35
             mnest.param['stop_c_wl_grid'] = find_nearest(mnest.param['wl_C_grid'], mnest.param['max_wl']) + 35
 
-        # Model on R=500 grid
-        mod = _instantiate_forward_model(mnest.param)
-        alb_wl, alb = mod.run_forward()
-        if mnest.param['fit_wtr_cld'] and mnest.param['cld_frac'] != 1.0:
-            alb = mnest.adjust_for_cld_frac(alb, cube)
-            mnest.cube_to_param(cube)
-        wl, model = model_finalizzation(mnest.param, alb_wl, alb,
-                                        planet_albedo=mnest.param['albedo_calc'],
-                                        fp_over_fs=mnest.param['fp_over_fs'])
+        # Model on R=500 grid. ``forward`` owns the cloudy/clear mixture.
+        wl, model = _forward_plot_spectrum(mnest, cube)
         plt.plot(wl, model, color='#404784', linewidth=1.2, label='Best fit')
 
         best_fit = np.array([wl, model]).T
@@ -167,15 +138,44 @@ def plot_nest_spec(mnest, cube, solutions=0):
         # Optional credible intervals from random samples
         rs_path = mnest.param['out_dir'] + f'random_samples_sol{solutions}.dat'
         if os.path.isfile(rs_path):
-            fl = np.loadtxt(rs_path)
+            fl = np.loadtxt(rs_path, ndmin=2)
+            if fl.shape[1] < 2:
+                raise ValueError(
+                    'Posterior spectrum samples must contain a wavelength '
+                    'column and at least one spectrum.'
+                )
+            sample_wavelength = fl[:, 0]
+            if (
+                not np.all(np.isfinite(sample_wavelength))
+                or np.any(np.diff(sample_wavelength) <= 0.0)
+            ):
+                raise ValueError(
+                    'Posterior spectrum wavelengths must be finite and '
+                    'strictly increasing.'
+                )
             q50 = np.nanquantile(fl[:, 1:], 0.5, axis=1)
             q16, q84 = np.nanquantile(fl[:, 1:], [0.16, 0.84], axis=1)
             q2, q98 = np.nanquantile(fl[:, 1:], [0.0225, 0.9775], axis=1)
             q003, q997 = np.nanquantile(fl[:, 1:], [0.00135, 0.99865], axis=1)
 
-            p16, p84 = best_fit[:, 1] + (q16 - q50), best_fit[:, 1] + (q84 - q50)
-            p2, p98 = best_fit[:, 1] + (q2 - q50), best_fit[:, 1] + (q98 - q50)
-            p003, p997 = best_fit[:, 1] + (q003 - q50), best_fit[:, 1] + (q997 - q50)
+            plot_wavelength = best_fit[:, 0]
+
+            def interval_delta_on_plot_grid(quantile):
+                delta = quantile - q50
+                if np.array_equal(sample_wavelength, plot_wavelength):
+                    return delta
+                return np.interp(
+                    plot_wavelength,
+                    sample_wavelength,
+                    delta,
+                )
+
+            p16 = best_fit[:, 1] + interval_delta_on_plot_grid(q16)
+            p84 = best_fit[:, 1] + interval_delta_on_plot_grid(q84)
+            p2 = best_fit[:, 1] + interval_delta_on_plot_grid(q2)
+            p98 = best_fit[:, 1] + interval_delta_on_plot_grid(q98)
+            p003 = best_fit[:, 1] + interval_delta_on_plot_grid(q003)
+            p997 = best_fit[:, 1] + interval_delta_on_plot_grid(q997)
 
             np.maximum(p16, 0.0, out=p16)
             np.maximum(p84, 0.0, out=p84)
@@ -186,9 +186,9 @@ def plot_nest_spec(mnest, cube, solutions=0):
 
             best_fit = np.column_stack([best_fit, p84, p16, p98, p2, p997, p003])
 
-            plt.fill_between(fl[:, 0], p003, p997, ec=(0, 0, 0, 0), fc=(64/255, 71/255, 132/255, 0.20), label='3σ')
-            plt.fill_between(fl[:, 0], p2, p98, ec=(0, 0, 0, 0), fc=(64/255, 71/255, 132/255, 0.35), label='2σ')
-            plt.fill_between(fl[:, 0], p16, p84, ec=(0, 0, 0, 0), fc=(64/255, 71/255, 132/255, 0.50), label='1σ')
+            plt.fill_between(plot_wavelength, p003, p997, ec=(0, 0, 0, 0), fc=(64/255, 71/255, 132/255, 0.20), label='3σ')
+            plt.fill_between(plot_wavelength, p2, p98, ec=(0, 0, 0, 0), fc=(64/255, 71/255, 132/255, 0.35), label='2σ')
+            plt.fill_between(plot_wavelength, p16, p84, ec=(0, 0, 0, 0), fc=(64/255, 71/255, 132/255, 0.50), label='1σ')
 
         # Save best fit table
         np.savetxt(mnest.param['out_dir'] + f'Best_fit_sol{solutions}.dat', best_fit)
@@ -221,18 +221,21 @@ def plot_nest_spec(mnest, cube, solutions=0):
     else:
         fig, axs = plt.subplots(2, sharex=True, gridspec_kw={'hspace': 0}, figsize=(8.5, 6.0), dpi=130)
         new_wl, new_wl_central = _load_target_bins()
+        spectrum_bins = mnest.param['spectrum']['bins']
         mnest.param['spectrum']['bins'] = False
 
         for obs in range(0, mnest.param['obs_numb']):
-            mnest.cube_to_param(cube, n_obs=obs)
-            mod = _instantiate_forward_model(mnest.param)
-            alb_wl, alb = mod.run_forward()
-            if mnest.param['fit_cld_frac'] and mnest.param['fit_wtr_cld'] and mnest.param['cld_frac'] != 1.0:
-                alb = mnest.adjust_for_cld_frac(alb, cube)
-                mnest.cube_to_param(cube, n_obs=obs)
-            _, model_native = model_finalizzation(mnest.param, alb_wl, alb,
-                                                  planet_albedo=mnest.param['albedo_calc'],
-                                                  fp_over_fs=mnest.param['fp_over_fs'], n_obs=obs)
+            observation_phi = (
+                None
+                if mnest.param['fit_phi']
+                else mnest.param.get('phi' + str(obs))
+            )
+            _, model_native = _forward_plot_spectrum(
+                mnest,
+                cube,
+                n_obs=obs,
+                phi=observation_phi,
+            )
 
             axs[obs].plot(mnest.param['spectrum'][str(obs)]['wl'], model_native, linestyle='', color='#1f77b4',
                           marker='D', markerfacecolor='#4c78a8', markeredgecolor='#1f77b4', markersize=4.0)
@@ -254,21 +257,20 @@ def plot_nest_spec(mnest, cube, solutions=0):
             temp = mnest.param['spectrum'][str(obs)]['wl'] + 0.0
             mnest.param['spectrum'][str(obs)]['wl'] = new_wl_central[start:stop]
 
-            mod = _instantiate_forward_model(mnest.param)
-            alb_wl, alb = mod.run_forward()
-            alb_wl *= 10.0 ** (-3.0)
-            if mnest.param['fit_cld_frac'] and mnest.param['fit_wtr_cld'] and mnest.param['cld_frac'] != 1.0:
-                alb = mnest.adjust_for_cld_frac(alb, cube)
-                mnest.cube_to_param(cube, n_obs=obs)
-            wl, model = model_finalizzation(mnest.param, alb_wl, alb,
-                                            planet_albedo=mnest.param['albedo_calc'],
-                                            fp_over_fs=mnest.param['fp_over_fs'], n_obs=obs)
+            wl, model = _forward_plot_spectrum(
+                mnest,
+                cube,
+                n_obs=obs,
+                phi=observation_phi,
+            )
 
             axs[obs].plot(wl, model, color='#404784', linewidth=1.2, label='MAP (R=500)')
             mnest.param['spectrum'][str(obs)]['wl'] = temp + 0.0
 
             axs[obs].legend(frameon=False)
             axs[obs].set_ylim([-0.2 * min(model), max(model) + 0.2 * max(model)])
+
+        mnest.param['spectrum']['bins'] = spectrum_bins
 
         if mnest.param['albedo_calc']:
             fig.text(0.04, 0.5, 'Albedo', va='center', rotation='vertical')
@@ -279,6 +281,13 @@ def plot_nest_spec(mnest, cube, solutions=0):
                 fig.text(0.04, 0.5, 'Planetary flux [W/m$^2$]', va='center', rotation='vertical')
         fig.text(0.5, 0.04, 'Wavelength [$\\mu$m]', ha='center')
 
+    # Leave atmospheric profiles prepared for the chemistry and P-T plots that
+    # run immediately after the spectrum plot.
+    if mnest.param['obs_numb'] is None:
+        mnest.cube_to_param(cube)
+    else:
+        mnest.cube_to_param(cube, n_obs=mnest.param['obs_numb'] - 1)
+
     # Save figure
     plt.savefig(mnest.param['out_dir'] + f'Nest_spectrum_sol{solutions}.pdf')
     plt.close()
@@ -288,7 +297,8 @@ def plot_contribution(mnest, cube, solutions=0):
     """Plot per-molecule spectral contributions at R≈500 and export components.
 
     Parameters
-    - mnest: MULTINEST instance (provides `param`, `cube_to_param`, `adjust_for_cld_frac`).
+    - mnest: MULTINEST instance (provides `param`, `_forward_cube`, and
+      `cube_to_param`).
     - cube: parameter cube (array-like)
     - solutions: Optional solution index for filenames
 
@@ -336,34 +346,33 @@ def plot_contribution(mnest, cube, solutions=0):
         gas_to_loop = mnest.param['fit_molecules'] + [mnest.param['gas_fill']]
     contribution_curves = []
     for mol in gas_to_loop:
-        print('Plotting the contribution of ' + str(mol) + ' : VMR -> ' + str(mnest.param['vmr_' + mol][-1]))
+        vmr_value = np.asarray(mnest.param['vmr_' + mol]).reshape(-1)[-1]
+        print('Plotting the contribution of ' + str(mol) + ' : VMR -> ' + str(vmr_value))
         mnest.param['mol_contr'] = mol
-        mod = _instantiate_forward_model(mnest.param)
-        alb_wl, alb = mod.run_forward()
-
-        if mnest.param['fit_wtr_cld'] and mnest.param['cld_frac'] != 1.0:
-            alb = mnest.adjust_for_cld_frac(alb, cube)
-            mnest.cube_to_param(cube)
-
-        wl, model = model_finalizzation(mnest.param, alb_wl, alb,
-                                        planet_albedo=mnest.param['albedo_calc'],
-                                        fp_over_fs=mnest.param['fp_over_fs'])
+        wl, model = _forward_plot_spectrum(mnest, cube)
         line, = plt.plot(wl, model, linewidth=1.4, label=mol)
         contribution_curves.append((wl, model, line.get_color()))
         np.savetxt(out_dir + mol + '.dat', np.column_stack([wl, model]))
 
     # Cloud-only curve (keep contribution=True, remove molecule tag)
     mnest.param['mol_contr'] = None
-    mod = _instantiate_forward_model(mnest.param)
-    alb_wl, alb = mod.run_forward()
-    if mnest.param['fit_wtr_cld'] and mnest.param['cld_frac'] != 1.0:
-        alb = mnest.adjust_for_cld_frac(alb, cube)
-        mnest.cube_to_param(cube)
-    cloud_wl, cloud_model = model_finalizzation(mnest.param, alb_wl, alb,
-                                                planet_albedo=mnest.param['albedo_calc'],
-                                                fp_over_fs=mnest.param['fp_over_fs'])
-    plt.plot(cloud_wl, cloud_model, color='black', linestyle='--', linewidth=1.7, alpha=0.9, label='H$_2$O cloud')
-    np.savetxt(out_dir + 'H2O_cld.dat', np.column_stack([cloud_wl, cloud_model]))
+    cloud_wl, cloud_model = _forward_plot_spectrum(mnest, cube)
+    cloud_species = []
+    if mnest.param['fit_wtr_cld']:
+        cloud_species.append('H$_2$O')
+    if mnest.param['fit_amm_cld']:
+        cloud_species.append('NH$_3$')
+    if cloud_species:
+        cloud_label = ' + '.join(cloud_species) + ' cloud'
+        cloud_filename = '_'.join(
+            species.replace('$_2$', '2').replace('$_3$', '3')
+            for species in cloud_species
+        ) + '_cld.dat'
+    else:
+        cloud_label = 'Continuum'
+        cloud_filename = 'continuum.dat'
+    plt.plot(cloud_wl, cloud_model, color='black', linestyle='--', linewidth=1.7, alpha=0.9, label=cloud_label)
+    np.savetxt(out_dir + cloud_filename, np.column_stack([cloud_wl, cloud_model]))
     for mol_wl, mol_model, mol_color in contribution_curves:
         if mol_wl.shape == cloud_wl.shape and np.array_equal(mol_wl, cloud_wl):
             cloud_curve = cloud_model
@@ -408,9 +417,12 @@ def plot_contribution(mnest, cube, solutions=0):
     if is_bins:
         mnest.param['spectrum']['bins'] = True
 
+    # Preserve the historical postcondition used by chemistry-related callers.
+    mnest.cube_to_param(cube)
+
 
 def plot_chemistry(param, solutions=0):
-    """Plot retrieved atmospheric chemistry profiles and mean molecular mass.
+    """Plot retrieved atmospheric chemistry, cloud density, and molecular mass.
 
     Parameters
     - param: Parameter dictionary containing atmospheric structure, fitted molecules
@@ -421,11 +433,13 @@ def plot_chemistry(param, solutions=0):
       between multiple solutions.
 
     Behavior
-    - Creates two figures:
+    - Creates two figures, plus a cloud-density figure when clouds are enabled:
       1) Volume mixing ratio (VMR) profiles vs pressure for each fitted molecule
          (and optional background gases), with markers for surface and cloud
          boundaries when applicable. Saved as `Nest_chemistry[ (solution N)].pdf`.
       2) Mean molecular mass vs pressure, saved as `Nest_MMM[ (solution N)].pdf`.
+      3) Cloud density vs pressure, saved as
+         `Nest_cloud_density[ (solution N)].pdf`.
     - Prints top and bottom VMRs (or stratospheric value for O3 when `O3_earth`).
     - Uses Pa on the primary y-axis and adds a secondary axis in bar.
     """
@@ -586,6 +600,37 @@ def plot_chemistry(param, solutions=0):
     fig.tight_layout()
     fig.savefig(param['out_dir'] + f'Nest_MMM_sol{solutions}.pdf', bbox_inches='tight')
     plt.close()
+
+    # Cloud density plot
+    cloud_profiles = []
+    pressure = np.asarray(param['P'], dtype=float)
+    temperature = np.broadcast_to(np.asarray(param['T'], dtype=float), pressure.shape)
+    for enabled, molecule, molar_mass in (
+        (param['fit_wtr_cld'], 'H2O', 0.018),
+        (param['fit_amm_cld'], 'NH3', 0.017),
+    ):
+        if enabled:
+            condensation_loss = np.asarray(param['condensation_loss_' + molecule], dtype=float)
+            density = np.full(len(pressure), 1.0e-36)
+            density[:-1] = np.maximum(
+                condensation_loss[:-1] * molar_mass * pressure[:-1]
+                / const.R.value / temperature[:-1],
+                1.0e-25,
+            )
+            cloud_profiles.append((molecule, density))
+
+    if cloud_profiles:
+        fig, ax = plt.subplots()
+        for molecule, density in cloud_profiles:
+            ax.loglog(density, pressure, label=molecule)
+        ax.set_xlabel(r'Cloud density [kg m$^{-3}$]')
+        ax.set_ylabel('Pressure [Pa]')
+        ax.secondary_yaxis('right', functions=(pa_to_bar, bar_to_pa)).set_ylabel('Pressure [bar]')
+        ax.invert_yaxis()
+        ax.legend(frameon=False)
+        fig.tight_layout()
+        fig.savefig(param['out_dir'] + f'Nest_cloud_density_sol{solutions}.pdf', bbox_inches='tight')
+        plt.close()
 
 
 def _surface_albedo_sigma_slice(param, sigma):

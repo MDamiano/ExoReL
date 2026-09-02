@@ -1,3 +1,18 @@
+## [3.1.2] - 09/02/26
+- Added H2O and NH3 cloud-density profiles versus pressure to the retrieval chemistry plots.
+- Moved the photolysis molecular cross-section and quantum-yield files into `forward_mod/opac/photolysis/` and updated both the Python and C radiative-transfer branches to load them from their new location.
+- Centralized partial-cloud spectrum mixing in `forward()`, with create-spectrum, dataset-generation, MultiNest likelihood/post-processing, and plotting callers now consuming the same finalized cloudy/clear result.
+- Removed the legacy `double_cloud` indexing flag so H2O and NH3 cloud parameters are decoded independently, including NH3-only isothermal retrievals.
+- Prepared H2O and NH3 condensates jointly from the original composition, normalized non-condensable gases only once, and based cloud density and adaptive-grid placement on explicit directional condensation loss so one cloud species cannot create a spurious second cloud.
+- Prevented endpoint-reaching clouds from creating repeated adaptive-grid boundaries and zero-thickness layers, while preserving the historical grid for clouds bounded away from both atmospheric endpoints.
+- Interpolated standard-grid VMR profiles onto custom active pressure coordinates in log-pressure instead of truncating them by array index.
+- Rejected independent-VMR retrieval proposals outside the composition simplex with zero likelihood instead of allowing a negative filling gas or silently renormalizing the proposed composition.
+- Added a default retrieval verbosity setting and made non-retrieval `forward()` calls tolerate older parameter dictionaries without a `verbose` key.
+- Simplified the MultiNest-to-forward boundary: MultiNest now decodes each ordered cube into a physical evaluation, while `forward()` applies that evaluation to a parameter copy and prepares the requested cloudy or clear atmospheric column; `cube_to_param()` reuses the same preparation path for plotting and post-processing.
+- Updated posterior-spectrum generation to evaluate directly on the input spectrum grid, so saved pointwise log-likelihoods reconstruct the retrieval likelihood without the former intermediate R=500 rebinning; plotting now interpolates posterior uncertainty offsets onto its separate smooth display grid.
+- Changed weighted posterior draws used for likelihood-per-datapoint products to standard resampling with replacement, preserving high-probability samples correctly for the downstream equally weighted summaries.
+- Moved prior transforms, Gaussian spectral likelihood, custom exceptions, and retrieval statistics into focused modules under `utils/`; AIC, AICc, BIC, WAIC, DIC, BPICs, chi-square, reduced chi-square, and evidence-separation calculations now share public reusable definitions.
+
 ## [3.1.1] - 07/28/26
 - Enabled the linear-in-optical-depth Planck-source correction for non-isothermal layers in the Python radiative-transfer solver, applying the thermal slope consistently to the two-stream boundary and pseudo-source terms and using `expm1`-based propagation kernels for optically thin stability.
 - Optimized the Python reflected-light angle solver by precomputing angle-independent tridiagonal coefficients and compact reverse-Thomas factors per reflection group, reusing the existing coefficient storage instead of retaining duplicate matrices, and preserving the original reverse-RHS/forward-reconstruction arithmetic.

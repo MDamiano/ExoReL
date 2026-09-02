@@ -4,6 +4,148 @@ from .__utils import _prepare_python_stellar_irradiance
 from pathlib import Path
 
 
+def _condensation_loss_profile(param, molecule):
+    pressure_size = len(param['P'])
+    key = 'condensation_loss_' + molecule
+    if key in param:
+        loss = np.asarray(param[key], dtype=float)
+    else:
+        vapor = np.asarray(param['vmr_' + molecule], dtype=float)
+        loss = np.zeros(pressure_size)
+        if pressure_size > 1:
+            loss[:-1] = np.maximum(vapor[1:] - vapor[:-1], 0.0)
+
+    if loss.shape != (pressure_size,):
+        raise ValueError(
+            f"'{key}' must match the active pressure grid."
+        )
+    return loss
+
+
+def _adaptive_altitude_grid(altitude, cloud_indices, n_layer):
+    """Return an endpoint-safe adaptive altitude grid.
+
+    The historical three-region grid is preserved exactly when the cloud is
+    bounded by cloud-free atmosphere. If the cloud reaches either atmospheric
+    endpoint, intervals assigned to that zero-span region are reassigned to
+    the cloud region so every resulting layer retains positive thickness.
+    """
+    altitude = np.asarray(altitude, dtype=float)
+    cloud_indices = np.asarray(cloud_indices, dtype=int)
+    n_layer = int(n_layer)
+
+    if (
+        altitude.ndim != 1
+        or altitude.size < 2
+        or not np.all(np.isfinite(altitude))
+        or not np.all(np.diff(altitude) > 0.0)
+    ):
+        raise ValueError(
+            "Adaptive-grid altitude coordinates must be finite and strictly "
+            "increasing."
+        )
+    if n_layer < 1:
+        raise ValueError("The adaptive grid requires at least one layer.")
+    if cloud_indices.size == 0:
+        return np.linspace(
+            altitude[0],
+            altitude[-1],
+            num=n_layer + 1,
+            endpoint=True,
+        )
+
+    cloud_indices = np.unique(cloud_indices)
+    if cloud_indices[0] < 1 or cloud_indices[-1] >= altitude.size:
+        raise ValueError(
+            "Adaptive-grid cloud indices must identify atmospheric intervals."
+        )
+
+    n_cloud_points = int(round((n_layer + 1) / 3, 0))
+    n_above_points = int(
+        round((n_layer + 1 - n_cloud_points) / 2, 0)
+    )
+    n_below_points = (
+        (n_layer + 1) - n_cloud_points - n_above_points
+    )
+
+    cloud_bottom = altitude[cloud_indices[0] - 1]
+    cloud_top = altitude[cloud_indices[-1]]
+
+    if cloud_bottom > altitude[0] and cloud_top < altitude[-1]:
+        below = np.linspace(
+            altitude[0],
+            cloud_bottom,
+            num=n_below_points,
+            endpoint=False,
+        )
+        within = np.linspace(
+            cloud_bottom,
+            cloud_top,
+            num=n_cloud_points,
+            endpoint=False,
+        )
+        above = np.linspace(
+            cloud_top,
+            altitude[-1],
+            num=n_above_points,
+            endpoint=True,
+        )
+        return np.concatenate((below, within, above))
+
+    interval_counts = np.array(
+        [
+            n_below_points,
+            n_cloud_points,
+            max(n_above_points - 1, 0),
+        ],
+        dtype=int,
+    )
+    spans = np.array(
+        [
+            cloud_bottom - altitude[0],
+            cloud_top - cloud_bottom,
+            altitude[-1] - cloud_top,
+        ],
+        dtype=float,
+    )
+
+    zero_span = spans <= 0.0
+    interval_counts[1] += int(np.sum(interval_counts[zero_span]))
+    interval_counts[zero_span] = 0
+
+    missing_intervals = n_layer - int(np.sum(interval_counts))
+    interval_counts[1] += missing_intervals
+    if np.any((spans > 0.0) & (interval_counts <= 0)):
+        return np.linspace(
+            altitude[0],
+            altitude[-1],
+            num=n_layer + 1,
+            endpoint=True,
+        )
+
+    bounds = (
+        (altitude[0], cloud_bottom),
+        (cloud_bottom, cloud_top),
+        (cloud_top, altitude[-1]),
+    )
+    pieces = []
+    for (start, stop), count in zip(bounds, interval_counts):
+        if count == 0:
+            continue
+        segment = np.linspace(start, stop, num=count + 1, endpoint=True)
+        if pieces:
+            segment = segment[1:]
+        pieces.append(segment)
+
+    grid = np.concatenate(pieces)
+    if grid.size != n_layer + 1 or not np.all(np.diff(grid) > 0.0):
+        raise RuntimeError(
+            "Adaptive-grid construction did not produce positive-thickness "
+            "layers."
+        )
+    return grid
+
+
 class RADIATIVE_TRANSFER_C:
     def __init__(self, param, retrieval=True, canc_metadata=False):
         self.param = copy.deepcopy(param)
@@ -62,8 +204,12 @@ class RADIATIVE_TRANSFER_C:
         if self.param['fit_wtr_cld'] and 'H2O' in self.param['fit_molecules']:
             # Cloud density calculation
             cloudden = 1.0e-36 * np.ones(len(P))
+            condensation_loss_h2o = _condensation_loss_profile(
+                self.param,
+                'H2O',
+            )
             for i in range(len(P) - 2, -1, -1):
-                cloudden[i] = max(abs(self.param['vmr_H2O'][i] - self.param['vmr_H2O'][i + 1]) * 0.018 * P[i] / const.R.value / T[i], 1e-25)  # kg/m^3, g/L
+                cloudden[i] = max(condensation_loss_h2o[i] * 0.018 * P[i] / const.R.value / T[i], 1e-25)  # kg/m^3, g/L
 
             # Particle size calculation
             particlesize = 1.0e-36 * np.ones(len(P))
@@ -79,15 +225,19 @@ class RADIATIVE_TRANSFER_C:
 
         if self.param['fit_amm_cld'] and 'NH3' in self.param['fit_molecules']:
             cloudden_nh3 = 1.0e-36 * np.ones(len(P))
+            condensation_loss_nh3 = _condensation_loss_profile(
+                self.param,
+                'NH3',
+            )
             for i in range(len(P) - 2, -1, -1):
-                cloudden_nh3[i] = max(abs(self.param['vmr_NH3'][i] - self.param['vmr_NH3'][i + 1]) * 0.017 * P[i] / const.R.value / T[i], 1e-25)  # kg/m^3, g/L
+                cloudden_nh3[i] = max(condensation_loss_nh3[i] * 0.017 * P[i] / const.R.value / T[i], 1e-25)  # kg/m^3, g/L
             particlesize_nh3 = 1.0e-36 * np.ones(len(P))
 
             if self.param['fit_p_size'] and self.param['p_size_type'] == 'constant':
                 particlesize_nh3 = self.param['p_size'] * np.ones(len(P))
             else:
                 for i in range(len(P) - 2, -1, -1):
-                    deltaP_nh3 = P[i] * abs(self.param['vmr_NH3'][i] - self.param['vmr_NH3'][i + 1])
+                    deltaP_nh3 = P[i] * condensation_loss_nh3[i]
                     r0, _, r2, VP = particlesizef(g, T[i], P[i], self.param['mean_mol_weight'][i], self.param['mm']['NH3'], self.param['KE'], deltaP_nh3)
                     if self.param['fit_p_size'] and self.param['p_size_type'] == 'factor':
                         particlesize_nh3[i] = r2 * self.param['p_size']
@@ -100,9 +250,11 @@ class RADIATIVE_TRANSFER_C:
         if self.param['fit_wtr_cld'] and 'H2O' in self.param['fit_molecules']:
             cloudden = cloudden[::-1]
             particlesize = particlesize[::-1]
+            condensation_loss_h2o = condensation_loss_h2o[::-1]
         if self.param['fit_amm_cld'] and 'NH3' in self.param['fit_molecules']:
             cloudden_nh3 = cloudden_nh3[::-1]
             particlesize_nh3 = particlesize_nh3[::-1]
+            condensation_loss_nh3 = condensation_loss_nh3[::-1]
         MMM = self.param['mean_mol_weight'][::-1]
 
         # Atmospheric Composition
@@ -121,22 +273,23 @@ class RADIATIVE_TRANSFER_C:
         if self.param['use_adaptive_grid']:
             idx_cloud_sets = []
             if self.param['fit_wtr_cld'] and 'H2O' in f:
-                idx_cloud_sets.append(np.where(np.diff(f['H2O']) != 0.0)[0] + 1)
+                idx_cloud_sets.append(
+                    np.where(condensation_loss_h2o > 0.0)[0]
+                )
             if self.param['fit_amm_cld'] and 'NH3' in f:
-                idx_cloud_sets.append(np.where(np.diff(f['NH3']) != 0.0)[0] + 1)
+                idx_cloud_sets.append(
+                    np.where(condensation_loss_nh3 > 0.0)[0]
+                )
             if idx_cloud_sets:
                 idx_cloud_layers = np.unique(np.concatenate(idx_cloud_sets))
             else:
                 idx_cloud_layers = np.array([], dtype=int)
             if len(idx_cloud_layers) > 0:
-                n_cloud_layers = int(round((self.param['n_layer'] + 1) / 3, 0))
-                n_above_layers = int(round((self.param['n_layer'] + 1 - n_cloud_layers) / 2, 0))
-                n_below_layers = (self.param['n_layer'] + 1) - n_cloud_layers - n_above_layers
-
-                Z_below = np.linspace(Z[0], Z[min(idx_cloud_layers) - 1], num=n_below_layers, endpoint=False)
-                Z_within = np.linspace(Z[min(idx_cloud_layers) - 1], Z[max(idx_cloud_layers)], num=n_cloud_layers, endpoint=False)
-                Z_above = np.linspace(Z[max(idx_cloud_layers)], Z[-1], num=n_above_layers, endpoint=True)
-                zz = np.concatenate((np.concatenate((Z_below, Z_within)), Z_above))
+                zz = _adaptive_altitude_grid(
+                    Z,
+                    idx_cloud_layers,
+                    self.param['n_layer'],
+                )
             else:
                 zz = np.linspace(Z[0], Z[-1], num=int(self.param['n_layer'] + 1), endpoint=True)
         else:
@@ -493,6 +646,7 @@ class RADIATIVE_TRANSFER_C:
                       # Molecular Species
                       '#define NSP                  111\n',  # Number of species in the standard list
                       '#define SPECIES_LIST         "Data/species_Earth_Full.dat"\n',
+                      '#define PHOTOLYSIS_DIR       "opac/photolysis/"\n',
                       # '#define AIRM_FILE            "Result/Retrieval_' + str(self.process) + '/mean_mol_mass.dat"\n',
                       '#define AIRM                 ' + str(self.param['mean_mol_weight'][-1]) + '\n',  # Initial mean molecular mass of atmosphere, in atomic mass unit
                       '#define AIRVIS               1.0E-5\n',  # Dynamic viscosity in SI
@@ -701,6 +855,7 @@ class RADIATIVE_TRANSFER_C:
                        '    int nums, numx1=1, numf1=1, numc1=1, numr1=1, numm1=1, nump1=1, numt1=1;\n',
                        '    char *temp;\n',
                        '    char dataline[10000];\n',
+                       '    char photolysis_path[1000];\n',
                        '    double temp1, wavetemp, crosstemp, DD, GA, mixtemp;\n',
                        '    double z[zbin+1], T[zbin+1], PP[zbin+1], P[zbin+1];\n',
                        '    double *wavep, *crossp, *crosspa, *qyp, *qyp1, *qyp2, *qyp3, *qyp4, *qyp5, *qyp6, *qyp7, **cross, **qy;\n',
@@ -1205,8 +1360,9 @@ class RADIATIVE_TRANSFER_C:
                        '        j=0;\n',
                        '        while (species[j].num != stdcross[i]) {j=j+1;}\n',
                        #        printf("%s\\n",species[j].name);\n',
-                       '        fp=fopen(species[j].name, "r");\n',
-                       '        fp1=fopen(species[j].name, "r");\n',
+                       '        snprintf(photolysis_path, sizeof(photolysis_path), "%s%s", PHOTOLYSIS_DIR, species[j].name);\n',
+                       '        fp=fopen(photolysis_path, "r");\n',
+                       '        fp1=fopen(photolysis_path, "r");\n',
                        '        s=LineNumber(fp, 1000);\n',
                        #        printf("%d\\n",s);\n',
                        '        wavep=dvector(0,s-1);\n',
@@ -1695,8 +1851,12 @@ class RADIATIVE_TRANSFER_PYTHON:
 
         if self.param['fit_wtr_cld'] and 'H2O' in self.param['fit_molecules']:
             cloudden = 1.0e-36 * np.ones(len(P))
+            condensation_loss_h2o = _condensation_loss_profile(
+                self.param,
+                'H2O',
+            )
             for i in range(len(P) - 2, -1, -1):
-                cloudden[i] = max(abs(self.param['vmr_H2O'][i] - self.param['vmr_H2O'][i + 1]) * 0.018 * P[i] / const.R.value / T[i], 1e-25)  # kg/m^3, g/L
+                cloudden[i] = max(condensation_loss_h2o[i] * 0.018 * P[i] / const.R.value / T[i], 1e-25)  # kg/m^3, g/L
 
             particlesize = 1.0e-36 * np.ones(len(P))
             if self.param['fit_p_size'] and self.param['p_size_type'] == 'constant':
@@ -1711,15 +1871,19 @@ class RADIATIVE_TRANSFER_PYTHON:
 
         if self.param['fit_amm_cld'] and 'NH3' in self.param['fit_molecules']:
             cloudden_nh3 = 1.0e-36 * np.ones(len(P))
+            condensation_loss_nh3 = _condensation_loss_profile(
+                self.param,
+                'NH3',
+            )
             for i in range(len(P) - 2, -1, -1):
-                cloudden_nh3[i] = max(abs(self.param['vmr_NH3'][i] - self.param['vmr_NH3'][i + 1]) * 0.017 * P[i] / const.R.value / T[i], 1e-25)  # kg/m^3, g/L
+                cloudden_nh3[i] = max(condensation_loss_nh3[i] * 0.017 * P[i] / const.R.value / T[i], 1e-25)  # kg/m^3, g/L
             particlesize_nh3 = 1.0e-36 * np.ones(len(P))
 
             if self.param['fit_p_size'] and self.param['p_size_type'] == 'constant':
                 particlesize_nh3 = self.param['p_size'] * np.ones(len(P))
             else:
                 for i in range(len(P) - 2, -1, -1):
-                    deltaP_nh3 = P[i] * abs(self.param['vmr_NH3'][i] - self.param['vmr_NH3'][i + 1])
+                    deltaP_nh3 = P[i] * condensation_loss_nh3[i]
                     r0, _, r2, VP = particlesizef(g, T[i], P[i], self.param['mean_mol_weight'][i], self.param['mm']['NH3'], self.param['KE'], deltaP_nh3)
                     if self.param['fit_p_size'] and self.param['p_size_type'] == 'factor':
                         particlesize_nh3[i] = r2 * self.param['p_size']
@@ -1735,9 +1899,11 @@ class RADIATIVE_TRANSFER_PYTHON:
         if self.param['fit_wtr_cld'] and 'H2O' in self.param['fit_molecules']:
             cloudden = cloudden[::-1]
             particlesize = particlesize[::-1]
+            condensation_loss_h2o = condensation_loss_h2o[::-1]
         if self.param['fit_amm_cld'] and 'NH3' in self.param['fit_molecules']:
             cloudden_nh3 = cloudden_nh3[::-1]
             particlesize_nh3 = particlesize_nh3[::-1]
+            condensation_loss_nh3 = condensation_loss_nh3[::-1]
         MMM = self.param['mean_mol_weight'][::-1]
 
         # Atmospheric Composition
@@ -1756,22 +1922,23 @@ class RADIATIVE_TRANSFER_PYTHON:
         if self.param['use_adaptive_grid']:
             idx_cloud_sets = []
             if self.param['fit_wtr_cld'] and 'H2O' in f:
-                idx_cloud_sets.append(np.where(np.diff(f['H2O']) != 0.0)[0] + 1)
+                idx_cloud_sets.append(
+                    np.where(condensation_loss_h2o > 0.0)[0]
+                )
             if self.param['fit_amm_cld'] and 'NH3' in f:
-                idx_cloud_sets.append(np.where(np.diff(f['NH3']) != 0.0)[0] + 1)
+                idx_cloud_sets.append(
+                    np.where(condensation_loss_nh3 > 0.0)[0]
+                )
             if idx_cloud_sets:
                 idx_cloud_layers = np.unique(np.concatenate(idx_cloud_sets))
             else:
                 idx_cloud_layers = np.array([], dtype=int)
             if len(idx_cloud_layers) > 0:
-                n_cloud_layers = int(round((self.param['n_layer'] + 1) / 3, 0))
-                n_above_layers = int(round((self.param['n_layer'] + 1 - n_cloud_layers) / 2, 0))
-                n_below_layers = (self.param['n_layer'] + 1) - n_cloud_layers - n_above_layers
-
-                Z_below = np.linspace(Z[0], Z[min(idx_cloud_layers) - 1], num=n_below_layers, endpoint=False)
-                Z_within = np.linspace(Z[min(idx_cloud_layers) - 1], Z[max(idx_cloud_layers)], num=n_cloud_layers, endpoint=False)
-                Z_above = np.linspace(Z[max(idx_cloud_layers)], Z[-1], num=n_above_layers, endpoint=True)
-                zz = np.concatenate((np.concatenate((Z_below, Z_within)), Z_above))
+                zz = _adaptive_altitude_grid(
+                    Z,
+                    idx_cloud_layers,
+                    self.param['n_layer'],
+                )
             else:
                 zz = np.linspace(Z[0], Z[-1], num=int(self.param['n_layer'] + 1), endpoint=True)
         else:
@@ -2935,7 +3102,13 @@ class RADIATIVE_TRANSFER_PYTHON:
         return alb_wl, alb
 
 
-def forward(parameters_dictionary, evaluation=None, phi=None, n_obs=None, retrieval_mode=True, core_number=None, albedo_calc=False, fp_over_fs=False, canc_metadata=False):
+def apply_forward_evaluation(
+    parameters_dictionary,
+    evaluation=None,
+    phi=None,
+    core_number=None,
+):
+    """Apply decoded retrieval values to an isolated parameter dictionary."""
     param = copy.deepcopy(parameters_dictionary)
 
     if evaluation is not None:
@@ -2956,13 +3129,13 @@ def forward(parameters_dictionary, evaluation=None, phi=None, n_obs=None, retrie
             param['vmr_' + param['gas_fill']] = evaluation[param['gas_fill']]
 
         if param['fit_ag']:
-            if param['surface_albedo_parameters'] == int(1):
+            if param['surface_albedo_parameters'] == 1:
                 param['Ag'] = evaluation['ag']
-            elif param['surface_albedo_parameters'] == int(3):
+            elif param['surface_albedo_parameters'] == 3:
                 for surf_alb in [1, 2]:
                     param['Ag' + str(surf_alb)] = evaluation['ag' + str(surf_alb)]
                 param['Ag_x1'] = evaluation['ag_x1']
-            elif param['surface_albedo_parameters'] == int(5):
+            elif param['surface_albedo_parameters'] == 5:
                 for surf_alb in [1, 2, 3]:
                     param['Ag' + str(surf_alb)] = evaluation['ag' + str(surf_alb)]
                 param['Ag_x1'] = evaluation['ag_x1']
@@ -2977,6 +3150,9 @@ def forward(parameters_dictionary, evaluation=None, phi=None, n_obs=None, retrie
                 param['beta'] = evaluation['beta']
                 if param['fit_Tint']:
                     param['Tint'] = evaluation['Tint']
+
+        if 'cld_frac' in evaluation:
+            param['cld_frac'] = evaluation['cld_frac']
 
         if param['fit_g'] and param['fit_Mp'] and not param['fit_Rp']:
             param['gp'] = (10. ** (evaluation['gp'] - 2.0))                                                                     # g is in m/s2 but it was defined in cgs
@@ -2998,10 +3174,6 @@ def forward(parameters_dictionary, evaluation=None, phi=None, n_obs=None, retrie
             param['Rp'] = (np.sqrt((const.G.value * const.M_jup.value * param['Mp']) / param['gp'])) / const.R_jup.value        # Rp is in R_jup
         elif param['fit_Rp'] and not param['fit_Mp'] and not param['fit_g'] and param['Mp'] is not None:
             param['Rp'] = evaluation['Rp']                                                                                      # Rp is in R_jup
-            if param['Mp_err'] is not None and param['Mp_prior_type'] == 'random_error':
-                param['Mp'] = np.random.normal(param['Mp_orig'], param['Mp_err'])
-            else:
-                param['Mp'] = param['Mp_orig'] + 0.0
             param['gp'] = (const.G.value * const.M_jup.value * param['Mp']) / ((const.R_jup.value * param['Rp']) ** 2.)         # g is in m/s2
         elif not param['fit_g'] and not param['fit_Mp'] and not param['fit_Rp']:
             if not param['Mp_provided']:
@@ -3021,28 +3193,90 @@ def forward(parameters_dictionary, evaluation=None, phi=None, n_obs=None, retrie
         param['phi'] = phi
 
     param['core_number'] = core_number
+    return param
+
+
+def _prepare_forward_column(parameters_dictionary, clear_clouds=False):
+    """Prepare one cloudy or clear atmospheric column for radiative transfer."""
+    column_param = copy.deepcopy(parameters_dictionary)
+    if clear_clouds:
+        column_param['fit_wtr_cld'] = False
+        column_param['fit_amm_cld'] = False
+
+    if column_param['PT_profile_type'] in ('isothermal', 'parametric'):
+        column_param['P'] = 10. ** np.arange(
+            0.0,
+            np.log10(column_param['P0']) + 0.01,
+            step=0.01,
+        )
+        column_param['T'] = temp_profile(column_param)
+    else:
+        column_param['P'] = column_param['Pp'] + 0.0
+        column_param['T'] = column_param['Tp'] + 0.0
+
+    column_param = prepare_atmospheric_vmr(column_param)
+    if column_param['O3_earth']:
+        column_param['vmr_O3'] = ozone_earth_mask(column_param)
+    return calc_mean_mol_mass(column_param)
+
+
+def prepare_forward_parameters(
+    parameters_dictionary,
+    evaluation=None,
+    phi=None,
+    core_number=None,
+    clear_clouds=False,
+):
+    """Apply an evaluation and return its prepared atmospheric column."""
+    param = apply_forward_evaluation(
+        parameters_dictionary,
+        evaluation=evaluation,
+        phi=phi,
+        core_number=core_number,
+    )
+    return _prepare_forward_column(param, clear_clouds=clear_clouds)
+
+
+def forward(parameters_dictionary, evaluation=None, phi=None, n_obs=None, retrieval_mode=True, core_number=None, albedo_calc=False, fp_over_fs=False, canc_metadata=False):
+    validate_cloud_species_configuration(parameters_dictionary)
+    param = apply_forward_evaluation(
+        parameters_dictionary,
+        evaluation=evaluation,
+        phi=phi,
+        core_number=core_number,
+    )
+    if (
+        evaluation is not None
+        and param['fit_Rp']
+        and not param['fit_Mp']
+        and not param['fit_g']
+        and param['Mp'] is not None
+    ):
+        if param['Mp_err'] is not None and param['Mp_prior_type'] == 'random_error':
+            param['Mp'] = np.random.normal(param['Mp_orig'], param['Mp_err'])
+        else:
+            param['Mp'] = param['Mp_orig'] + 0.0
+        param['gp'] = (const.G.value * const.M_jup.value * param['Mp']) / ((const.R_jup.value * param['Rp']) ** 2.)
+    param = validate_vmr_composition(param)
     if param['gas_par_space'] == 'partial_pressure' and np.log10(param['P0']) < 0.0:
         param['P0'] = 1.1
-    if param['PT_profile_type'] == 'isothermal' or param['PT_profile_type'] == 'parametric':
-        param['P'] = 10. ** np.arange(0.0, np.log10(param['P0']) + 0.01, step=0.01)
-        param['T'] = temp_profile(param)
-    else:
-        param['P'] = param['Pp'] + 0.0
-        param['T'] = param['Tp'] + 0.0
-    if param['fit_amm_cld']:
-        param['vmr_NH3'] = cloud_pos(param, condensed_gas='NH3')
-        param = adjust_VMR(param, all_gases=param['adjust_VMR_gases'], condensed_gas='NH3')
-    if param['fit_wtr_cld']:
-        param['vmr_H2O'] = cloud_pos(param, condensed_gas='H2O')
-        param = adjust_VMR(param, all_gases=param['adjust_VMR_gases'], condensed_gas='H2O')
-    if not param['fit_wtr_cld'] and not param['fit_amm_cld']:
-        param = adjust_VMR(param, all_gases=param['adjust_VMR_gases'], condensed_gas=None)
-    if param['O3_earth']:
-        param['vmr_O3'] = ozone_earth_mask(param)
-    param = calc_mean_mol_mass(param)
+    cloud_fraction = validate_cloud_fraction(param.get('cld_frac', 1.0))
 
-    if not retrieval_mode and param['verbose']:
-        if n_obs == 0 or n_obs is None:
+    def _run_column(column_param, auxiliary=False, clear_clouds=False):
+        column_param = _prepare_forward_column(
+            column_param,
+            clear_clouds=clear_clouds,
+        )
+        if (
+            not retrieval_mode
+            and column_param.get('verbose', False)
+            and not auxiliary
+            and (n_obs == 0 or n_obs is None)
+        ):
+            print(
+                'mu \t\t = \t'
+                + str(column_param['mean_mol_weight'][-1])
+            )
             if albedo_calc and not fp_over_fs:
                 print('Calculating the planetary albedo as function of wavelength')
             elif fp_over_fs and not albedo_calc:
@@ -3050,25 +3284,63 @@ def forward(parameters_dictionary, evaluation=None, phi=None, n_obs=None, retrie
             else:
                 print('Calculating the planetary flux as function of wavelength')
 
-    if param['physics_model'] == 'radiative_transfer':
-        if param['physics_model_code_language'] == 'Python':
+        if column_param['physics_model'] != 'radiative_transfer':
+            raise ValueError(
+                'Unknown physics_model: ' + str(column_param['physics_model'])
+            )
+
+        if column_param['physics_model_code_language'] == 'Python':
             # Dataset generation can vary stellar radius, temperature, or
             # orbital distance after the initial preload. Revalidate the
             # opacity-grid stellar model and update geometric dilution here.
-            param = _prepare_python_stellar_irradiance(param)
-            mod = RADIATIVE_TRANSFER_PYTHON(param)
+            column_param = _prepare_python_stellar_irradiance(column_param)
+            mod = RADIATIVE_TRANSFER_PYTHON(column_param)
         else:
-            mod = RADIATIVE_TRANSFER_C(param, retrieval=retrieval_mode, canc_metadata=canc_metadata)
-        
-    # elif param['physics_model'] == 'dataset':
-    #     mod = FORWARD_DATASET(param, dataset_dir=param['dataset_dir'])
-    # elif param['physics_model'] == 'AI_model':
-    #     mod = FORWARD_AI(param)
+            mod = RADIATIVE_TRANSFER_C(
+                column_param,
+                retrieval=(retrieval_mode or auxiliary),
+                canc_metadata=(canc_metadata or auxiliary),
+            )
+        alb_wl, alb = mod.run_forward()
+        return column_param, alb_wl, alb
+
+    has_clouds = param['fit_wtr_cld'] or param['fit_amm_cld']
+    if not has_clouds or cloud_fraction == 1.0:
+        result_param, alb_wl, alb = _run_column(param)
+    elif cloud_fraction == 0.0:
+        result_param, alb_wl, alb = _run_column(
+            param,
+            clear_clouds=True,
+        )
     else:
-        raise ValueError('Unknown physics_model: ' + str(param['physics_model']))
-    
-    alb_wl, alb = mod.run_forward()
-    wl, model = model_finalizzation(param, alb_wl, alb, planet_albedo=albedo_calc, fp_over_fs=fp_over_fs, n_obs=n_obs)
+        cloudy_param, cloudy_wl, cloudy_alb = _run_column(param)
+
+        _, clear_wl, clear_alb = _run_column(
+            param,
+            auxiliary=True,
+            clear_clouds=True,
+        )
+
+        if not np.array_equal(cloudy_wl, clear_wl):
+            raise ValueError(
+                "The cloudy and clear atmospheric columns returned different "
+                "wavelength grids."
+            )
+        result_param = cloudy_param
+        alb_wl = cloudy_wl
+        alb = (
+            cloud_fraction * cloudy_alb
+            + (1.0 - cloud_fraction) * clear_alb
+        )
+
+    wl, model = model_finalizzation(
+        result_param,
+        alb_wl,
+        alb,
+        planet_albedo=albedo_calc,
+        fp_over_fs=fp_over_fs,
+        n_obs=n_obs,
+    )
 
     if retrieval_mode:
         return model

@@ -1,6 +1,7 @@
 from .__basics import *
 from .__utils import *
 from .__forward import *
+from .utils.warnings_and_errors import InvalidVMRCompositionError
 from . import __version__
 
 # trying to initiate MPI parallelization
@@ -638,7 +639,14 @@ class GEN_DATASET:
                     for mol in self.param['fit_molecules']:
                         s += 10. ** eval_map[mol]
                         self.param['vmr_' + mol] = 10. ** eval_map[mol]
-                    self.param['vmr_' + self.param['gas_fill']] = max(0.0, 1.0 - s)
+                    fill_vmr = 1.0 - s
+                    if not np.isfinite(fill_vmr) or fill_vmr <= 0.0:
+                        raise InvalidVMRCompositionError(
+                            "GEN_DATASET VMR sample is outside the "
+                            "composition simplex: fitted gas VMRs must sum "
+                            "to less than 1."
+                        )
+                    self.param['vmr_' + self.param['gas_fill']] = fill_vmr
                 elif gps in ('centered_log_ratio', 'clr'):
                     self.param, _ = clr_to_vmr(self.param, eval_map)
                 elif gps == 'partial_pressure':
@@ -684,12 +692,9 @@ class GEN_DATASET:
                     if j in eval_map.keys():
                         self.param[j] = eval_map[j] + 0.0
                 if 'cld_frac' in eval_map:
-                    if self.param['fit_cld_frac']:
-                        self.param['cld_frac'] = eval_map['cld_frac'] + 0.0
-                    else:
-                        self.param['cld_frac'] = eval_map['cld_frac'] + 0.0
-                    if self.param['cld_frac'] > 1.0 or self.param['cld_frac'] < 0.0:
-                        raise ValueError("The sampled cloud fraction must be between [0.0, 1.0]. Please check 'cld_frac_range'.")
+                    self.param['cld_frac'] = validate_cloud_fraction(
+                        eval_map['cld_frac']
+                    )
                 if 'snr' in eval_map:
                     self.param['snr'] = eval_map['snr'] + 0.0
                     if self.param['snr'] <= 0.0:
@@ -755,18 +760,6 @@ class GEN_DATASET:
                     fp_over_fs=self.param['fp_over_fs'],
                     canc_metadata=True
                 )
-
-                if self.param['cld_frac'] != 1.0 and (self.param['fit_wtr_cld'] or self.param['fit_amm_cld']):
-                    fit_wtr_cld = self.param['fit_wtr_cld']
-                    fit_amm_cld = self.param['fit_amm_cld']
-                    self.param['fit_wtr_cld'] = False
-                    self.param['fit_amm_cld'] = False
-                    self.param['ret_mode'] = True
-                    model_no_cld = forward(self.param, retrieval_mode=self.param['ret_mode'], albedo_calc=self.param['albedo_calc'], fp_over_fs=self.param['fp_over_fs'], canc_metadata=self.param['canc_metadata'])
-                    self.param['fit_wtr_cld'] = fit_wtr_cld
-                    self.param['fit_amm_cld'] = fit_amm_cld
-                    self.param['ret_mode'] = False
-                    model = (self.param['cld_frac'] * model) + ((1.0 - self.param['cld_frac']) * model_no_cld)
 
                 data = np.array([wl, model]).T
                 errorbars = None

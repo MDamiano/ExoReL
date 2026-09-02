@@ -1,4 +1,21 @@
 from .__basics import *
+from .utils.statistics import (
+    aic,
+    aicc,
+    bic,
+    bpics_from_chain_file,
+    chi_square,
+    chi_square_from_best_fit_file,
+    dic_from_chain_file,
+    maximum_log_likelihood_from_chain_file,
+    maximum_log_likelihoods_from_post_separate,
+    reduced_chi_square,
+    retrieval_log_likelihood_constant,
+    retrieval_n_data_points,
+    sigma_from_log_evidence,
+    waic_from_pointwise_log_likelihood_file,
+)
+from .utils.warnings_and_errors import InvalidVMRCompositionError
 import re
 import shutil
 
@@ -44,7 +61,7 @@ def default_parameters():
     #### [ATMOSPHERIC_PAR] ####
     param['fhaze'] = 1e-36  # flux haze -- NOT IN USE
     param['cld_frac'] = 1.0  # cloud fraction
-    param['adjust_VMR_gases'] = True  # All the gases are adjusted to compensate water condensation depletion
+    param['adjust_VMR_gases'] = True  # Preserve dry-gas ratios when condensable vapor is depleted
     param['use_adaptive_grid'] = True  # Split the atmosphere altitude in the same number of layers below, within, and above the clouds
     param['n_layer'] = 100  # Number of layers of the atmosphere
     param['KE'] = 1.0  # Eddy diffusion coefficient in m2/s
@@ -98,6 +115,7 @@ def default_parameters():
     param['optimizer'] = None  # Which optimizer to use during retrieval. 'multinest' is the only possibility currently
     param['gen_dataset_mode'] = False
     param['random_seed'] = None  # Random seed for GEN_DATASET design matrix generation
+    param['verbose'] = False  # Emit informational forward-model messages
 
     #### [MULTINEST_PAR] ####
     param['multimodal'] = True
@@ -123,6 +141,7 @@ def default_parameters():
     #### [Create_spectrum_PAR] ####
     param['add_noise'] = False
     param['gaussian_noise'] = False
+    param['curated_noise'] = False
     param['noise_model'] = 0
     param['save_snr_array'] = False
     param['snr'] = 20
@@ -221,11 +240,6 @@ def setup_param_dict(param):
     if param['albedo_calc']:
         param['fp_over_fs'] = False
 
-    if param['fit_wtr_cld'] and param['fit_amm_cld']:
-        param['double_cloud'] = True
-    else:
-        param['double_cloud'] = False
-
     if param['gaseous_planet']:
         param['rocky'] = False
         param['fit_p0'] = False
@@ -300,8 +314,7 @@ def setup_param_dict(param):
     if param['PT_profile_type'] == 'parametric':
         param['wtr_cld_type'] = 'mixed'
 
-    if param['cld_frac'] > 1.0 or param['cld_frac'] < 0.0:
-        raise ValueError("The cloud fraction should be defined between [0.0, 1.0]. Please check the 'cld_frac' value in the parameter file.")
+    param['cld_frac'] = validate_cloud_fraction(param['cld_frac'])
 
     if param['optimizer'] == 'multinest':
         param['nlive_p'] = int(param['nlive_p'])
@@ -317,6 +330,7 @@ def setup_param_dict(param):
             param['vmr_' + mol] = 0.0
             if param['fit_' + mol]:
                 param['fit_molecules'].append(mol)
+        param = validate_cloud_species_configuration(param)
 
     param['n_layer'] = int(param['n_layer'])
     param['out_dir'] = resolve_output_dir(param)
@@ -389,9 +403,6 @@ def calc_mean_mol_mass(param):
                 param['mean_mol_weight'][i] += param['vmr_' + param['gas_fill']][i] * param['mm'][param['gas_fill']]
             else:
                 param['mean_mol_weight'][i] += (param['vmr_' + param['gas_fill']][i] * param['mm'][param['gas_fill']]) + (param['vmr_He'][i] * param['mm']['He'])
-
-    if not param['ret_mode'] and param['verbose']:
-        print('mu \t\t = \t' + str(param['mean_mol_weight'][-1]))
 
     return param
 
@@ -1993,7 +2004,7 @@ def pre_load_variables(param):
             param['H2OL_g_liquid'] = data[:, 1:]
             data = np.loadtxt(param['pkg_dir'] + fldr_cld_fl + 'Geo_ice_wavelength_250916.dat')
             param['H2OL_g_ice'] = data[:, 1:]
-    
+
     if param['fit_amm_cld']:
         data = np.loadtxt(param['pkg_dir'] + fldr_cld_fl + 'Cross_ammonia_wavelength_250916.dat')
         param['NH3_r'] = data[:, 0]  # zero-order radius, in micron
@@ -2029,6 +2040,7 @@ def load_reactions(param):
 
 def load_photolysis(param):
     species_path = param['pkg_dir'] + 'forward_mod/Data/species_Earth_Full.dat'
+    photolysis_dir = param['pkg_dir'] + 'forward_mod/opac/photolysis/'
     species_data = np.genfromtxt(species_path, dtype=str, skip_header=1)
     if species_data.ndim == 1 and species_data.size:
         species_data = species_data.reshape(1, -1)
@@ -2046,7 +2058,7 @@ def load_photolysis(param):
         species_name = species_by_num.get(std_num)
         if species_name is None:
             continue
-        file_path = param['pkg_dir'] + 'forward_mod/' + species_name
+        file_path = os.path.join(photolysis_dir, species_name)
         if not os.path.exists(file_path):
             continue
         data = np.loadtxt(file_path)
@@ -2177,7 +2189,7 @@ def load_cia(param):
     return param
 
 
-def load_cross(param, for_plotting=False):
+def load_cross(param):
     def _readcross(fname, read_grids=True):
         NTEMP = 20  # Number of temperature values (from Row 1)
         NPRESSURE = 10  # Number of pressure values (from Row 2)
@@ -2284,34 +2296,32 @@ def load_cross(param, for_plotting=False):
             if param['use_float32']:
                 param['opac' + mol.lower()] = np.array(param['opac' + mol.lower()], dtype=np.float32)
 
-    if not for_plotting:
+    strt = find_nearest(param['opacw'][0] * 1e6, param['min_wl'] - 0.05) - 20
+    end = find_nearest(param['opacw'][0] * 1e6, param['max_wl'] + 0.05) + 20
+    param['opacw'] = (param['opacw'][0][strt:end]).reshape(1, -1)
 
-        strt = find_nearest(param['opacw'][0] * 1e6, param['min_wl'] - 0.05) - 20
-        end = find_nearest(param['opacw'][0] * 1e6, param['max_wl'] + 0.05) + 20
-        param['opacw'] = (param['opacw'][0][strt:end]).reshape(1, -1)
+    if not param['fit_T'] and param['PT_profile_type'] == 'isothermal':
+        strtT = find_nearest(param['opact'][0], float(param['Tp']))
+        endT = strtT
+        opac_t = np.asarray(param['opact'][0])
+        param['opact'] = np.array([[float(param['Tp'])]], dtype=opac_t.dtype)
+    elif param['fit_T'] and param['PT_profile_type'] == 'isothermal':
+        strtT = find_nearest(param['opact'][0], 50.0)
+        endT = find_nearest(param['opact'][0], 700.0)
+        param['opact'] = (param['opact'][0][strtT:endT+1]).reshape(1,-1)
+    else:
+        strtT = 0
+        endT = len(param['opact'][0])
 
-        if not param['fit_T'] and param['PT_profile_type'] == 'isothermal':
-            strtT = find_nearest(param['opact'][0], float(param['Tp']))
-            endT = strtT
-            opac_t = np.asarray(param['opact'][0])
-            param['opact'] = np.array([[float(param['Tp'])]], dtype=opac_t.dtype)
-        elif param['fit_T'] and param['PT_profile_type'] == 'isothermal':
-            strtT = find_nearest(param['opact'][0], 50.0)
-            endT = find_nearest(param['opact'][0], 700.0)
-            param['opact'] = (param['opact'][0][strtT:endT+1]).reshape(1,-1)
-        else:
-            strtT = 0
-            endT = len(param['opact'][0])
+    endP = find_nearest(param['opacp'][0], param['P_standard'][-1])
+    param['opacp'] = (param['opacp'][0][:endP+1]).reshape(1,-1)
 
-        endP = find_nearest(param['opacp'][0], param['P_standard'][-1])
-        param['opacp'] = (param['opacp'][0][:endP+1]).reshape(1,-1)
-        
-        molecules = param['fit_molecules']
-        gas_fill = param['gas_fill']
-        if gas_fill is not None:
-            molecules = molecules + [gas_fill]
-        for mol in molecules:
-            param['opac' + mol.lower()] = param['opac' + mol.lower()][:endP + 1, strtT:endT + 1, strt:end]
+    molecules = param['fit_molecules']
+    gas_fill = param['gas_fill']
+    if gas_fill is not None:
+        molecules = molecules + [gas_fill]
+    for mol in molecules:
+        param['opac' + mol.lower()] = param['opac' + mol.lower()][:endP + 1, strtT:endT + 1, strt:end]
 
     _warn_if_stellar_grid_is_too_coarse(param)
     return param
@@ -2396,342 +2406,6 @@ def retrieval_par_and_npar(param):
 
 
 def write_stats_summary_files(param, prefix, multinest_stats, n_fitted_parameters):
-    def _retrieval_n_data_points(param):
-        if param['obs_numb'] is None:
-            return int(len(param['spectrum']['Fplanet']))
-
-        n_data = 0
-        for obs in range(0, int(param['obs_numb'])):
-            n_data += len(param['spectrum'][str(obs)]['Fplanet'])
-        return int(n_data)
-
-    def _retrieval_loglike_constant(param):
-        def _validated_error_array(err):
-            err = np.asarray(err, dtype=float)
-            if err.size == 0:
-                return np.array([], dtype=float)
-            if not np.all(np.isfinite(err)) or np.any(err <= 0.0):
-                return None
-            return err
-
-        norm = np.sqrt(2.0 * math.pi)
-        if param['obs_numb'] is None:
-            err = _validated_error_array(param['spectrum']['error_p'])
-            if err is None:
-                return np.nan
-            return float(np.sum(np.log(err * norm)))
-
-        logc = 0.0
-        for obs in range(0, int(param['obs_numb'])):
-            err = _validated_error_array(param['spectrum'][str(obs)]['error_p'])
-            if err is None:
-                return np.nan
-            logc += float(np.sum(np.log(err * norm)))
-        return float(logc)
-
-    def _lnl_hat_from_chain_file(file_path):
-        if not os.path.isfile(file_path):
-            return None
-
-        try:
-            data = np.loadtxt(file_path)
-        except (OSError, ValueError):
-            return None
-
-        if data.ndim == 1:
-            if len(data) < 2:
-                return None
-            try:
-                col2 = np.array([float(data[1])], dtype=float)
-            except (TypeError, ValueError):
-                return None
-        else:
-            try:
-                col2 = np.asarray(data[:, 1], dtype=float)
-            except (TypeError, ValueError):
-                return None
-
-        if col2.size == 0:
-            return None
-
-        finite = col2[np.isfinite(col2)]
-        if finite.size == 0:
-            return None
-
-        # MultiNest chain column 2 is -2*ln(L); best fit minimizes this column.
-        return float(-0.5 * np.min(finite))
-
-    def _bpics_from_chain_file(file_path, n_params):
-        """Calculates the simplified Bayesian Predictive Information Criterion
-        (BPICs) described in Ando (2011) for the given sample log-likelihoods
-        and number of parameters. Models with a lower BPICS are preferred.
-
-        Citation: Ando (2011), DOI 10.1080/01966324.2011.10737798
-
-        Args:
-            logl_samples: The natural log of the likelihood of posterior draws
-                from an MCMC run of the model.
-            n_params: The number of parameters for the model.
-            log_weights: The weights of the samples given, mainly for nested
-                sampling posteriors. For equally weighted samples, leave as
-                None.
-
-        Returns:
-            The computed BPICS as a float.
-        """
-        # Ando (2011) , DOI 10.1080/01966324.2011.10737798
-        if not os.path.isfile(file_path):
-            return None
-
-        try:
-            data = np.loadtxt(file_path)
-        except (OSError, ValueError):
-            return None
-
-        if data.ndim == 1:
-            if len(data) < 2:
-                return None
-            try:
-                logl_samples = np.array([-0.5 * float(data[1])], dtype=float)
-            except (TypeError, ValueError):
-                return None
-            weights = None
-            if len(data) >= 1:
-                try:
-                    sample_weight = float(data[0])
-                except (TypeError, ValueError):
-                    sample_weight = np.nan
-                if np.isfinite(sample_weight) and sample_weight > 0.0:
-                    weights = np.array([sample_weight], dtype=float)
-        else:
-            if data.shape[1] < 2:
-                return None
-            try:
-                logl_samples = -0.5 * np.asarray(data[:, 1], dtype=float)
-            except (TypeError, ValueError):
-                return None
-            try:
-                weights = np.asarray(data[:, 0], dtype=float)
-            except (TypeError, ValueError):
-                weights = None
-
-        finite = np.isfinite(logl_samples)
-        if weights is not None:
-            finite &= np.isfinite(weights) & (weights > 0.0)
-
-        logl_samples = logl_samples[finite]
-        if logl_samples.size == 0:
-            return None
-
-        if weights is not None:
-            weights = weights[finite]
-            weight_sum = np.sum(weights)
-            if not np.isfinite(weight_sum) or weight_sum <= 0.0:
-                weights = None
-            else:
-                weights = weights / weight_sum
-
-        mean_logl = np.average(logl_samples, weights=weights)
-        if not np.isfinite(mean_logl):
-            return None
-
-        return float((-2.0 * mean_logl) + (2.0 * float(n_params)))
-
-    def _dic_from_chain_file(file_path):
-        """Calculates the Deviance Information Criterion (DIC) for the given
-        sample log-likelihoods, using the Ando (2011) variant and the Gelman
-        (2014) number of effective parameters formula. Models with lower DIC
-        are preferred.
-
-        Args:
-            logl_samples: The natural log of the likelihood of posterior draws
-                from the MCMC run.
-
-        Returns:
-            The computed DIC as a float.
-        """
-        # Ando (2011); Gelman (2014)
-        if not os.path.isfile(file_path):
-            return None
-
-        try:
-            data = np.loadtxt(file_path)
-        except (OSError, ValueError):
-            return None
-
-        if data.ndim == 1:
-            if len(data) < 2:
-                return None
-            try:
-                logl_samples = np.array([-0.5 * float(data[1])], dtype=float)
-            except (TypeError, ValueError):
-                return None
-            weights = None
-            if len(data) >= 1:
-                try:
-                    sample_weight = float(data[0])
-                except (TypeError, ValueError):
-                    sample_weight = np.nan
-                if np.isfinite(sample_weight) and sample_weight > 0.0:
-                    weights = np.array([sample_weight], dtype=float)
-        else:
-            if data.shape[1] < 2:
-                return None
-            try:
-                logl_samples = -0.5 * np.asarray(data[:, 1], dtype=float)
-            except (TypeError, ValueError):
-                return None
-            try:
-                weights = np.asarray(data[:, 0], dtype=float)
-            except (TypeError, ValueError):
-                weights = None
-
-        finite = np.isfinite(logl_samples)
-        if weights is not None:
-            finite &= np.isfinite(weights) & (weights > 0.0)
-
-        logl_samples = logl_samples[finite]
-        if logl_samples.size == 0:
-            return None
-
-        if weights is not None:
-            weights = weights[finite]
-            weight_sum = np.sum(weights)
-            if not np.isfinite(weight_sum) or weight_sum <= 0.0:
-                weights = None
-            else:
-                weights = weights / weight_sum
-
-        mean_logl = np.average(logl_samples, weights=weights)
-        if not np.isfinite(mean_logl):
-            return None
-
-        if weights is None:
-            p_d = 2.0 * np.var(logl_samples)
-        else:
-            variance = np.average((logl_samples - mean_logl) ** 2, weights=weights)
-            p_d = 2.0 * variance
-
-        dic = (-2.0 * mean_logl) + (3.0 * p_d)
-        if not np.isfinite(dic):
-            return None
-
-        return float(dic)
-
-    def _waic_from_pointwise_logl_file(file_path, n_expected_points=None):
-        """Compute the WAIC from a saved pointwise log-likelihood array.
-
-        Pointwise log-likelihood values are not usually recorded by MCMC codes,
-        so they must be preserved explicitly. In Dynesty, this can be done by
-        setting ``blob=True`` in the sampler initialization and modifying the
-        likelihood function to return both the summed and pointwise values. The
-        pointwise log-likelihood can then be retrieved from the results object's
-        ``blob`` attribute. EMCEE has a similar mechanism.
-
-        Citation: Watanabe (2010) [no DOI]
-
-        Args:
-            file_path: Path to the saved pointwise log-likelihood array.
-            n_expected_points: Optional expected number of data points used to
-                infer whether the loaded array should be transposed.
-
-        Returns:
-            The WAIC statistic for the model, or ``None`` if it cannot be
-            computed from the file contents.
-        """
-        # Watanabe (2010)
-        if not os.path.isfile(file_path):
-            return None
-
-        try:
-            pointwise_logl = np.loadtxt(file_path)
-        except (OSError, ValueError):
-            return None
-
-        pointwise_logl = np.asarray(pointwise_logl, dtype=float)
-        if pointwise_logl.ndim != 2:
-            return None
-        if pointwise_logl.shape[0] == 0 or pointwise_logl.shape[1] == 0:
-            return None
-
-        # ExoReL stores likelihood samples as (n_samples, n_points).
-        if n_expected_points is not None:
-            if pointwise_logl.shape[1] == int(n_expected_points):
-                pass
-            elif pointwise_logl.shape[0] == int(n_expected_points):
-                pointwise_logl = pointwise_logl.T
-
-        finite_cols = np.all(np.isfinite(pointwise_logl), axis=0)
-        pointwise_logl = pointwise_logl[:, finite_cols]
-        if pointwise_logl.shape[1] == 0:
-            return None
-
-        n_samples = pointwise_logl.shape[0]
-        fit_term = sp.special.logsumexp(pointwise_logl, axis=0, b=(1.0 / float(n_samples)))
-        penalty_term = np.var(pointwise_logl, axis=0)
-        waic = -2.0 * (np.sum(fit_term) - np.sum(penalty_term))
-        if not np.isfinite(waic):
-            return None
-
-        return float(waic)
-    
-    def _lnl_hat_per_mode_from_post_separate(post_separate_path):
-        if not os.path.isfile(post_separate_path):
-            return []
-
-        mode_lnl_hat = []
-        current_min_col2 = None
-        empty_rows = 0
-        with open(post_separate_path, 'r') as f:
-            for idx, raw_line in enumerate(f):
-                if idx <= 2:
-                    continue
-
-                line = raw_line.strip()
-                if len(line) == 0:
-                    empty_rows += 1
-                    continue
-
-                if empty_rows >= 2 and current_min_col2 is not None:
-                    mode_lnl_hat.append(float(-0.5 * current_min_col2))
-                    current_min_col2 = None
-                empty_rows = 0
-
-                parts = line.split()
-                if len(parts) < 2:
-                    continue
-                try:
-                    col2 = float(parts[1])
-                except (TypeError, ValueError):
-                    continue
-                if (current_min_col2 is None) or (col2 < current_min_col2):
-                    current_min_col2 = col2
-
-        if current_min_col2 is not None:
-            mode_lnl_hat.append(float(-0.5 * current_min_col2))
-
-        return mode_lnl_hat
-    
-    def _chi_square_from_best_fit_file(param, best_fit_path):
-        if param['obs_numb'] is not None or not os.path.isfile(best_fit_path):
-            return None
-
-        best_fit = np.loadtxt(best_fit_path)
-        if best_fit.ndim != 2 or best_fit.shape[1] < 2:
-            return None
-
-        model_wl = best_fit[:, 0]
-        model_flux = best_fit[:, 1]
-
-        if param['spectrum']['bins']:
-            wl_bins = np.array([param['spectrum']['wl_low'], param['spectrum']['wl_high']]).T
-            model_at_data = custom_spectral_binning(wl_bins, model_wl, model_flux, bins=True)
-        else:
-            model_at_data = spectres(param['spectrum']['wl'], model_wl, model_flux, fill=False)
-
-        chi = (param['spectrum']['Fplanet'] - model_at_data) / param['spectrum']['error_p']
-        return float(np.sum(chi ** 2.0))
-    
     def _summary_mode_indices(multinest_stats, filter_multi_solutions):
         modes = multinest_stats.get('modes', [])
         if len(modes) == 0:
@@ -2799,16 +2473,20 @@ def write_stats_summary_files(param, prefix, multinest_stats, n_fitted_parameter
     if len(mode_indices) == 0:
         return
 
-    n_data_points = _retrieval_n_data_points(param)
+    n_data_points = retrieval_n_data_points(param)
     n_fit = int(n_fitted_parameters)
     dof = int(n_data_points - n_fit)
-    loglike_const = _retrieval_loglike_constant(param)
+    loglike_const = retrieval_log_likelihood_constant(param)
 
     mode_lnl_hat = []
     if len(modes) > 1:
-        mode_lnl_hat = _lnl_hat_per_mode_from_post_separate(prefix + 'post_separate.dat')
+        mode_lnl_hat = maximum_log_likelihoods_from_post_separate(
+            prefix + 'post_separate.dat'
+        )
     else:
-        single_mode_lnl_hat = _lnl_hat_from_chain_file(prefix + '.txt')
+        single_mode_lnl_hat = maximum_log_likelihood_from_chain_file(
+            prefix + '.txt'
+        )
         if single_mode_lnl_hat is not None:
             mode_lnl_hat = [single_mode_lnl_hat]
 
@@ -2822,79 +2500,81 @@ def write_stats_summary_files(param, prefix, multinest_stats, n_fitted_parameter
         if mode_idx < len(mode_lnl_hat):
             lnl_hat = mode_lnl_hat[mode_idx]
         if lnl_hat is None:
-            lnl_hat = _lnl_hat_from_chain_file(prefix + f'solution{mode_idx}.txt')
+            lnl_hat = maximum_log_likelihood_from_chain_file(
+                prefix + f'solution{mode_idx}.txt'
+            )
         if lnl_hat is None:
             lnl_hat = mode.get('maximum log-likelihood')
         if lnl_hat is not None:
             lnl_hat = float(lnl_hat)
 
-        waic = _waic_from_pointwise_logl_file(
+        waic_value = waic_from_pointwise_log_likelihood_file(
             param['out_dir'] + f'loglike_per_datapoint_sol{mode_idx}.dat',
             n_expected_points=n_data_points,
         )
-        if waic is None and param.get('filter_multi_solutions', False):
-            waic = _waic_from_pointwise_logl_file(
+        if waic_value is None and param.get('filter_multi_solutions', False):
+            waic_value = waic_from_pointwise_log_likelihood_file(
                 param['out_dir'] + f'loglike_per_datapoint_sol{mode_pos}.dat',
                 n_expected_points=n_data_points,
             )
-        if waic is None:
-            waic = np.nan
+        if waic_value is None:
+            waic_value = np.nan
 
-        bpics = _bpics_from_chain_file(prefix + f'solution{mode_idx}.txt', n_fit)
-        if bpics is None and len(modes) == 1:
-            bpics = _bpics_from_chain_file(prefix + '.txt', n_fit)
-        if bpics is None:
-            bpics = np.nan
+        bpics_value = bpics_from_chain_file(
+            prefix + f'solution{mode_idx}.txt',
+            n_fit,
+        )
+        if bpics_value is None and len(modes) == 1:
+            bpics_value = bpics_from_chain_file(prefix + '.txt', n_fit)
+        if bpics_value is None:
+            bpics_value = np.nan
 
-        dic = _dic_from_chain_file(prefix + f'solution{mode_idx}.txt')
-        if dic is None and len(modes) == 1:
-            dic = _dic_from_chain_file(prefix + '.txt')
-        if dic is None:
-            dic = np.nan
+        dic_value = dic_from_chain_file(
+            prefix + f'solution{mode_idx}.txt'
+        )
+        if dic_value is None and len(modes) == 1:
+            dic_value = dic_from_chain_file(prefix + '.txt')
+        if dic_value is None:
+            dic_value = np.nan
 
-        chi_square = _chi_square_from_best_fit_file(param, param['out_dir'] + f'Best_fit_sol{mode_idx}.dat')
-        if chi_square is None and param.get('filter_multi_solutions', False):
+        chi_square_value = chi_square_from_best_fit_file(
+            param,
+            param['out_dir'] + f'Best_fit_sol{mode_idx}.dat',
+            custom_spectral_binning,
+        )
+        if chi_square_value is None and param.get('filter_multi_solutions', False):
             # In filtered runs, best-fit files can be indexed by filtered order.
-            chi_square = _chi_square_from_best_fit_file(param, param['out_dir'] + f'Best_fit_sol{mode_pos}.dat')
+            chi_square_value = chi_square_from_best_fit_file(
+                param,
+                param['out_dir'] + f'Best_fit_sol{mode_pos}.dat',
+                custom_spectral_binning,
+            )
 
-        if chi_square is None and lnl_hat is not None and np.isfinite(lnl_hat) and np.isfinite(loglike_const):
-            chi_square = float(-2.0 * (lnl_hat + loglike_const))
-        if chi_square is None:
-            chi_square = np.nan
+        if chi_square_value is None and lnl_hat is not None and np.isfinite(lnl_hat) and np.isfinite(loglike_const):
+            chi_square_value = float(-2.0 * (lnl_hat + loglike_const))
+        if chi_square_value is None:
+            chi_square_value = np.nan
 
-        if lnl_hat is not None and np.isfinite(lnl_hat):
-            aic = float((2.0 * n_fit) - (2.0 * lnl_hat))
-            if n_data_points > (n_fit + 1):
-                aicc = float(aic + ((2.0 * n_fit * (n_fit + 1)) / (n_data_points - n_fit - 1)))
-            else:
-                aicc = np.nan
-            if n_data_points > 0:
-                bic = float((np.log(n_data_points) * n_fit) - (2.0 * lnl_hat))
-            else:
-                bic = np.nan
-        else:
-            aic = np.nan
-            aicc = np.nan
-            bic = np.nan
-
-        if dof != 0 and np.isfinite(chi_square):
-            reduced_chi_square = float(chi_square / dof)
-        else:
-            reduced_chi_square = np.nan
+        aic_value = aic(lnl_hat, n_fit)
+        aicc_value = aicc(lnl_hat, n_fit, n_data_points)
+        bic_value = bic(lnl_hat, n_fit, n_data_points)
+        reduced_chi_square_value = reduced_chi_square(
+            chi_square_value,
+            dof,
+        )
 
         ln_z = mode.get('local log-evidence', np.nan)
         ln_z_err = mode.get('local log-evidence error', np.nan)
-        sigma_from_highest_evidence = None
-        if np.isfinite(highest_ln_z) and ln_z is not None and np.isfinite(float(ln_z)):
-            delta_ln_z = highest_ln_z - float(ln_z)
-            if delta_ln_z > 0.0:
-                sigma_from_highest_evidence = float(np.sqrt(2.0 * delta_ln_z))
+        sigma_from_highest_evidence = sigma_from_log_evidence(
+            ln_z,
+            highest_ln_z,
+        )
 
         txt_lines.append(f'*** SOLUTION {mode_idx} ***')
         txt_lines.append('############### SUMMARY STATISTICS ###############')
         txt_lines.append('')
-        txt_lines.append(f'chi-square (d.o.f) = {_summary_float_str(chi_square)} ({dof})')
-        txt_lines.append(f'Reduced chi-square = {_summary_float_str(reduced_chi_square)}')
+        txt_lines.append(f'chi-square (d.o.f) = {_summary_float_str(chi_square_value)} ({dof})')
+        txt_lines.append(f'Reduced chi-square = {_summary_float_str(reduced_chi_square_value)}')
         txt_lines.append(f'ln Z               = {_summary_float_str(ln_z)} +- {_summary_float_str(ln_z_err)}')
         if sigma_from_highest_evidence is not None:
             txt_lines.append(
@@ -2902,12 +2582,12 @@ def write_stats_summary_files(param, prefix, multinest_stats, n_fitted_parameter
                 f'{_summary_float_str(sigma_from_highest_evidence)} sigma '
                 'from highest ln Z'
             )
-        txt_lines.append(f'AIC                = {_summary_float_str(aic)}')
-        txt_lines.append(f'AICc               = {_summary_float_str(aicc)}')
-        txt_lines.append(f'WAIC               = {_summary_float_str(waic)}')
-        txt_lines.append(f'BIC                = {_summary_float_str(bic)}')
-        txt_lines.append(f'DIC                = {_summary_float_str(dic)}')
-        txt_lines.append(f'BPICs              = {_summary_float_str(bpics)}')
+        txt_lines.append(f'AIC                = {_summary_float_str(aic_value)}')
+        txt_lines.append(f'AICc               = {_summary_float_str(aicc_value)}')
+        txt_lines.append(f'WAIC               = {_summary_float_str(waic_value)}')
+        txt_lines.append(f'BIC                = {_summary_float_str(bic_value)}')
+        txt_lines.append(f'DIC                = {_summary_float_str(dic_value)}')
+        txt_lines.append(f'BPICs              = {_summary_float_str(bpics_value)}')
         txt_lines.append('')
         txt_lines.append('##################################################')
         txt_lines.append('')
@@ -2917,16 +2597,16 @@ def write_stats_summary_files(param, prefix, multinest_stats, n_fitted_parameter
             'n_data_points': int(n_data_points),
             'n_fitted_parameters': int(n_fit),
             'degrees_of_freedom': int(dof),
-            'chi_square': _safe_json_number(chi_square),
-            'reduced_chi_square': _safe_json_number(reduced_chi_square),
+            'chi_square': _safe_json_number(chi_square_value),
+            'reduced_chi_square': _safe_json_number(reduced_chi_square_value),
             'ln_Z': _safe_json_number(ln_z),
             'ln_Z_error': _safe_json_number(ln_z_err),
-            'AIC': _safe_json_number(aic),
-            'AICc': _safe_json_number(aicc),
-            'WAIC': _safe_json_number(waic),
-            'BIC': _safe_json_number(bic),
-            'DIC': _safe_json_number(dic),
-            'BPICs': _safe_json_number(bpics),
+            'AIC': _safe_json_number(aic_value),
+            'AICc': _safe_json_number(aicc_value),
+            'WAIC': _safe_json_number(waic_value),
+            'BIC': _safe_json_number(bic_value),
+            'DIC': _safe_json_number(dic_value),
+            'BPICs': _safe_json_number(bpics_value),
             'max_log_likelihood': _safe_json_number(lnl_hat),
         }
         if sigma_from_highest_evidence is not None:
@@ -3048,14 +2728,27 @@ def add_noise(param, data, noise_model=0):
             spec[i, 1] = point + 0.0
         return spec
 
-    def chi_square(data, model, deg=None):
-        chi = (data[:, 1] - model) / data[:, 2]
-        chi = np.sum(chi ** 2.)
+    def gaussian_noise_curated(spec):
+        spec_copy = spec + 0.0
+        spec_final = spec + 0.0
+        red_chi = 100.0
 
-        if deg is None:
-            return chi, chi / (len(data[:, 0]) - 1)
-        else:
-            return chi / deg
+        for _ in range(1000):
+            new_spec = gaussian_noise(spec_copy, no_less_zero=True)
+            new_chi_square = chi_square(
+                new_spec[:, 1],
+                data[:, 1],
+                new_spec[:, 2],
+            )
+            new_red_chi = reduced_chi_square(
+                new_chi_square,
+                len(new_spec[:, 0]),
+            )
+            if 1.0 < new_red_chi < red_chi:
+                red_chi = new_red_chi + 0.0
+                spec_final = new_spec + 0.0
+
+        return spec_final
 
     # Check if contrast or flux is given and calculate other
     if param['fp_over_fs']:
@@ -3140,76 +2833,12 @@ def add_noise(param, data, noise_model=0):
     spectrum = np.array([data[:, 0], data[:, 1], err]).T
 
     if param['gaussian_noise']:
-        spec_copy = spectrum + 0.0
-        chi = 1.0
-
-        for _ in range(1000):
-            new_spec = gaussian_noise(spec_copy, no_less_zero=True)
-            if chi_square(new_spec, data[:, 1])[1] < chi:
-                chi = chi_square(new_spec, data[:, 1])[1]
-                spectrum = new_spec + 0.0
-            else:
-                pass
+        if not param['curated_noise']:
+            spectrum = gaussian_noise(spectrum, no_less_zero=True)
+        else:
+            spectrum = gaussian_noise_curated(spectrum)
 
     return spectrum
-
-
-def Mp_Rp_prior(param, parameter, cube, rp_value=None, mp_value=None):
-    """
-    Prior function for planetary mass and radius
-
-    Parameters
-    ----------
-    param : dict
-        dictionary of settings.
-    cube : float
-        Unit-cube value to be converted.
-    parameter : str
-        Parameter to evaluate. Choose between ``'Mp'`` and ``'Rp'``.
-    rp_value : float, optional
-        Radius value to be used in the Mass-Radius diagram.
-    mp_value : float, optional
-        Mass value to be used in the Mass-Radius diagram.
-
-
-    Returns
-    -------
-    float
-        Mass or radius value evaluated according to the requested prior.
-    """
-
-    if parameter == 'Mp':
-        if rp_value is None:
-            if param['Mp_err'] is None:
-                return uniform_prior(param, 'Mp', cube)
-            if param['Mp_prior_type'] == 'gaussian':
-                return gaussian_prior(param, 'Mp', cube)
-        else:
-            return (cube * (param['M-R_Fe'](rp_value) - param['M-R_H2O'](rp_value))) + param['M-R_H2O'](rp_value)
-
-    if parameter == 'Rp':
-        if mp_value is None:
-            if param['Rp_err'] is None:
-                return uniform_prior(param, 'Rp', cube)
-            if param['Rp_prior_type'] == 'gaussian':
-                return gaussian_prior(param, 'Rp', cube)
-        else:
-            return (cube * (param['M-R_Fe'](mp_value) - param['M-R_H2O'](mp_value))) + param['M-R_H2O'](mp_value)
-
-    raise ValueError("parameter must be either 'Mp' or 'Rp'")
-
-
-def uniform_prior(param, parameter, cube):
-    return (cube * (param[parameter + '_range'][1] - param[parameter + '_range'][0])) + param[parameter + '_range'][0]
-
-
-def gaussian_prior(param, parameter, cube):
-    range_array = np.linspace(param[parameter + '_range'][0], param[parameter + '_range'][1], num=10000, endpoint=True)
-    cdf = sp.stats.norm.cdf(range_array, param[parameter + '_orig'], param[parameter + '_err'])
-    cdf = np.array([0.0] + list(cdf) + [1.0])
-    range_array = np.array([range_array[0]] + list(range_array) + [range_array[-1]])
-    pri = interp1d(cdf, range_array)
-    return pri(cube)
 
 
 def clean_c_files(directory):
@@ -3352,3 +2981,342 @@ def orbital_configuration_to_phase_angle(
     return math.degrees(
         math.acos(float(np.clip(cos_phase_angle, -1.0, 1.0)))
     )
+
+
+def validate_cloud_fraction(value):
+    """Return a finite cloud fraction in the closed interval [0, 1]."""
+    try:
+        cloud_fraction = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "The cloud fraction should be a finite number defined between "
+            "[0.0, 1.0]."
+        ) from exc
+
+    if (
+        not np.isfinite(cloud_fraction)
+        or cloud_fraction < 0.0
+        or cloud_fraction > 1.0
+    ):
+        raise ValueError(
+            "The cloud fraction should be a finite number defined between "
+            "[0.0, 1.0]."
+        )
+    return cloud_fraction
+
+
+def _vmr_species(param):
+    species = list(param.get('fit_molecules', []))
+    gas_fill = param.get('gas_fill')
+    if gas_fill is not None:
+        species.append(gas_fill)
+    return list(dict.fromkeys(species))
+
+
+def _vmr_profile(param, molecule, size):
+    key = 'vmr_' + molecule
+    if key not in param:
+        raise InvalidVMRCompositionError(
+            f"Missing atmospheric abundance '{key}'."
+        )
+
+    values = np.asarray(param[key], dtype=float)
+    if values.ndim == 0:
+        return np.full(size, float(values))
+    if values.ndim != 1:
+        raise InvalidVMRCompositionError(
+            f"'{key}' must be a scalar or one-dimensional profile."
+        )
+    if values.size == size:
+        return values.astype(float, copy=True)
+
+    standard_pressure = np.asarray(
+        param.get('P_standard', []),
+        dtype=float,
+    )
+    if standard_pressure.size and values.size == standard_pressure.size:
+        active_pressure = np.asarray(param.get('P', []), dtype=float)
+        if active_pressure.shape != (size,):
+            raise InvalidVMRCompositionError(
+                "The active pressure grid must match the requested VMR "
+                "profile size."
+            )
+        if (
+            standard_pressure.ndim != 1
+            or not np.all(np.isfinite(standard_pressure))
+            or np.any(standard_pressure <= 0.0)
+            or not np.all(np.diff(standard_pressure) > 0.0)
+        ):
+            raise InvalidVMRCompositionError(
+                "'P_standard' must be finite, positive, and strictly "
+                "increasing before interpolating a VMR profile."
+            )
+        if (
+            not np.all(np.isfinite(active_pressure))
+            or np.any(active_pressure <= 0.0)
+        ):
+            raise InvalidVMRCompositionError(
+                "The active pressure grid must be finite and positive before "
+                "interpolating a VMR profile."
+            )
+        return np.interp(
+            np.log(active_pressure),
+            np.log(standard_pressure),
+            values,
+        )
+
+    raise InvalidVMRCompositionError(
+        f"'{key}' size does not match the active pressure grid."
+    )
+
+
+def validate_vmr_composition(param, tolerance=1.0e-10):
+    """Require active gas VMRs to be finite, positive, and sum to unity."""
+    species = _vmr_species(param)
+    if not species:
+        raise InvalidVMRCompositionError(
+            "At least one atmospheric gas must be active."
+        )
+
+    profile_sizes = []
+    for molecule in species:
+        values = np.asarray(param.get('vmr_' + molecule), dtype=float)
+        if values.ndim > 1:
+            raise InvalidVMRCompositionError(
+                f"'vmr_{molecule}' must be a scalar or one-dimensional "
+                "profile."
+            )
+        if values.ndim == 1:
+            profile_sizes.append(values.size)
+
+    size = max(profile_sizes, default=1)
+    profiles = {}
+    for molecule in species:
+        values = np.asarray(param.get('vmr_' + molecule), dtype=float)
+        if values.ndim == 0:
+            profile = np.full(size, float(values))
+        elif values.size == size:
+            profile = values.astype(float, copy=False)
+        else:
+            raise InvalidVMRCompositionError(
+                "Active gas VMR profiles must have matching sizes."
+            )
+        if not np.all(np.isfinite(profile)) or np.any(profile <= 0.0):
+            raise InvalidVMRCompositionError(
+                f"'vmr_{molecule}' must be finite and strictly positive."
+            )
+        profiles[molecule] = profile
+
+    total = np.sum(np.vstack(list(profiles.values())), axis=0)
+    if not np.allclose(total, 1.0, rtol=0.0, atol=tolerance):
+        total_min = float(np.min(total))
+        total_max = float(np.max(total))
+        raise InvalidVMRCompositionError(
+            "Active gas VMRs must sum to 1 in every atmospheric layer; "
+            f"found totals between {total_min:.16g} and "
+            f"{total_max:.16g}."
+        )
+    return param
+
+
+def prepare_atmospheric_vmr(param):
+    """Prepare all condensables jointly and normalize dry gases once."""
+    validate_cloud_species_configuration(param)
+    validate_vmr_composition(param)
+
+    pressure = np.asarray(param['P'], dtype=float)
+    if pressure.ndim != 1 or pressure.size == 0:
+        raise InvalidVMRCompositionError(
+            "The active pressure grid must be one-dimensional and non-empty."
+        )
+
+    species = _vmr_species(param)
+    size = pressure.size
+    base_profiles = {
+        molecule: _vmr_profile(param, molecule, size)
+        for molecule in species
+    }
+    profiles = {
+        molecule: values.copy()
+        for molecule, values in base_profiles.items()
+    }
+
+    condensables = []
+    if param.get('fit_wtr_cld', False):
+        condensables.append('H2O')
+    if param.get('fit_amm_cld', False):
+        condensables.append('NH3')
+
+    for molecule in condensables:
+        cloud_param = param.copy()
+        cloud_param['vmr_' + molecule] = base_profiles[molecule].copy()
+        vapor_profile = np.asarray(
+            cloud_pos(cloud_param, condensed_gas=molecule),
+            dtype=float,
+        )
+        if vapor_profile.shape != pressure.shape:
+            raise InvalidVMRCompositionError(
+                f"Condensed {molecule} profile does not match the active "
+                "pressure grid."
+            )
+        if (
+            not np.all(np.isfinite(vapor_profile))
+            or np.any(vapor_profile < 0.0)
+            or np.any(vapor_profile > base_profiles[molecule] + 1.0e-12)
+        ):
+            raise InvalidVMRCompositionError(
+                f"Condensed {molecule} profile is outside its original "
+                "abundance bounds."
+            )
+        profiles[molecule] = vapor_profile
+
+        condensation_loss = np.zeros(size)
+        if size > 1:
+            condensation_loss[:-1] = np.maximum(
+                vapor_profile[1:] - vapor_profile[:-1],
+                0.0,
+            )
+        param['condensation_loss_' + molecule] = condensation_loss
+
+    if condensables:
+        condensed_total = np.sum(
+            np.vstack([profiles[molecule] for molecule in condensables]),
+            axis=0,
+        )
+        if np.any(condensed_total > 1.0 + 1.0e-12):
+            raise InvalidVMRCompositionError(
+                "The joint condensable VMR exceeds unity."
+            )
+
+        if param.get('adjust_VMR_gases', True):
+            dry_species = [
+                molecule
+                for molecule in species
+                if molecule not in condensables
+            ]
+            if not dry_species:
+                raise InvalidVMRCompositionError(
+                    "Cloud condensation requires at least one "
+                    "non-condensable gas or a configured gas_fill."
+                )
+
+            dry_base_total = np.sum(
+                np.vstack(
+                    [base_profiles[molecule] for molecule in dry_species]
+                ),
+                axis=0,
+            )
+            if np.any(dry_base_total <= 0.0):
+                raise InvalidVMRCompositionError(
+                    "The dry-gas abundance must be positive in every layer."
+                )
+
+            dry_remaining = 1.0 - condensed_total
+            for molecule in dry_species:
+                profiles[molecule] = (
+                    dry_remaining
+                    * base_profiles[molecule]
+                    / dry_base_total
+                )
+        else:
+            fill_species = param.get('gas_fill')
+            if fill_species is None:
+                if 'H2' in species and 'H2' not in condensables:
+                    fill_species = 'H2'
+                elif 'N2' in species and 'N2' not in condensables:
+                    fill_species = 'N2'
+            if fill_species is None or fill_species in condensables:
+                raise InvalidVMRCompositionError(
+                    "Fill-only cloud adjustment requires a "
+                    "non-condensable gas_fill, H2, or N2."
+                )
+
+            fixed_species = [
+                molecule
+                for molecule in species
+                if molecule not in condensables
+                and molecule != fill_species
+            ]
+            fixed_total = np.sum(
+                np.vstack(
+                    [base_profiles[molecule] for molecule in fixed_species]
+                ),
+                axis=0,
+            ) if fixed_species else np.zeros(size)
+            profiles[fill_species] = (
+                1.0 - condensed_total - fixed_total
+            )
+            if np.any(profiles[fill_species] < 0.0):
+                raise InvalidVMRCompositionError(
+                    f"Cloud adjustment would make vmr_{fill_species} "
+                    "negative."
+                )
+
+    for molecule, values in profiles.items():
+        param['vmr_' + molecule] = values
+
+    automatic_h2_he = (
+        not param.get('rocky', True)
+        and param.get('gas_fill') == 'H2'
+        and 'He' not in param.get('fit_molecules', [])
+        and param.get('H2_He_ratio', 0.0) > 0.0
+    )
+    final_species = species.copy()
+    if automatic_h2_he:
+        h2_fraction = float(param['H2_He_ratio'])
+        if not 0.0 < h2_fraction <= 1.0:
+            raise InvalidVMRCompositionError(
+                "'H2_He_ratio' must be in the interval (0, 1]."
+            )
+        background = np.asarray(param['vmr_H2'], dtype=float).copy()
+        param['vmr_H2'] = background * h2_fraction
+        param['vmr_He'] = background * (1.0 - h2_fraction)
+        final_species.append('He')
+
+    final_profiles = [
+        np.asarray(param['vmr_' + molecule], dtype=float)
+        for molecule in dict.fromkeys(final_species)
+    ]
+    if any(
+        not np.all(np.isfinite(values)) or np.any(values < 0.0)
+        for values in final_profiles
+    ):
+        raise InvalidVMRCompositionError(
+            "Prepared atmospheric VMR profiles must be finite and "
+            "non-negative."
+        )
+    final_total = np.sum(np.vstack(final_profiles), axis=0)
+    if not np.allclose(final_total, 1.0, rtol=0.0, atol=1.0e-10):
+        raise InvalidVMRCompositionError(
+            "Prepared atmospheric VMR profiles do not sum to 1 in every "
+            "layer."
+        )
+
+    return param
+
+
+def validate_cloud_species_configuration(param):
+    """Require each enabled cloud species to be an active model molecule."""
+    active_molecules = set(param.get('fit_molecules', []))
+    errors = []
+
+    if param.get('fit_wtr_cld', False) and 'H2O' not in active_molecules:
+        errors.append(
+            "fit_wtr_cld=True requires H2O in fit_molecules. "
+            "For retrievals, set fit_H2O=True. For forward spectra, "
+            "provide a positive vmr_H2O."
+        )
+
+    if param.get('fit_amm_cld', False) and 'NH3' not in active_molecules:
+        errors.append(
+            "fit_amm_cld=True requires NH3 in fit_molecules. "
+            "For retrievals, set fit_NH3=True. For forward spectra, "
+            "provide a positive vmr_NH3."
+        )
+
+    if errors:
+        raise ValueError(
+            "Invalid cloud configuration:\n- " + "\n- ".join(errors)
+        )
+
+    return param
