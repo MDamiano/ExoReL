@@ -1,4 +1,4 @@
-## [3.1.2] - 08/28/26
+## [3.1.2] - 09/02/26
 - Added H2O and NH3 cloud-density profiles versus pressure to the retrieval chemistry plots.
 - Moved the photolysis molecular cross-section and quantum-yield files into `forward_mod/opac/photolysis/` and updated both the Python and C radiative-transfer branches to load them from their new location.
 - Centralized partial-cloud spectrum mixing in `forward()`, with create-spectrum, dataset-generation, MultiNest likelihood/post-processing, and plotting callers now consuming the same finalized cloudy/clear result.
