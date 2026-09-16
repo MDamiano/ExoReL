@@ -654,6 +654,14 @@ class MULTINEST:
                         evaluation=evaluation,
                         core_number=None,
                     )
+
+                    # Match the pressure adjustment used by forward().
+                    if (
+                        temp_param['gas_par_space'] == 'partial_pressure'
+                        and temp_param['P0'] < 1.0
+                    ):
+                        temp_param['P0'] = 1.1
+
                     temp_param['P'] = 10. ** np.arange(
                         0.0,
                         np.log10(temp_param['P0']) + 0.01,
