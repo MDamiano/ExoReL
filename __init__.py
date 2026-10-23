@@ -10,10 +10,10 @@ import urllib.request
 from typing import Iterable
 
 
-# ``pheonix`` is the spelling used in the official STScI archive filename.
+# PHOENIX atlas archive linked from STScI's reference-atlases page.
 _STSYNPHOT_PHOENIX_URL = (
     "https://archive.stsci.edu/hlsps/reference-atlases/"
-    "hlsp_reference-atlases_hst_multi_pheonix-models_multi_v3_synphot5.tar"
+    "hlsp_reference-atlases_hst_multi_phoenix-models_multi_v3_synphot5.tar"
 )
 
 
