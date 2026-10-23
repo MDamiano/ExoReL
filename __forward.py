@@ -488,8 +488,8 @@ class RADIATIVE_TRANSFER_C:
                     pass
                 else:
                     r0 = r2 * np.exp(-np.log(sig) ** 2.)
-                    if self.param['wtr_cld_type'] == 'mixed' and self.param['PT_profile_type'] == 'parametric':
-                        if tl[j] < 273.15: # ice
+                    if self.param['wtr_cld_type'] == 'mixed':
+                        if water_cloud_ice_mask(self.param, tl[j]): # ice
                             VP = 4. * math.pi / 3. * ((r2 * 1.0e-6 * np.exp(0.5 * np.log(sig) ** 2.)) ** 3.) * 1.0e+6 * 0.92  # g
                             for indi in range(0, 324):
                                 tck = interp1d(np.log10(self.param['H2OL_r']), np.log10(self.param['H2OL_c_ice'][:, indi]))
@@ -1995,8 +1995,8 @@ class RADIATIVE_TRANSFER_PYTHON:
         #    cloud output
         sig = 2
         n_cloud_wavelength = 324
-        if self.param['fit_wtr_cld'] and 'H2O' in self.param['fit_molecules'] and self.param['wtr_cld_type'] == 'mixed' and self.param['PT_profile_type'] == 'parametric':
-            ice_mask = tl < 273.15
+        if self.param['fit_wtr_cld'] and 'H2O' in self.param['fit_molecules'] and self.param['wtr_cld_type'] == 'mixed':
+            ice_mask = water_cloud_ice_mask(self.param, tl)
             cro_h2o, alb_h2o, geo_h2o = self._compute_cloud_optics_from_tables(
                 self.param['H2OL_r'],
                 self.param['H2OL_c_liquid'],
@@ -3237,7 +3237,12 @@ def prepare_forward_parameters(
     return _prepare_forward_column(param, clear_clouds=clear_clouds)
 
 
-def forward(parameters_dictionary, evaluation=None, phi=None, n_obs=None, retrieval_mode=True, core_number=None, albedo_calc=False, fp_over_fs=False, canc_metadata=False):
+def forward(parameters_dictionary, evaluation=None, phi=None, n_obs=None, retrieval_mode=True, core_number=None, albedo_calc=False, fp_over_fs=False, canc_metadata=False, return_clear_spectrum=False):
+    """Return the model, optionally with its clear spectrum in the same units/grid.
+
+    Outside retrieval mode, return_clear_spectrum=True returns
+    (wavelength, model, clear_model). Retrieval mode always returns model.
+    """
     validate_cloud_species_configuration(parameters_dictionary)
     param = apply_forward_evaluation(
         parameters_dictionary,
@@ -3305,6 +3310,7 @@ def forward(parameters_dictionary, evaluation=None, phi=None, n_obs=None, retrie
         return column_param, alb_wl, alb
 
     has_clouds = param['fit_wtr_cld'] or param['fit_amm_cld']
+    clear_alb = None
     if not has_clouds or cloud_fraction == 1.0:
         result_param, alb_wl, alb = _run_column(param)
     elif cloud_fraction == 0.0:
@@ -3315,7 +3321,7 @@ def forward(parameters_dictionary, evaluation=None, phi=None, n_obs=None, retrie
     else:
         cloudy_param, cloudy_wl, cloudy_alb = _run_column(param)
 
-        _, clear_wl, clear_alb = _run_column(
+        clear_param, clear_wl, clear_alb = _run_column(
             param,
             auxiliary=True,
             clear_clouds=True,
@@ -3344,5 +3350,24 @@ def forward(parameters_dictionary, evaluation=None, phi=None, n_obs=None, retrie
 
     if retrieval_mode:
         return model
-    else:
-        return wl, model
+
+    if return_clear_spectrum:
+        if not has_clouds or cloud_fraction == 0.0:
+            clear_model = model.copy()
+        else:
+            if clear_alb is None:
+                clear_param, clear_wl, clear_alb = _run_column(
+                    param, auxiliary=True, clear_clouds=True,
+                )
+                if not np.array_equal(alb_wl, clear_wl):
+                    raise ValueError(
+                        "The cloudy and clear atmospheric columns returned different "
+                        "wavelength grids."
+                    )
+            _, clear_model = model_finalizzation(
+                clear_param, clear_wl, clear_alb,
+                planet_albedo=albedo_calc, fp_over_fs=fp_over_fs, n_obs=n_obs,
+            )
+        return wl, model, clear_model
+
+    return wl, model

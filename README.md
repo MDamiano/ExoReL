@@ -98,6 +98,58 @@ To run the retrieval mode you need to have the MultiNest libraries installed in 
 
 `mpirun -np 10 python exorel_retrieval.py`
 
+You can generate a dataset of spectra (see `examples/gen_par.json`) with:
+
+`import ExoReL`
+
+`ds = ExoReL.CREATE_DATASET()`
+
+`ds.run_forward('gen_par.json')`
+
+Dataset generation also runs in parallel with `mpirun`. At the end of each run, the output directory contains:
+* `dataset.csv`: the sampled parameters, one row per spectrum;
+* `dataset_spectra.npx`: the spectra, as a NumPy array of shape `(n_spectra, n_wavelengths)`. Noise is included when `add_noise` is enabled;
+* `dataset_errorbars.npx`: the errorbars, only when `add_noise` is enabled;
+* `dataset_spectra_clear.npx`: the noiseless cloud-free spectra, with the same shape and row order as `dataset_spectra.npx`, only when `save_clear_spectrum` is `true`;
+* `wavelength.dat`: the shared wavelength grid;
+* `dataset_meta.json`: the names of the files above and the dataset size.
+
+The `.npx` files are standard NumPy files and can be read with `np.load`. Running again with the same output directory appends new spectra to the existing files. Keep `save_clear_spectrum` unchanged when appending, otherwise ExoReL stops before generating any spectra. When `save_clear_spectrum` is enabled and `cld_frac` is 1, each spectrum needs an extra cloud-free radiative-transfer run.
+
+```json
+"save_clear_spectrum": true
+```
+
+Set `"save_derived_temperatures": true` to include `Tp` and `Tirr` in
+`dataset.csv`, in kelvin. These labels do not add sampled parameters. An
+already-sampled `Tp` column is retained without duplication. With `"Tp": null`
+and no `Tp_range`, `Tp` is the derived equilibrium temperature used by the
+isothermal model; otherwise it is the configured or sampled scalar temperature.
+The metadata records the additional columns and temperature units. Keep this
+setting unchanged when appending to an existing dataset. The existing filler
+abundance column (for example, `N2_filler`, stored as log10 VMR) is also marked
+as derived in the metadata.
+
+When sampled, `snr` is always the final `dataset.csv` column, after the filler
+and derived temperature columns. This output ordering does not change the
+sampling sequence. Appending requires an existing CSV with the same column order.
+
+### Temperature-dependent water-cloud phase
+
+Set `"wtr_cld_type": "mixed"` to select water-cloud optical properties from
+temperature in either radiative-transfer backend. The existing phase convention
+uses ice below 273.15 K and liquid at or above 273.15 K.
+
+For isothermal profiles, the choice uses `Tp`. During dataset generation,
+omitting `Tp_range` and setting `"Tp": null` derives this temperature from the
+sampled star and orbital distance, assuming a Bond albedo of 0.3. Keep
+`"fit_T": true` to retain temperature-dependent opacity tables. Both ice and
+liquid cloud tables are preloaded so successive samples can change phase.
+For nonisothermal profiles, phase is selected separately for each layer.
+Explicit `"liquid"` and `"ice"` settings remain available for isothermal runs.
+This is a temperature-threshold prescription, not a full cloud phase-equilibrium
+model.
+
 ## Plotting the results
 The plotting of the retrieval results can be automatic when chosen in the input parameter file and will produce the following graphs:
 * Chemistry of the atmosphere versus the atmospheric pressure;

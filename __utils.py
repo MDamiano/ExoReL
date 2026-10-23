@@ -96,7 +96,7 @@ def default_parameters():
     param['Mp_prior_type'] = None  # type of prior function for the planetary mass. Possibilities: independent, M_R_prior, gaussian
 
     param['fit_wtr_cld'] = False  # whether to include and fit water cloud position during retrieval
-    param['wtr_cld_type'] = 'liquid'  # type of water cloud to consider. Choose between 'liquid', 'ice', and 'mixed'
+    param['wtr_cld_type'] = 'liquid'  # 'liquid', 'ice', or 'mixed' (temperature-dependent phase)
     param['fit_amm_cld'] = False  # whether to include and fit ammonia cloud position during retrieval
     param['fit_cld_frac'] = False  # whether to fit the cloud fraction during retrieval. The cloud fraction is applied to all clouds present in the model
 
@@ -114,6 +114,8 @@ def default_parameters():
     param['obs_numb'] = None  # Number of observations to be taken into account during retrieval
     param['optimizer'] = None  # Which optimizer to use during retrieval. 'multinest' is the only possibility currently
     param['gen_dataset_mode'] = False
+    param['save_clear_spectrum'] = False  # Save noiseless clear spectra alongside dataset outputs
+    param['save_derived_temperatures'] = False  # Save Tp and Tirr in dataset.csv, in kelvin
     param['random_seed'] = None  # Random seed for GEN_DATASET design matrix generation
     param['verbose'] = False  # Emit informational forward-model messages
 
@@ -1988,7 +1990,7 @@ def pre_load_variables(param):
             param['H2OL_a'] = data[:, 1:]
             data = np.loadtxt(param['pkg_dir'] + fldr_cld_fl + 'Geo_ice_wavelength_250916.dat')
             param['H2OL_g'] = data[:, 1:]
-        elif param['wtr_cld_type'] == 'mixed' and param['PT_profile_type'] == 'parametric':
+        elif param['wtr_cld_type'] == 'mixed':
             data = np.loadtxt(param['pkg_dir'] + fldr_cld_fl + 'Cross_water_wavelength_250916.dat')
             param['H2OL_r'] = data[:, 0]  # zero-order radius, in micron
             param['H2OL_c_liquid'] = data[:, 1:]  # cross-section per droplet, in cm2
@@ -2981,6 +2983,19 @@ def orbital_configuration_to_phase_angle(
     return math.degrees(
         math.acos(float(np.clip(cos_phase_angle, -1.0, 1.0)))
     )
+
+
+def water_cloud_ice_mask(param, layer_temperature):
+    """Select ice below 273.15 K using the existing mixed-cloud convention.
+
+    Isothermal columns use Tp directly, avoiding interpolation roundoff at
+    the transition. Dataset generation may derive Tp from stellar irradiation.
+    Other profiles use the temperature of each atmospheric layer.
+    """
+    temperature = np.asarray(layer_temperature, dtype=float)
+    if param['PT_profile_type'] == 'isothermal':
+        temperature = np.full_like(temperature, float(param['Tp']))
+    return temperature < 273.15
 
 
 def validate_cloud_fraction(value):

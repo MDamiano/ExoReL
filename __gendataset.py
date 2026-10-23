@@ -2,6 +2,7 @@ from .__basics import *
 from .__utils import *
 from .__forward import *
 from .utils.warnings_and_errors import InvalidVMRCompositionError
+from .utils.prior import Mp_Rp_prior
 from . import __version__
 
 # trying to initiate MPI parallelization
@@ -41,6 +42,49 @@ DATASET_RANGE_ALIASES = {
 }
 
 PLANET_CLASS_MASS_THRESHOLD_MJ = 0.06
+
+
+def conditional_mass_prior_enabled(param):
+    return param.get('Mp_prior_type') == 'M_R_prior'
+
+
+def configure_conditional_mass_prior(param):
+    """Configure independent radius draws and the existing conditional mass prior."""
+    if param.get('Rp_prior_type') not in (None, 'independent'):
+        raise ValueError("GEN_DATASET conditional mass requires an independent Rp prior.")
+    if param.get('gaseous_planet', False) or not param.get('rocky', True):
+        raise ValueError("The iron/water mass-radius prior requires rocky planets.")
+    if mixed_planet_class_enabled(param):
+        raise ValueError("The iron/water mass-radius prior does not support mixed planet classes.")
+    if 'Mp_range' in param:
+        raise ValueError("Remove Mp_range when sampling mass conditionally on radius.")
+    if param.get('fit_g', False) or 'gp_range' in param or param.get('gp') is not None:
+        raise ValueError("Conditional mass requires gp=null and gravity derived from Mp and Rp.")
+    radius_bounds = np.asarray(param.get('Rp_range'), dtype=float)
+    if (
+        radius_bounds.shape != (2,)
+        or not np.all(np.isfinite(radius_bounds))
+        or not 0.0 < radius_bounds[0] < radius_bounds[1]
+    ):
+        raise ValueError("Conditional mass requires a positive, increasing Rp_range.")
+    # pre_load_variables uses these flags to load radius-to-mass interpolators.
+    param['fit_Mp'] = True
+    param['fit_Rp'] = True
+    param['Rp_prior_type'] = 'independent'
+    param['Mp'] = None
+    return param
+
+
+def validate_conditional_radius_range(param):
+    """Reject extrapolation beyond either mass-radius table."""
+    minimum = max(float(np.min(param[key].x)) for key in ('M-R_Fe', 'M-R_H2O'))
+    maximum = min(float(np.max(param[key].x)) for key in ('M-R_Fe', 'M-R_H2O'))
+    lower, upper = param['Rp_range']
+    if lower < minimum or upper > maximum:
+        raise ValueError(
+            f"Rp_range must lie within [{minimum}, {maximum}] Jupiter radii "
+            "for the iron/water mass-radius prior."
+        )
 
 
 def dataset_column_name(name):
@@ -169,13 +213,46 @@ def replace_nonfinite_dataset_rows(X_scaled, param, par, lower, upper, draw_unit
     return X_clean, replaced
 
 
-def dataset_header_columns(par, include_planet_class=False, filler_column=None):
+def dataset_temperature_columns(param, par):
+    if not param.get('save_derived_temperatures', False):
+        return []
+    sampled_columns = {dataset_column_name(str(p)) for p in par}
+    return [name for name in ('Tp', 'Tirr') if name not in sampled_columns]
+
+
+def dataset_thermal_state(param, evaluation, base_temperature):
+    """Compute scalar or vector temperatures using the dataset's existing prescription."""
+    radius = evaluation.get('Rs', param['Rs'])
+    stellar_temperature = evaluation.get('Ts', param['Ts'])
+    semi_major_axis = evaluation.get('major-a', param['major-a'])
+    luminosity = radius ** 2.0 * (stellar_temperature / 5760.0) ** 4.0
+    flux = luminosity / semi_major_axis ** 2.0
+    equivalent_a = 1.0 / flux ** 0.5
+    irradiation_temperature = 394.109 / equivalent_a ** 0.5
+    if 'Tp' in evaluation:
+        temperature = evaluation['Tp']
+    elif base_temperature is not None:
+        temperature = base_temperature
+    else:
+        temperature = (
+            (radius * const.R_sun.value / (2.0 * semi_major_axis * const.au.value)) ** 0.5
+            * (1.0 - 0.3) ** 0.25
+            * stellar_temperature
+        )
+    return equivalent_a, irradiation_temperature, temperature
+
+
+def dataset_header_columns(par, include_planet_class=False, filler_column=None, derived_columns=()):
     columns = ['index']
     if include_planet_class:
         columns.append('is_gaseous')
     columns.extend([dataset_column_name(str(p)) for p in par])
     if filler_column is not None:
         columns.append(filler_column)
+    columns.extend(derived_columns)
+    if 'snr' in columns:
+        columns.remove('snr')
+        columns.append('snr')
     return columns
 
 
@@ -190,7 +267,7 @@ def save_numpy_atomic(path, array):
             os.remove(tmp_path)
 
 
-def compact_dataset_samples(out_dir):
+def list_dataset_sample_files(out_dir):
     sample_files = []
     for name in os.listdir(out_dir):
         if name.startswith('sample_') and name.endswith('.json'):
@@ -199,17 +276,38 @@ def compact_dataset_samples(out_dir):
             except ValueError:
                 continue
             sample_files.append((sample_index, os.path.join(out_dir, name)))
+    sample_files.sort(key=lambda item: item[0])
+    return sample_files
 
+
+def existing_dataset_has_clear_spectra(out_dir):
+    """Return whether existing outputs store clear spectra, or None if there are none.
+
+    Leftover sample files from an interrupted run are checked too, since they
+    are compacted together with the next run's samples.
+    """
+    if os.path.isfile(os.path.join(out_dir, 'dataset_spectra.npx')):
+        return os.path.isfile(os.path.join(out_dir, 'dataset_spectra_clear.npx'))
+    sample_files = list_dataset_sample_files(out_dir)
+    if not sample_files:
+        return None
+    with open(sample_files[0][1], 'r') as f:
+        record = json.load(f)
+    return (record.get('data') or {}).get('clear_spectrum') is not None
+
+
+def compact_dataset_samples(out_dir):
+    sample_files = list_dataset_sample_files(out_dir)
     if not sample_files:
         return None
 
-    sample_files.sort(key=lambda item: item[0])
-
     spectra = []
+    clear_spectra = []
     errorbars = []
     indexes = []
     wavelength = None
     have_errorbars = None
+    have_clear_spectra = None
     n_wavelengths = None
 
     for expected_file_index, path in sample_files:
@@ -251,6 +349,17 @@ def compact_dataset_samples(out_dir):
             raise ValueError("Either all compacted samples must have errorbars or none of them should.")
 
         spectra.append(spectrum)
+        clear_spectrum = data.get('clear_spectrum')
+        sample_has_clear = clear_spectrum is not None
+        if have_clear_spectra is None:
+            have_clear_spectra = sample_has_clear
+        elif sample_has_clear != have_clear_spectra:
+            raise ValueError("Either all compacted samples must have clear spectra or none of them should.")
+        if sample_has_clear:
+            clear_spectrum = np.asarray(clear_spectrum, dtype=float)
+            if clear_spectrum.ndim != 1 or clear_spectrum.size != n_wavelengths:
+                raise ValueError(f"Clear spectrum length mismatch in {os.path.basename(path)}.")
+            clear_spectra.append(clear_spectrum)
         if sample_has_errorbars:
             err = np.asarray(sample_errorbars, dtype=float)
             if err.ndim != 1 or err.size != n_wavelengths:
@@ -269,14 +378,23 @@ def compact_dataset_samples(out_dir):
 
     D_new = np.empty((len(indexes), n_wavelengths), dtype=float)
     E_new = np.empty((len(indexes), n_wavelengths), dtype=float) if have_errorbars else None
-    for idx, spectrum, err in zip(indexes, spectra, errorbars if have_errorbars else [None] * len(indexes)):
+    C_new = np.empty((len(indexes), n_wavelengths), dtype=float) if have_clear_spectra else None
+    for idx, spectrum, err, clear in zip(
+        indexes,
+        spectra,
+        errorbars if have_errorbars else [None] * len(indexes),
+        clear_spectra if have_clear_spectra else [None] * len(indexes),
+    ):
         row = idx - new_index_start
         D_new[row, :] = spectrum
         if have_errorbars:
             E_new[row, :] = err
+        if have_clear_spectra:
+            C_new[row, :] = clear
 
     spectra_path = os.path.join(out_dir, 'dataset_spectra.npx')
     errorbars_path = os.path.join(out_dir, 'dataset_errorbars.npx')
+    clear_spectra_path = os.path.join(out_dir, 'dataset_spectra_clear.npx')
     wavelength_path = os.path.join(out_dir, 'wavelength.dat')
 
     D_existing = None
@@ -324,6 +442,20 @@ def compact_dataset_samples(out_dir):
     else:
         D = np.concatenate((D_existing, D_new), axis=0)
 
+    C = C_new
+    if os.path.isfile(clear_spectra_path):
+        if D_existing is None:
+            raise ValueError("Existing dataset_spectra_clear.npx found without dataset_spectra.npx.")
+        with open(clear_spectra_path, 'rb') as f:
+            C_existing = np.load(f, allow_pickle=False)
+        if C_existing.shape != D_existing.shape:
+            raise ValueError("Existing dataset_spectra_clear.npx shape does not match dataset_spectra.npx.")
+        if C is None:
+            raise ValueError("Existing compacted dataset has clear spectra but new samples do not.")
+        C = np.concatenate((C_existing, C), axis=0)
+    elif D_existing is not None and C is not None:
+        raise ValueError("New samples have clear spectra but existing compacted dataset does not.")
+
     if have_errorbars:
         if E_existing is None:
             E = E_new
@@ -333,6 +465,8 @@ def compact_dataset_samples(out_dir):
         E = None
 
     save_numpy_atomic(spectra_path, D)
+    if C is not None:
+        save_numpy_atomic(clear_spectra_path, C)
 
     if wavelength is not None:
         tmp_wavelength_path = wavelength_path + '.tmp.' + str(os.getpid())
@@ -353,6 +487,7 @@ def compact_dataset_samples(out_dir):
 
     return {
         'spectra_file': 'dataset_spectra.npx',
+        'clear_spectra_file': 'dataset_spectra_clear.npx' if have_clear_spectra else None,
         'errorbars_file': 'dataset_errorbars.npx' if have_errorbars else None,
         'wavelength_file': 'wavelength.dat' if wavelength is not None else None,
         'n_compacted_samples': int(D.shape[0]),
@@ -365,6 +500,12 @@ def compact_dataset_samples(out_dir):
 class GEN_DATASET:
     def __init__(self, par):
         self.param = copy.deepcopy(par)
+        # Preserve the configured temperature when the same instance runs again.
+        self._base_temperature = copy.deepcopy(self.param.get('Tp'))
+        if 'Tirr_range' in self.param:
+            raise ValueError("Tirr is derived from the sampled star and orbit; remove Tirr_range.")
+        if conditional_mass_prior_enabled(self.param):
+            self.param = configure_conditional_mass_prior(self.param)
         if self.param['PT_profile_type'] == 'isothermal' and (
             'Tp_range' in self.param or 'tp_range' in self.param
         ):
@@ -372,11 +513,18 @@ class GEN_DATASET:
         if mixed_planet_class_enabled(self.param):
             self.param = configure_mixed_planet_class(self.param)
         self.param = pre_load_variables(self.param)
+        if conditional_mass_prior_enabled(self.param):
+            validate_conditional_radius_range(self.param)
 
     def run(self):
+        conditional_mass = conditional_mass_prior_enabled(self.param)
         if MPIrank == 0:
             print(f"Running ExoReL – version {__version__}")
             npar, par = detect_gen_npar(self.param)
+            if conditional_mass:
+                # Reserve a seeded random/Sobol coordinate for p(Mp | Rp).
+                par.append('Mp')
+                npar += 1
             random_seed = dataset_random_seed(self.param)
         
             # Generate unit-hypercube samples X in [0,1)^npar
@@ -395,16 +543,20 @@ class GEN_DATASET:
                     def draw_unit_samples(n):
                         return np.random.random((n, npar))
                 else:
-                    rng = np.random.RandomState(random_seed)
-                    X = rng.random_sample((self.param['n_spectra'], npar))
+                    design_rng = np.random.RandomState(random_seed)
+                    X = design_rng.random_sample((self.param['n_spectra'], npar))
 
                     def draw_unit_samples(n):
-                        return rng.random_sample((n, npar))
+                        return design_rng.random_sample((n, npar))
 
             # Scale samples to parameter bounds using ranges in self.param
             lower, upper = [], []
             gps = self.param.get('gas_par_space')
             for key in par:
+                if conditional_mass and key == 'Mp':
+                    lower.append(0.0)
+                    upper.append(1.0)
+                    continue
                 # If key already encodes a range (e.g., 'p0_range'), use it directly
                 if key.endswith('_range') and key in self.param:
                     rng = self.param[key]
@@ -428,7 +580,12 @@ class GEN_DATASET:
             include_planet_class = bool(self.param.get('mixed_planet_class', False))
             filler_column = vmr_filler_column(self.param)
             csv_columns = [dataset_column_name(str(p)) for p in par]
-            lines = [f"[{i:02d}] {name}: {lo} -> {hi}" for i, (name, lo, hi) in enumerate(zip(csv_columns, lower, upper))]
+            lines = [
+                f"[{i:02d}] Mp: conditional iron/water mass-radius prior"
+                if conditional_mass and name == 'Mp'
+                else f"[{i:02d}] {name}: {lo} -> {hi}"
+                for i, (name, lo, hi) in enumerate(zip(csv_columns, lower, upper))
+            ]
             print(f"Synthesizing {X.shape[0]} spectra using {npar} sampled parameters.")
             if random_seed is not None:
                 print(f"Dataset random seed: {random_seed}")
@@ -447,8 +604,24 @@ class GEN_DATASET:
             if n_resampled_nonfinite_rows > 0:
                 print(f"Replaced {n_resampled_nonfinite_rows} non-finite dataset design rows.")
 
+            if conditional_mass:
+                mass_column = csv_columns.index('Mp')
+                radius_column = csv_columns.index('Rp')
+                X_scaled[:, mass_column] = Mp_Rp_prior(
+                    self.param,
+                    'Mp',
+                    X_scaled[:, mass_column],
+                    rp_value=X_scaled[:, radius_column],
+                )
+                if (
+                    not np.all(np.isfinite(X_scaled[:, mass_column]))
+                    or np.any(X_scaled[:, mass_column] <= 0.0)
+                ):
+                    raise ValueError("The mass-radius prior produced invalid planetary masses.")
+
             # Build the design matrix header (rank 0 only). Actual CSV write happens later.
-            header = ','.join(dataset_header_columns(par, include_planet_class, filler_column))
+            derived_columns = dataset_temperature_columns(self.param, par)
+            header = ','.join(dataset_header_columns(par, include_planet_class, filler_column, derived_columns))
 
         # Synchronize all processes, then broadcast X_scaled from rank 0
         if MPIsize > 1:
@@ -462,53 +635,70 @@ class GEN_DATASET:
         # - Otherwise, create a new dataset.csv with header.
         csv_path = os.path.join(self.param['out_dir'], 'dataset.csv')
 
-        # Rank 0 performs filesystem I/O; broadcasts decisions
+        # All ranks must receive validation failures before entering another
+        # collective; raising on rank 0 alone leaves the workers waiting.
+        append_error = None
         if MPIrank == 0:
-            os.makedirs(self.param['out_dir'], exist_ok=True)
+            try:
+                os.makedirs(self.param['out_dir'], exist_ok=True)
 
-            append_mode = False
-            start_index = 0
+                append_mode = False
+                start_index = 0
 
-            # Validate that the existing header matches exactly the expected names
-            if os.path.isfile(csv_path):
-                with open(csv_path, 'r') as f:
-                    first_line = f.readline().strip()
-                header_cols = [h.strip() for h in first_line.split(',')]
-                expected_cols = dataset_header_columns(
-                    par,
-                    bool(self.param.get('mixed_planet_class', False)),
-                    vmr_filler_column(self.param),
-                )
-                if header_cols != expected_cols:
-                    raise ValueError('Existing dataset.csv header does not match expected columns: ' + ','.join(header_cols))
-
-                # Determine max index to continue numbering
-                try:
-                    # Fast path: load first column only
-                    existing_idx = np.loadtxt(csv_path, delimiter=',', skiprows=1, usecols=0)
-                    if existing_idx.size == 0:
-                        start_index = 0
-                    else:
-                        # np.loadtxt returns scalar for single row; handle both cases
-                        start_index = int(np.max(existing_idx)) + 1
-                except Exception:
-                    # Fallback: stream through file
-                    max_idx = -1
+                # Validate that the existing header matches exactly the expected names
+                if os.path.isfile(csv_path):
                     with open(csv_path, 'r') as f:
-                        _ = f.readline()  # skip header
-                        for line in f:
-                            if not line:
-                                continue
-                            try:
-                                val = int(line.split(',')[0])
-                                if val > max_idx:
-                                    max_idx = val
-                            except Exception:
-                                continue
-                    start_index = max_idx + 1 if max_idx >= 0 else 0
+                        first_line = f.readline().strip()
+                    header_cols = [h.strip() for h in first_line.split(',')]
+                    expected_cols = dataset_header_columns(
+                        par,
+                        bool(self.param.get('mixed_planet_class', False)),
+                        vmr_filler_column(self.param),
+                        derived_columns,
+                    )
+                    if header_cols != expected_cols:
+                        raise ValueError('Existing dataset.csv header does not match expected columns: ' + ','.join(header_cols))
 
-                append_mode = True
+                    # Determine max index to continue numbering
+                    try:
+                        # Fast path: load first column only
+                        existing_idx = np.loadtxt(csv_path, delimiter=',', skiprows=1, usecols=0)
+                        if existing_idx.size == 0:
+                            start_index = 0
+                        else:
+                            # np.loadtxt returns scalar for single row; handle both cases
+                            start_index = int(np.max(existing_idx)) + 1
+                    except Exception:
+                        # Fallback: stream through file
+                        max_idx = -1
+                        with open(csv_path, 'r') as f:
+                            _ = f.readline()  # skip header
+                            for line in f:
+                                if not line:
+                                    continue
+                                try:
+                                    val = int(line.split(',')[0])
+                                    if val > max_idx:
+                                        max_idx = val
+                                except Exception:
+                                    continue
+                        start_index = max_idx + 1 if max_idx >= 0 else 0
 
+                    append_mode = True
+
+                had_clear = existing_dataset_has_clear_spectra(self.param['out_dir'])
+                if had_clear is not None and had_clear != bool(self.param.get('save_clear_spectrum', False)):
+                    raise ValueError("Keep save_clear_spectrum unchanged when appending to a dataset.")
+            except Exception as exc:
+                append_error = exc
+
+        if MPIsize > 1:
+            append_error = MPI.COMM_WORLD.bcast(append_error, root=0)
+        if append_error is not None:
+            raise append_error
+
+        # Rank 0 writes the validated design and metadata.
+        if MPIrank == 0:
             # Write/append the design matrix built from X_scaled
             nrows = X_scaled.shape[0]
             idx = (np.arange(nrows, dtype=np.int64) + start_index).reshape(-1, 1)
@@ -533,6 +723,30 @@ class GEN_DATASET:
                 data = np.concatenate((idx, X_scaled), axis=1)
             if filler_values is not None:
                 data = np.concatenate((data, filler_values), axis=1)
+            if derived_columns:
+                evaluations = dict(zip(csv_param_columns, X_scaled.T))
+                _, tirr_values, tp_values = dataset_thermal_state(
+                    self.param, evaluations, self._base_temperature
+                )
+                temperatures = {'Tp': tp_values, 'Tirr': tirr_values}
+                derived_values = np.column_stack([
+                    np.broadcast_to(temperatures[name], (nrows,))
+                    for name in derived_columns
+                ])
+                data = np.concatenate((data, derived_values), axis=1)
+
+            if 'snr' in csv_param_columns:
+                # Change storage order only; preserve seeded sampling coordinates.
+                snr_column = (
+                    1 + int(bool(self.param.get('mixed_planet_class', False)))
+                    + csv_param_columns.index('snr')
+                )
+                if snr_column != data.shape[1] - 1:
+                    data = np.concatenate((
+                        data[:, :snr_column],
+                        data[:, snr_column + 1:],
+                        data[:, snr_column:snr_column + 1],
+                    ), axis=1)
 
             if append_mode:
                 with open(csv_path, 'ab') as f:
@@ -542,6 +756,7 @@ class GEN_DATASET:
                     par,
                     bool(self.param.get('mixed_planet_class', False)),
                     vmr_filler_column(self.param),
+                    derived_columns,
                 ))
                 np.savetxt(csv_path, data, delimiter=',', header=header, comments='', fmt='%.17g')
 
@@ -551,6 +766,15 @@ class GEN_DATASET:
                     par,
                     bool(self.param.get('mixed_planet_class', False)),
                     vmr_filler_column(self.param),
+                    derived_columns,
+                ),
+                'derived_columns': (
+                    ([filler_column] if filler_column is not None else [])
+                    + derived_columns
+                ),
+                'temperature_units': (
+                    {'Tp': 'K', 'Tirr': 'K'}
+                    if self.param.get('save_derived_temperatures', False) else {}
                 ),
                 'n_rows': int(start_index + nrows),
                 'n_cols': int(data.shape[1] - 1),
@@ -558,6 +782,8 @@ class GEN_DATASET:
                 'planet_class_mass_threshold_Mj': PLANET_CLASS_MASS_THRESHOLD_MJ if self.param.get('mixed_planet_class', False) else None,
                 'random_seed': dataset_random_seed(self.param),
                 'ExoReL_version': str(__version__),
+                'Mp_prior_type': self.param.get('Mp_prior_type'),
+                'Rp_prior_type': self.param.get('Rp_prior_type'),
                 'n_resampled_nonfinite_rows': int(n_resampled_nonfinite_rows) if 'n_resampled_nonfinite_rows' in locals() else 0,
             }
             with open(os.path.join(self.param['out_dir'], 'dataset_meta.json'), 'w') as f:
@@ -585,7 +811,6 @@ class GEN_DATASET:
 
             other_params = ["Rs", "Ms", "Ts", "major-a", "Tp", "Ag", "Ag1", "Ag2", "Ag3", "Ag_x1", "Ag_x2", "phi"]
 
-            copy_tp = copy.deepcopy(self.param['Tp'])
             copy_phi = copy.deepcopy(self.param['phi'])
             base_class_values = {
                 key: copy.deepcopy(self.param.get(key))
@@ -732,18 +957,11 @@ class GEN_DATASET:
                             if surf_key not in eval_map and base_class_values[surf_key] is not None:
                                 self.param[surf_key] = base_class_values[surf_key]
 
-                Ls = (self.param['Rs'] ** 2.) * ((self.param['Ts'] / 5760.) ** 4.)
-                F_ave = Ls / (self.param['major-a'] ** 2.)
-                a_ave = 1. / (F_ave ** 0.5)
-                self.param['equivalent_a'] = a_ave
-                self.param['Tirr'] = 394.109 / (a_ave ** 0.5)
-
-                if 'Tp' not in eval_map.keys():
-                    if copy_tp is not None:
-                        self.param['Tp'] = copy_tp + 0.0
-                    else:
-                        t1 = ((self.param['Rs'] * const.R_sun.value) / (2. * self.param['major-a'] * const.au.value)) ** 0.5
-                        self.param['Tp'] = t1 * ((1 - 0.3) ** 0.25) * self.param['Ts']
+                (
+                    self.param['equivalent_a'],
+                    self.param['Tirr'],
+                    self.param['Tp'],
+                ) = dataset_thermal_state(self.param, eval_map, self._base_temperature)
 
                 if "phi" not in eval_map.keys():
                     self.param['phi'] = math.pi * copy_phi / 180.0
@@ -751,15 +969,21 @@ class GEN_DATASET:
                     self.param['phi'] = math.pi * self.param['phi'] / 180.0
 
                 # Generate spectrum for this sample on this rank
-                wl, model = forward(
+                save_clear = self.param.get('save_clear_spectrum', False)
+                result = forward(
                     self.param,
                     evaluation=None,
                     retrieval_mode=False,
                     core_number=rank,
                     albedo_calc=self.param['albedo_calc'],
                     fp_over_fs=self.param['fp_over_fs'],
-                    canc_metadata=True
+                    canc_metadata=True,
+                    return_clear_spectrum=save_clear,
                 )
+                if save_clear:
+                    wl, model, clear_model = result
+                else:
+                    wl, model = result
 
                 data = np.array([wl, model]).T
                 errorbars = None
@@ -775,6 +999,9 @@ class GEN_DATASET:
                 # Save spectrum and sampled parameters to a JSON file for this sample
                 # Build parameters payload: prefix gas keys with 'vmr_'
                 payload_params = {}
+                if self.param.get('save_derived_temperatures', False):
+                    payload_params['Tp'] = self.param['Tp']
+                    payload_params['Tirr'] = self.param['Tirr']
 
                 if gps != 'partial_pressure':
                     gas_fill = self.param.get('gas_fill')
@@ -808,6 +1035,8 @@ class GEN_DATASET:
                     },
                     'parameters': payload_params,
                 }
+                if save_clear:
+                    record['data']['clear_spectrum'] = np.asarray(clear_model, dtype=float).tolist()
                 if self.param.get('mixed_planet_class', False):
                     record['is_gaseous'] = bool(row_is_gaseous)
                     record['planet_class'] = 'gaseous' if row_is_gaseous else 'rocky'
