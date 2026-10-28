@@ -497,6 +497,59 @@ def compact_dataset_samples(out_dir):
     }
 
 
+def add_dataset_noise(param, data, sample_index, rank, sampled_values):
+    """Attach sample identity and a diagnostic spectrum to noise failures."""
+    param.pop('alpha1', None)
+    try:
+        return add_noise(param, data, noise_model=0)
+    except Exception as exc:
+        sample_name = f'sample_{sample_index:07d}'
+        message = (
+            f'{sample_name}: noise generation failed; CSV index={sample_index}, '
+            f'MPI rank={rank}, SNR={param.get("snr")}, '
+            f'sigma={param.get("alpha1")}; {type(exc).__name__}: {exc}'
+        )
+        try:
+            diagnostic_dir = os.path.join(param['out_dir'], 'diagnostics')
+            os.makedirs(diagnostic_dir, exist_ok=True)
+            diagnostic_path = os.path.join(
+                diagnostic_dir, f'{sample_name}_noise_failure_rank{rank}.json'
+            )
+            reference_index = int(find_nearest(param['spectrum']['wl'], param.get('l0', 0.75)))
+            # Keep runtime scalar settings (including physical VMRs), not large
+            # opacity arrays. sampled_values retains the original design coordinates.
+            scalar_parameters = {
+                key: value.item() if isinstance(value, np.generic) else value
+                for key, value in param.items()
+                if value is None or isinstance(value, (str, bool, int, float, np.generic))
+            }
+            report = {
+                'sample_name': sample_name,
+                'index': int(sample_index),
+                'mpi_rank': int(rank),
+                'error_type': type(exc).__name__,
+                'error': str(exc),
+                'snr': param.get('snr'),
+                'sigma': param.get('alpha1'),
+                'reference_wavelength': float(data[reference_index, 0]),
+                'reference_model_value': float(data[reference_index, 1]),
+                'sampled_values': {key: float(value) for key, value in sampled_values.items()},
+                'scalar_parameters': scalar_parameters,
+                'data': {
+                    'wavelength': np.asarray(data[:, 0], dtype=float).tolist(),
+                    'noiseless_spectrum': np.asarray(data[:, 1], dtype=float).tolist(),
+                },
+            }
+            with open(diagnostic_path, 'w') as stream:
+                json.dump(report, stream, indent=2, default=lambda value: value.item())
+            message += f'; diagnostic={diagnostic_path}'
+        except Exception as diagnostic_exc:
+            # A full filesystem or serialization failure must not hide the
+            # original noise error or the sample identity.
+            message += f'; could not save diagnostic: {diagnostic_exc}'
+        raise RuntimeError(message) from exc
+
+
 class GEN_DATASET:
     def __init__(self, par):
         self.param = copy.deepcopy(par)
@@ -990,8 +1043,9 @@ class GEN_DATASET:
                 if self.param['add_noise'] and not self.param['albedo_calc']:
                     if self.param.get('noise_model') != 0:
                         raise ValueError("GEN_DATASET currently supports add_noise only with noise_model=0.")
-                    self.param.pop('alpha1', None)
-                    noisy_data = add_noise(self.param, data, noise_model=0)
+                    noisy_data = add_dataset_noise(
+                        self.param, data, int(start_index + i), rank, eval_map
+                    )
                     data = noisy_data
                     model = noisy_data[:, 1]
                     errorbars = noisy_data[:, 2]
