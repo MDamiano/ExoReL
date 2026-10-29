@@ -2502,8 +2502,10 @@ class RADIATIVE_TRANSFER_PYTHON:
             data = np.asarray(table['data'], dtype=float)
             cross = np.interp(wavelength_nm, data[:, 0], data[:, 1], left=0.0, right=0.0)
             cross_t = np.interp(wavelength_nm, data[:, 0], data[:, 2], left=0.0, right=0.0)
-            wa += number_density[:, np.newaxis] * (
-                cross[np.newaxis, :] + (clipped_cross_temperature[:, np.newaxis] - 295.0) * cross_t[np.newaxis, :]
+            # Clip the corrected cross section; temperature slopes may be negative.
+            wa += number_density[:, np.newaxis] * np.maximum(
+                cross[np.newaxis, :] + (clipped_cross_temperature[:, np.newaxis] - 295.0) * cross_t[np.newaxis, :],
+                0.0,
             )
 
         active_molecules = list(self.param.get('fit_molecules', []))
