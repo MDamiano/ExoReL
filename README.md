@@ -120,6 +120,22 @@ The `.npx` files are standard NumPy files and can be read with `np.load`. Runnin
 "save_clear_spectrum": true
 ```
 
+To resume an interrupted dataset, set `"resume_dataset": true` in the original
+JSON and rerun the same script against the same output directory. Resume reads
+`dataset.csv` without adding or resampling rows, keeps valid saved spectra, and
+regenerates missing, truncated, or invalid sample files. The MPI rank count may
+change. `n_spectra` and the design seed do not select new rows during resume;
+the existing CSV defines the work. A fully generated dataset is a no-op.
+
+Keep the original physical settings, gas parameter space, wavelength grid, and
+noise/clear-spectrum settings. Resume validates the CSV schema and saved output
+structure; older datasets do not record every fixed setting, so matching headers
+alone cannot establish configuration equivalence. New noise realizations for
+regenerated samples need not match an uninterrupted run. Resume requires a complete
+CSV and mutually consistent compacted arrays if compaction had already started.
+Do not run a second writer against the same output directory while resuming.
+Set `"resume_dataset": false` (the default) to append a new batch instead.
+
 Set `"save_derived_temperatures": true` to include `Tp` and `Tirr` in
 `dataset.csv`, in kelvin. These labels do not add sampled parameters. An
 already-sampled `Tp` column is retained without duplication. With `"Tp": null`

@@ -267,6 +267,132 @@ def save_numpy_atomic(path, array):
             os.remove(tmp_path)
 
 
+def save_dataset_json(path, record):
+    """Publish a complete sample or metadata file in one rename."""
+    tmp_path = path + '.tmp.' + str(os.getpid())
+    try:
+        with open(tmp_path, 'w') as stream:
+            json.dump(record, stream, separators=(',', ':'), ensure_ascii=False)
+        os.replace(tmp_path, path)
+    finally:
+        if os.path.isfile(tmp_path):
+            os.remove(tmp_path)
+
+
+def load_dataset_resume_design(param):
+    """Restore sampled coordinates by column name, without drawing a new design."""
+    out_dir = param['out_dir']
+    csv_path = os.path.join(out_dir, 'dataset.csv')
+    if not os.path.isfile(csv_path):
+        raise ValueError('resume_dataset requires an existing dataset.csv.')
+    _, par = detect_gen_npar(param)
+    if conditional_mass_prior_enabled(param):
+        par.append('Mp')
+    derived = dataset_temperature_columns(param, par)
+    expected = dataset_header_columns(
+        par, bool(param.get('mixed_planet_class', False)),
+        vmr_filler_column(param), derived,
+    )
+    with open(csv_path) as stream:
+        header = [name.strip() for name in stream.readline().strip().split(',')]
+        if header != expected:
+            raise ValueError('Resume CSV columns do not match the configured parameters.')
+        data = np.loadtxt(stream, delimiter=',', ndmin=2)
+    if data.shape[0] == 0 or data.shape[1] != len(header) or not np.all(np.isfinite(data)):
+        raise ValueError('Resume CSV must contain complete, finite parameter rows.')
+    if not np.array_equal(data[:, 0], np.arange(len(data))):
+        raise ValueError('Resume CSV indexes must be consecutive integers starting at zero.')
+
+    meta_path = os.path.join(out_dir, 'dataset_meta.json')
+    if os.path.isfile(meta_path):
+        with open(meta_path) as stream:
+            meta = json.load(stream)
+        for key, value in meta.get('resume_settings', {}).items():
+            if param.get(key) != value:
+                raise ValueError(f"Keep '{key}' unchanged when resuming a dataset.")
+
+    # Compacted rows are already complete. Memory mapping only reads array headers.
+    packed_rows = 0
+    packed_shape = None
+    spectra_path = os.path.join(out_dir, 'dataset_spectra.npx')
+    has_noise = bool(param.get('add_noise') and not param.get('albedo_calc'))
+    if os.path.isfile(spectra_path):
+        spectra = np.load(spectra_path, mmap_mode='r', allow_pickle=False)
+        if spectra.ndim != 2 or spectra.shape[0] > len(data) or spectra.shape[1] == 0:
+            raise ValueError('Compacted spectra shape is inconsistent with the resume CSV.')
+        packed_shape = spectra.shape
+        packed_rows = spectra.shape[0]
+        del spectra
+        wavelength_path = os.path.join(out_dir, 'wavelength.dat')
+        if not os.path.isfile(wavelength_path):
+            raise ValueError('Compacted spectra are missing wavelength.dat; compaction is incomplete.')
+        wavelength = np.atleast_1d(np.loadtxt(wavelength_path))
+        if wavelength.shape != (packed_shape[1],) or not np.all(np.isfinite(wavelength)):
+            raise ValueError('Compacted wavelength grid does not match the spectra.')
+    for filename, required in (
+        ('dataset_errorbars.npx', has_noise),
+        ('dataset_spectra_clear.npx', bool(param.get('save_clear_spectrum', False))),
+    ):
+        path = os.path.join(out_dir, filename)
+        if os.path.isfile(path):
+            array = np.load(path, mmap_mode='r', allow_pickle=False)
+            if not required or array.shape != packed_shape:
+                raise ValueError(f'Inconsistent compacted output: {filename}. Check configuration and compaction files.')
+            del array
+        elif required and packed_rows:
+            raise ValueError(f'Missing compacted output: {filename}.')
+
+    # Preserve saved temperature labels too; conditional Mp is already in the CSV.
+    par = list(par) + derived
+    columns = [header.index(dataset_column_name(str(name))) for name in par]
+    return data[packed_rows:, columns], par, packed_rows, len(data)
+
+
+def dataset_sample_complete(path, index, param):
+    """Validate a saved sample before skipping it; malformed files are regenerated."""
+    try:
+        with open(path) as stream:
+            record = json.load(stream)
+    except (FileNotFoundError, UnicodeError, json.JSONDecodeError):
+        return False
+    try:
+        if record['index'] != index or not isinstance(record['parameters'], dict):
+            return False
+        data = record['data']
+        wavelength = np.asarray(data['wavelength'], dtype=float)
+        spectrum = np.asarray(data['spectrum'], dtype=float)
+        if (wavelength.ndim != 1 or wavelength.size == 0 or spectrum.shape != wavelength.shape
+                or not np.all(np.isfinite(wavelength)) or not np.all(np.isfinite(spectrum))):
+            return False
+        optional = {
+            'errorbars': bool(param.get('add_noise') and not param.get('albedo_calc')),
+            'clear_spectrum': bool(param.get('save_clear_spectrum', False)),
+        }
+        if 'errorbars' not in data:
+            return False
+        for key in optional:
+            if data.get(key) is not None:
+                array = np.asarray(data[key], dtype=float)
+                if array.shape != wavelength.shape or not np.all(np.isfinite(array)):
+                    return False
+    except (KeyError, TypeError, ValueError):
+        return False
+    grid = param.get('spectrum')
+    expected_wavelength = grid.get('wl') if isinstance(grid, dict) else None
+    if param.get('wl_native', False):
+        expected_wavelength = None
+    elif expected_wavelength is not None and param.get('min_wl') is not None and param.get('max_wl') is not None:
+        low = find_nearest(expected_wavelength, param['min_wl'] - 0.05)
+        high = find_nearest(expected_wavelength, param['max_wl'] + 0.05)
+        expected_wavelength = expected_wavelength[low:high + 1]
+    if expected_wavelength is not None and not np.array_equal(wavelength, expected_wavelength):
+        raise ValueError('Saved sample wavelength grid differs from the resume configuration.')
+    for key, required in optional.items():
+        if (data.get(key) is not None) != required:
+            raise ValueError(f"Saved sample '{key}' differs from the resume configuration.")
+    return True
+
+
 def list_dataset_sample_files(out_dir):
     sample_files = []
     for name in os.listdir(out_dir):
@@ -296,9 +422,13 @@ def existing_dataset_has_clear_spectra(out_dir):
     return (record.get('data') or {}).get('clear_spectrum') is not None
 
 
-def compact_dataset_samples(out_dir):
-    sample_files = list_dataset_sample_files(out_dir)
+def compact_dataset_samples(out_dir, ignore_before=0):
+    all_sample_files = list_dataset_sample_files(out_dir)
+    sample_files = [(index, path) for index, path in all_sample_files if index >= ignore_before]
     if not sample_files:
+        # A previous compaction may have completed its writes but not its cleanup.
+        for _, path in all_sample_files:
+            os.remove(path)
         return None
 
     spectra = []
@@ -482,7 +612,7 @@ def compact_dataset_samples(out_dir):
     elif os.path.isfile(errorbars_path):
         os.remove(errorbars_path)
 
-    for _, path in sample_files:
+    for _, path in all_sample_files:
         os.remove(path)
 
     return {
@@ -570,6 +700,8 @@ class GEN_DATASET:
             validate_conditional_radius_range(self.param)
 
     def run(self):
+        if self.param.get('resume_dataset', False):
+            return self._resume()
         conditional_mass = conditional_mass_prior_enabled(self.param)
         if MPIrank == 0:
             print(f"Running ExoReL – version {__version__}")
@@ -829,6 +961,12 @@ class GEN_DATASET:
                     {'Tp': 'K', 'Tirr': 'K'}
                     if self.param.get('save_derived_temperatures', False) else {}
                 ),
+                'resume_settings': {key: self.param.get(key) for key in (
+                    'gas_par_space', 'gas_fill', 'PT_profile_type', 'fit_wtr_cld',
+                    'fit_amm_cld', 'wtr_cld_type', 'add_noise', 'noise_model',
+                    'gaussian_noise', 'curated_noise', 'save_clear_spectrum',
+                    'save_derived_temperatures', 'albedo_calc', 'fp_over_fs',
+                )},
                 'n_rows': int(start_index + nrows),
                 'n_cols': int(data.shape[1] - 1),
                 'mixed_planet_class': bool(self.param.get('mixed_planet_class', False)),
@@ -839,14 +977,37 @@ class GEN_DATASET:
                 'Rp_prior_type': self.param.get('Rp_prior_type'),
                 'n_resampled_nonfinite_rows': int(n_resampled_nonfinite_rows) if 'n_resampled_nonfinite_rows' in locals() else 0,
             }
-            with open(os.path.join(self.param['out_dir'], 'dataset_meta.json'), 'w') as f:
-                json.dump(meta, f, separators=(',', ':'))
+            save_dataset_json(os.path.join(self.param['out_dir'], 'dataset_meta.json'), meta)
 
         if MPIsize > 1:
             MPI.COMM_WORLD.Barrier()
             # Broadcast starting index to all ranks
             start_index = MPI.COMM_WORLD.bcast(start_index if MPIrank == 0 else None, root=0)
         
+        return self._generate_samples(X_scaled, par, start_index)
+
+    def _resume(self):
+        result = None
+        error = None
+        if MPIrank == 0:
+            try:
+                print('Loading existing dataset design for resume.', flush=True)
+                result = load_dataset_resume_design(self.param)
+            except Exception as exc:
+                error = exc
+        if MPIsize > 1:
+            error = MPI.COMM_WORLD.bcast(error, root=0)
+        if error is not None:
+            raise error
+        if MPIsize > 1:
+            result = MPI.COMM_WORLD.bcast(result, root=0)
+        X_scaled, par, start_index, total = result
+        if MPIrank == 0:
+            print(f'Resuming {total} CSV rows; {start_index} already compacted. '
+                  'Checking remaining sample files across MPI ranks.', flush=True)
+        return self._generate_samples(X_scaled, par, start_index, resume=True)
+
+    def _generate_samples(self, X_scaled, par, start_index, resume=False):
         # split X_scaled among MPI ranks for parallel processing if MPIsize is > 0.
         # Loop over the subset of X_scaled assigned to each rank, assign the samples
         # to the parameters in the self.param dictionary and generate the spectra.
@@ -874,249 +1035,273 @@ class GEN_DATASET:
                 ]
             }
 
-            # Tight loop over this rank's chunk
-            for i in range(start, end):
-                row = X_scaled[i]
+            worker_error = None
+            try:
+                # Tight loop over this rank's chunk
+                for i in range(start, end):
+                    gidx = int(start_index + i)
+                    fname = os.path.join(self.param['out_dir'], f'sample_{gidx:07d}.json')
+                    if resume and dataset_sample_complete(fname, gidx, self.param):
+                        continue
+                    row = X_scaled[i]
 
-                # Build evaluation dict mapping each parameter to its sampled value.
-                # Dataset files historically used a mix of retrieval aliases
-                # (e.g. ptopw_range) and forward-model names (e.g. Pw_top_range).
-                eval_map = {}
-                for j, name in enumerate(par):
-                    if name.endswith('_range'):
-                        key = name[:-6]
+                    # Build evaluation dict mapping each parameter to its sampled value.
+                    # Dataset files historically used a mix of retrieval aliases
+                    # (e.g. ptopw_range) and forward-model names (e.g. Pw_top_range).
+                    eval_map = {}
+                    for j, name in enumerate(par):
+                        if name.endswith('_range'):
+                            key = name[:-6]
+                        else:
+                            # Molecule names and other direct keys
+                            key = name
+                        key = DATASET_RANGE_ALIASES.get(key, key)
+                        eval_map[key] = row[j]
+
+                    if self.param['fit_p0'] and gps != 'partial_pressure' and 'P0' in eval_map:
+                        self.param['P0'] = 10. ** eval_map['P0']
+
+                    if self.param['fit_wtr_cld'] and self.param['PT_profile_type'] == 'isothermal':
+                        if all(k in eval_map for k in ['Pw_top', 'cldw_depth', 'CR_H2O']):
+                            for j in ['Pw_top', 'cldw_depth', 'CR_H2O']:
+                                self.param[j] = 10. ** eval_map[j]
+                        elif all(k in self.param for k in ['pH2O', 'dH2O', 'crH2O']):
+                            self.param['Pw_top'] = 10. ** self.param['pH2O']
+                            self.param['cldw_depth'] = 10. ** self.param['dH2O']
+                            self.param['CR_H2O'] = 10. ** self.param['crH2O']
+                    if self.param['fit_amm_cld'] and self.param['PT_profile_type'] == 'isothermal':
+                        if all(k in eval_map for k in ['Pa_top', 'clda_depth', 'CR_NH3']):
+                            for j in ['Pa_top', 'clda_depth', 'CR_NH3']:
+                                self.param[j] = 10. ** eval_map[j]
+                        elif all(k in self.param for k in ['pNH3', 'dNH3', 'crNH3']):
+                            self.param['Pa_top'] = 10. ** self.param['pNH3']
+                            self.param['clda_depth'] = 10. ** self.param['dNH3']
+                            self.param['CR_NH3'] = 10. ** self.param['crNH3']
+
+                    if gps in ('volume_mixing_ratio', 'vmr') and (self.param.get('gas_fill') is not None):
+                        # Ensure filler completes the sum to unity
+                        s = 0.0
+                        for mol in self.param['fit_molecules']:
+                            s += 10. ** eval_map[mol]
+                            self.param['vmr_' + mol] = 10. ** eval_map[mol]
+                        fill_vmr = 1.0 - s
+                        if not np.isfinite(fill_vmr) or fill_vmr <= 0.0:
+                            raise InvalidVMRCompositionError(
+                                "GEN_DATASET VMR sample is outside the "
+                                "composition simplex: fitted gas VMRs must sum "
+                                "to less than 1."
+                            )
+                        self.param['vmr_' + self.param['gas_fill']] = fill_vmr
+                    elif gps in ('centered_log_ratio', 'clr'):
+                        self.param, _ = clr_to_vmr(self.param, eval_map)
+                    elif gps == 'partial_pressure':
+                        pp = []
+                        for mol in self.param['fit_molecules']:
+                            pp.append(10.0 ** eval_map[mol])
+                        self.param['P0'] = np.sum(pp)
+                        for mol in self.param['fit_molecules']:
+                            self.param['vmr_' + mol] = (10.0 ** eval_map[mol]) / self.param['P0']
+
+                    if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
+                        if 'kappa_th' in eval_map:
+                            self.param['kappa_th'] = 10. ** eval_map['kappa_th']
+                        if 'gamma' in eval_map:
+                            self.param['gamma'] = 10. ** eval_map['gamma']
+                        if 'beta' in eval_map:
+                            self.param['beta'] = eval_map['beta'] + 0.0
+                        if self.param.get('fit_Tint') and 'Tint' in eval_map:
+                            self.param['Tint'] = eval_map['Tint'] + 0.0
+
+                    if 'Rp' in eval_map.keys():
+                        self.param['Rp'] = eval_map['Rp'] + 0.0
+                    if 'Mp' in eval_map.keys():
+                        self.param['Mp'] = eval_map['Mp'] + 0.0
+                    if 'gp' in eval_map.keys():
+                        if self.param['fit_g']:
+                            self.param['gp'] = 10. ** (eval_map['gp'] - 2.0)
+                        else:
+                            self.param['gp'] = eval_map['gp'] + 0.0
                     else:
-                        # Molecule names and other direct keys
-                        key = name
-                    key = DATASET_RANGE_ALIASES.get(key, key)
-                    eval_map[key] = row[j]
-                
-                if self.param['fit_p0'] and gps != 'partial_pressure' and 'P0' in eval_map:
-                    self.param['P0'] = 10. ** eval_map['P0']
+                        self.param['gp'] = None
 
-                if self.param['fit_wtr_cld'] and self.param['PT_profile_type'] == 'isothermal':
-                    if all(k in eval_map for k in ['Pw_top', 'cldw_depth', 'CR_H2O']):
-                        for j in ['Pw_top', 'cldw_depth', 'CR_H2O']:
-                            self.param[j] = 10. ** eval_map[j]
-                    elif all(k in self.param for k in ['pH2O', 'dH2O', 'crH2O']):
-                        self.param['Pw_top'] = 10. ** self.param['pH2O']
-                        self.param['cldw_depth'] = 10. ** self.param['dH2O']
-                        self.param['CR_H2O'] = 10. ** self.param['crH2O']
-                if self.param['fit_amm_cld'] and self.param['PT_profile_type'] == 'isothermal':
-                    if all(k in eval_map for k in ['Pa_top', 'clda_depth', 'CR_NH3']):
-                        for j in ['Pa_top', 'clda_depth', 'CR_NH3']:
-                            self.param[j] = 10. ** eval_map[j]
-                    elif all(k in self.param for k in ['pNH3', 'dNH3', 'crNH3']):
-                        self.param['Pa_top'] = 10. ** self.param['pNH3']
-                        self.param['clda_depth'] = 10. ** self.param['dNH3']
-                        self.param['CR_NH3'] = 10. ** self.param['crNH3']
+                    if self.param['gp'] is not None and self.param['Mp'] is not None and self.param['Rp'] is None:
+                        self.param['Rp'] = (np.sqrt((const.G.value * const.M_jup.value * self.param['Mp']) / self.param['gp'])) / const.R_jup.value
+                    elif self.param['gp'] is not None and self.param['Rp'] is not None and self.param['Mp'] is None:
+                        self.param['Mp'] = ((self.param['gp'] * ((self.param['Rp'] * const.R_jup.value) ** 2.)) / const.G.value) / const.M_jup.value
+                    elif self.param['Mp'] is not None and self.param['Rp'] is not None and self.param['gp'] is None:
+                        self.param['gp'] = (const.G.value * const.M_jup.value * self.param['Mp']) / ((const.R_jup.value * self.param['Rp']) ** 2.)
+                    elif self.param['Rp'] is not None and self.param['Mp'] is not None and self.param['gp'] is not None:
+                        pass
 
-                if gps in ('volume_mixing_ratio', 'vmr') and (self.param.get('gas_fill') is not None):
-                    # Ensure filler completes the sum to unity
-                    s = 0.0
-                    for mol in self.param['fit_molecules']:
-                        s += 10. ** eval_map[mol]
-                        self.param['vmr_' + mol] = 10. ** eval_map[mol]
-                    fill_vmr = 1.0 - s
-                    if not np.isfinite(fill_vmr) or fill_vmr <= 0.0:
-                        raise InvalidVMRCompositionError(
-                            "GEN_DATASET VMR sample is outside the "
-                            "composition simplex: fitted gas VMRs must sum "
-                            "to less than 1."
+                    for j in other_params:
+                        if j in eval_map.keys():
+                            self.param[j] = eval_map[j] + 0.0
+                    if 'cld_frac' in eval_map:
+                        self.param['cld_frac'] = validate_cloud_fraction(
+                            eval_map['cld_frac']
                         )
-                    self.param['vmr_' + self.param['gas_fill']] = fill_vmr
-                elif gps in ('centered_log_ratio', 'clr'):
-                    self.param, _ = clr_to_vmr(self.param, eval_map)
-                elif gps == 'partial_pressure':
-                    pp = []
-                    for mol in self.param['fit_molecules']:
-                        pp.append(10.0 ** eval_map[mol])
-                    self.param['P0'] = np.sum(pp)
-                    for mol in self.param['fit_molecules']:
-                        self.param['vmr_' + mol] = (10.0 ** eval_map[mol]) / self.param['P0']
+                    if 'snr' in eval_map:
+                        self.param['snr'] = eval_map['snr'] + 0.0
+                        if self.param['snr'] <= 0.0:
+                            raise ValueError("The sampled SNR must be positive. Please check 'snr_range'.")
 
-                if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
-                    if 'kappa_th' in eval_map:
-                        self.param['kappa_th'] = 10. ** eval_map['kappa_th']
-                    if 'gamma' in eval_map:
-                        self.param['gamma'] = 10. ** eval_map['gamma']
-                    if 'beta' in eval_map:
-                        self.param['beta'] = eval_map['beta'] + 0.0
-                    if self.param.get('fit_Tint') and 'Tint' in eval_map:
-                        self.param['Tint'] = eval_map['Tint'] + 0.0
+                    row_is_gaseous = False
+                    if self.param.get('mixed_planet_class', False):
+                        row_is_gaseous = bool(self.param['Mp'] >= PLANET_CLASS_MASS_THRESHOLD_MJ)
+                        self.param['is_gaseous'] = row_is_gaseous
+                        self.param['gas_par_space'] = 'vmr'
+                        self.param['gas_fill'] = 'H2'
+                        self.param['fit_H2'] = False
+                        if row_is_gaseous:
+                            self.param['rocky'] = False
+                            self.param['gaseous_planet'] = True
+                            self.param['fit_p0'] = False
+                            self.param['P0'] = 10. ** 11.5
+                            self.param['fit_ag'] = False
+                            self.param['Ag'] = 0.0
+                            if self.param['surface_albedo_parameters'] == int(3):
+                                self.param['Ag1'] = 0.0
+                                self.param['Ag2'] = 0.0
+                            elif self.param['surface_albedo_parameters'] == int(5):
+                                self.param['Ag1'] = 0.0
+                                self.param['Ag2'] = 0.0
+                                self.param['Ag3'] = 0.0
+                        else:
+                            self.param['rocky'] = True
+                            self.param['gaseous_planet'] = False
+                            self.param['fit_p0'] = base_class_values['fit_p0']
+                            self.param['fit_ag'] = base_class_values['fit_ag']
+                            if 'P0' not in eval_map and base_class_values['P0'] is not None:
+                                self.param['P0'] = base_class_values['P0']
+                            for surf_key in ['Ag', 'Ag1', 'Ag2', 'Ag3', 'Ag_x1', 'Ag_x2']:
+                                if surf_key not in eval_map and base_class_values[surf_key] is not None:
+                                    self.param[surf_key] = base_class_values[surf_key]
 
-                if 'Rp' in eval_map.keys():
-                    self.param['Rp'] = eval_map['Rp'] + 0.0
-                if 'Mp' in eval_map.keys():
-                    self.param['Mp'] = eval_map['Mp'] + 0.0
-                if 'gp' in eval_map.keys():
-                    if self.param['fit_g']:
-                        self.param['gp'] = 10. ** (eval_map['gp'] - 2.0)
+                    (
+                        self.param['equivalent_a'],
+                        self.param['Tirr'],
+                        self.param['Tp'],
+                    ) = dataset_thermal_state(self.param, eval_map, self._base_temperature)
+                    if resume and 'Tirr' in eval_map:
+                        self.param['Tirr'] = eval_map['Tirr']
+
+                    if "phi" not in eval_map.keys():
+                        self.param['phi'] = math.pi * copy_phi / 180.0
                     else:
-                        self.param['gp'] = eval_map['gp'] + 0.0
-                else:
-                    self.param['gp'] = None
+                        self.param['phi'] = math.pi * self.param['phi'] / 180.0
 
-                if self.param['gp'] is not None and self.param['Mp'] is not None and self.param['Rp'] is None:
-                    self.param['Rp'] = (np.sqrt((const.G.value * const.M_jup.value * self.param['Mp']) / self.param['gp'])) / const.R_jup.value
-                elif self.param['gp'] is not None and self.param['Rp'] is not None and self.param['Mp'] is None:
-                    self.param['Mp'] = ((self.param['gp'] * ((self.param['Rp'] * const.R_jup.value) ** 2.)) / const.G.value) / const.M_jup.value
-                elif self.param['Mp'] is not None and self.param['Rp'] is not None and self.param['gp'] is None:
-                    self.param['gp'] = (const.G.value * const.M_jup.value * self.param['Mp']) / ((const.R_jup.value * self.param['Rp']) ** 2.)
-                elif self.param['Rp'] is not None and self.param['Mp'] is not None and self.param['gp'] is not None:
-                    pass
-
-                for j in other_params:
-                    if j in eval_map.keys():
-                        self.param[j] = eval_map[j] + 0.0
-                if 'cld_frac' in eval_map:
-                    self.param['cld_frac'] = validate_cloud_fraction(
-                        eval_map['cld_frac']
+                    # Generate spectrum for this sample on this rank
+                    save_clear = self.param.get('save_clear_spectrum', False)
+                    result = forward(
+                        self.param,
+                        evaluation=None,
+                        retrieval_mode=False,
+                        core_number=rank,
+                        albedo_calc=self.param['albedo_calc'],
+                        fp_over_fs=self.param['fp_over_fs'],
+                        canc_metadata=True,
+                        return_clear_spectrum=save_clear,
                     )
-                if 'snr' in eval_map:
-                    self.param['snr'] = eval_map['snr'] + 0.0
-                    if self.param['snr'] <= 0.0:
-                        raise ValueError("The sampled SNR must be positive. Please check 'snr_range'.")
-
-                row_is_gaseous = False
-                if self.param.get('mixed_planet_class', False):
-                    row_is_gaseous = bool(self.param['Mp'] >= PLANET_CLASS_MASS_THRESHOLD_MJ)
-                    self.param['is_gaseous'] = row_is_gaseous
-                    self.param['gas_par_space'] = 'vmr'
-                    self.param['gas_fill'] = 'H2'
-                    self.param['fit_H2'] = False
-                    if row_is_gaseous:
-                        self.param['rocky'] = False
-                        self.param['gaseous_planet'] = True
-                        self.param['fit_p0'] = False
-                        self.param['P0'] = 10. ** 11.5
-                        self.param['fit_ag'] = False
-                        self.param['Ag'] = 0.0
-                        if self.param['surface_albedo_parameters'] == int(3):
-                            self.param['Ag1'] = 0.0
-                            self.param['Ag2'] = 0.0
-                        elif self.param['surface_albedo_parameters'] == int(5):
-                            self.param['Ag1'] = 0.0
-                            self.param['Ag2'] = 0.0
-                            self.param['Ag3'] = 0.0
+                    if save_clear:
+                        wl, model, clear_model = result
                     else:
-                        self.param['rocky'] = True
-                        self.param['gaseous_planet'] = False
-                        self.param['fit_p0'] = base_class_values['fit_p0']
-                        self.param['fit_ag'] = base_class_values['fit_ag']
-                        if 'P0' not in eval_map and base_class_values['P0'] is not None:
-                            self.param['P0'] = base_class_values['P0']
-                        for surf_key in ['Ag', 'Ag1', 'Ag2', 'Ag3', 'Ag_x1', 'Ag_x2']:
-                            if surf_key not in eval_map and base_class_values[surf_key] is not None:
-                                self.param[surf_key] = base_class_values[surf_key]
+                        wl, model = result
 
-                (
-                    self.param['equivalent_a'],
-                    self.param['Tirr'],
-                    self.param['Tp'],
-                ) = dataset_thermal_state(self.param, eval_map, self._base_temperature)
+                    data = np.array([wl, model]).T
+                    errorbars = None
+                    if self.param['add_noise'] and not self.param['albedo_calc']:
+                        if self.param.get('noise_model') != 0:
+                            raise ValueError("GEN_DATASET currently supports add_noise only with noise_model=0.")
+                        noisy_data = add_dataset_noise(
+                            self.param, data, gidx, rank, eval_map
+                        )
+                        data = noisy_data
+                        model = noisy_data[:, 1]
+                        errorbars = noisy_data[:, 2]
 
-                if "phi" not in eval_map.keys():
-                    self.param['phi'] = math.pi * copy_phi / 180.0
-                else:
-                    self.param['phi'] = math.pi * self.param['phi'] / 180.0
+                    # Save spectrum and sampled parameters to a JSON file for this sample
+                    # Build parameters payload: prefix gas keys with 'vmr_'
+                    payload_params = {}
+                    if self.param.get('save_derived_temperatures', False):
+                        payload_params['Tp'] = self.param['Tp']
+                        payload_params['Tirr'] = self.param['Tirr']
 
-                # Generate spectrum for this sample on this rank
-                save_clear = self.param.get('save_clear_spectrum', False)
-                result = forward(
-                    self.param,
-                    evaluation=None,
-                    retrieval_mode=False,
-                    core_number=rank,
-                    albedo_calc=self.param['albedo_calc'],
-                    fp_over_fs=self.param['fp_over_fs'],
-                    canc_metadata=True,
-                    return_clear_spectrum=save_clear,
-                )
-                if save_clear:
-                    wl, model, clear_model = result
-                else:
-                    wl, model = result
-
-                data = np.array([wl, model]).T
-                errorbars = None
-                if self.param['add_noise'] and not self.param['albedo_calc']:
-                    if self.param.get('noise_model') != 0:
-                        raise ValueError("GEN_DATASET currently supports add_noise only with noise_model=0.")
-                    noisy_data = add_dataset_noise(
-                        self.param, data, int(start_index + i), rank, eval_map
-                    )
-                    data = noisy_data
-                    model = noisy_data[:, 1]
-                    errorbars = noisy_data[:, 2]
-
-                # Save spectrum and sampled parameters to a JSON file for this sample
-                # Build parameters payload: prefix gas keys with 'vmr_'
-                payload_params = {}
-                if self.param.get('save_derived_temperatures', False):
-                    payload_params['Tp'] = self.param['Tp']
-                    payload_params['Tirr'] = self.param['Tirr']
-
-                if gps != 'partial_pressure':
-                    gas_fill = self.param.get('gas_fill')
-                    payload_params['P0'] = self.param['P0'] + 0.0
-                    if gas_fill is not None:
-                        payload_params['vmr_' + str(gas_fill)] = self.param['vmr_' + str(gas_fill)]
-                        payload_params[str(gas_fill) + '_filler'] = self.param['vmr_' + str(gas_fill)]
-                else:
-                    gas_fill = None
-
-                for k, v in eval_map.items():
-                    if (k in self.param['fit_molecules']) or (gas_fill is not None and k == gas_fill):
-                        payload_params['vmr_' + str(k)] = self.param['vmr_' + str(k)]
+                    if gps != 'partial_pressure':
+                        gas_fill = self.param.get('gas_fill')
+                        payload_params['P0'] = self.param['P0'] + 0.0
+                        if gas_fill is not None:
+                            payload_params['vmr_' + str(gas_fill)] = self.param['vmr_' + str(gas_fill)]
+                            payload_params[str(gas_fill) + '_filler'] = self.param['vmr_' + str(gas_fill)]
                     else:
-                        # Keep other sampled parameters as-is (e.g., 'Rp', 'P0', 'ag1', ...)
-                        payload_params[str(k)] = self.param[str(k)]
-                if self.param['add_noise']:
-                    payload_params['snr'] = self.param['snr'] + 0.0
+                        gas_fill = None
 
-                record = {
-                    'index': int((start_index if 'start_index' in locals() else 0) + i),
-                    'wavelength': self.param['wave_file'],
-                    'data': {
-                        'wavelength': np.asarray(wl, dtype=float).tolist(),
-                        'spectrum': np.asarray(model, dtype=float).tolist(),
-                        'errorbars': (
-                            np.asarray(errorbars, dtype=float).tolist()
-                            if errorbars is not None
-                            else None
-                        ),
-                    },
-                    'parameters': payload_params,
-                }
-                if save_clear:
-                    record['data']['clear_spectrum'] = np.asarray(clear_model, dtype=float).tolist()
-                if self.param.get('mixed_planet_class', False):
-                    record['is_gaseous'] = bool(row_is_gaseous)
-                    record['planet_class'] = 'gaseous' if row_is_gaseous else 'rocky'
+                    for k, v in eval_map.items():
+                        if (k in self.param['fit_molecules']) or (gas_fill is not None and k == gas_fill):
+                            payload_params['vmr_' + str(k)] = self.param['vmr_' + str(k)]
+                        else:
+                            # Keep other sampled parameters as-is (e.g., 'Rp', 'P0', 'ag1', ...)
+                            payload_params[str(k)] = self.param[str(k)]
+                    if self.param['add_noise']:
+                        payload_params['snr'] = self.param['snr'] + 0.0
 
-                # One file per sample to avoid MPI contention
-                gidx = int((start_index if 'start_index' in locals() else 0) + i)
-                fname = os.path.join(self.param['out_dir'], f'sample_{gidx:07d}.json')
-                with open(fname, 'w') as f:
-                    json.dump(record, f, separators=(',', ':'), ensure_ascii=False)
+                    record = {
+                        'index': gidx,
+                        'wavelength': self.param['wave_file'],
+                        'data': {
+                            'wavelength': np.asarray(wl, dtype=float).tolist(),
+                            'spectrum': np.asarray(model, dtype=float).tolist(),
+                            'errorbars': (
+                                np.asarray(errorbars, dtype=float).tolist()
+                                if errorbars is not None
+                                else None
+                            ),
+                        },
+                        'parameters': payload_params,
+                    }
+                    if save_clear:
+                        record['data']['clear_spectrum'] = np.asarray(clear_model, dtype=float).tolist()
+                    if self.param.get('mixed_planet_class', False):
+                        record['is_gaseous'] = bool(row_is_gaseous)
+                        record['planet_class'] = 'gaseous' if row_is_gaseous else 'rocky'
+
+                    # One file per sample to avoid MPI contention
+                    save_dataset_json(fname, record)
+
+            except Exception as exc:
+                if not resume:
+                    raise
+                worker_error = f'Rank {rank}: {type(exc).__name__}: {exc}'
+            if resume:
+                errors = (MPI.COMM_WORLD.allgather(worker_error)
+                          if MPIsize > 1 else [worker_error])
+                failures = [error for error in errors if error is not None]
+                if failures:
+                    raise RuntimeError('Dataset resume failed: ' + failures[0])
 
             if MPIimport:
                 MPI.COMM_WORLD.Barrier()
 
+            compact_error = None
             if rank == 0:
-                compact_meta = compact_dataset_samples(self.param['out_dir'])
-                if compact_meta is not None:
-                    meta_path = os.path.join(self.param['out_dir'], 'dataset_meta.json')
-                    if os.path.isfile(meta_path):
-                        with open(meta_path, 'r') as f:
-                            meta = json.load(f)
-                    else:
-                        meta = {}
-                    meta.update(compact_meta)
-                    with open(meta_path, 'w') as f:
-                        json.dump(meta, f, separators=(',', ':'))
-            
+                try:
+                    compact_kwargs = {'ignore_before': start_index} if resume else {}
+                    compact_meta = compact_dataset_samples(self.param['out_dir'], **compact_kwargs)
+                    if compact_meta is not None:
+                        meta_path = os.path.join(self.param['out_dir'], 'dataset_meta.json')
+                        if os.path.isfile(meta_path):
+                            with open(meta_path, 'r') as f:
+                                meta = json.load(f)
+                        else:
+                            meta = {}
+                        meta.update(compact_meta)
+                        save_dataset_json(meta_path, meta)
+                except Exception as exc:
+                    compact_error = exc
+            if MPIsize > 1:
+                compact_error = MPI.COMM_WORLD.bcast(compact_error, root=0)
+            if compact_error is not None:
+                raise compact_error
+
             # Guard against improper exit
             if MPIimport:
                 MPI.COMM_WORLD.Barrier()

@@ -114,6 +114,7 @@ def default_parameters():
     param['obs_numb'] = None  # Number of observations to be taken into account during retrieval
     param['optimizer'] = None  # Which optimizer to use during retrieval. 'multinest' is the only possibility currently
     param['gen_dataset_mode'] = False
+    param['resume_dataset'] = False  # Reuse dataset.csv and generate only unfinished samples
     param['save_clear_spectrum'] = False  # Save noiseless clear spectra alongside dataset outputs
     param['save_derived_temperatures'] = False  # Save Tp and Tirr in dataset.csv, in kelvin
     param['random_seed'] = None  # Random seed for GEN_DATASET design matrix generation
