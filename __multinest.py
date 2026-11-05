@@ -508,8 +508,8 @@ class MULTINEST:
         if is_root:
             write_stats_summary_files(self.param, prefix, multinest_results.get_stats(), len(parameters))
 
-        if MPIimport:
-            MPI.Finalize()
+        # Keep MPI available for subsequent retrievals in this Python process.
+        # mpi4py finalizes it at process exit when it owns initialization.
 
 
     def filter_pymultinest_modes(self, mres):
