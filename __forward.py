@@ -3147,11 +3147,8 @@ def apply_forward_evaluation(
             if param['PT_profile_type'] == 'isothermal':
                 param['Tp'] = evaluation['Tp']
             elif param['PT_profile_type'] == 'parametric':
-                param['kappa_th'] = evaluation['kappa_th']
-                param['gamma'] = evaluation['gamma']
-                param['beta'] = evaluation['beta']
-                if param['fit_Tint']:
-                    param['Tint'] = evaluation['Tint']
+                for key in ('T_surface', 'T_join', 'tau_join', 'gamma', 'eta'):
+                    param[key] = evaluation[key]
 
         if 'cld_frac' in evaluation:
             param['cld_frac'] = evaluation['cld_frac']
@@ -3205,12 +3202,19 @@ def _prepare_forward_column(parameters_dictionary, clear_clouds=False):
         column_param['fit_wtr_cld'] = False
         column_param['fit_amm_cld'] = False
 
+    if column_param['PT_profile_type'] == 'parametric':
+        p0 = float(column_param['P0'])
+        if not np.isfinite(p0) or p0 <= 1.0:
+            raise InvalidAtmosphereError('Parametric surface pressure must exceed the 1 Pa model top.')
     if column_param['PT_profile_type'] in ('isothermal', 'parametric'):
         column_param['P'] = 10. ** np.arange(
             0.0,
             np.log10(column_param['P0']) + 0.01,
             step=0.01,
         )
+        if column_param['PT_profile_type'] == 'parametric':
+            grid = column_param['P']
+            column_param['P'] = np.r_[grid[grid < p0 * (1.0 - 1e-12)], p0]
         column_param['T'] = temp_profile(column_param)
     else:
         column_param['P'] = column_param['Pp'] + 0.0
@@ -3265,7 +3269,8 @@ def forward(parameters_dictionary, evaluation=None, phi=None, n_obs=None, retrie
             param['Mp'] = param['Mp_orig'] + 0.0
         param['gp'] = (const.G.value * const.M_jup.value * param['Mp']) / ((const.R_jup.value * param['Rp']) ** 2.)
     param = validate_vmr_composition(param)
-    if param['gas_par_space'] == 'partial_pressure' and np.log10(param['P0']) < 0.0:
+    if (param['PT_profile_type'] != 'parametric'
+            and param['gas_par_space'] == 'partial_pressure' and np.log10(param['P0']) < 0.0):
         param['P0'] = 1.1
     cloud_fraction = validate_cloud_fraction(param.get('cld_frac', 1.0))
 

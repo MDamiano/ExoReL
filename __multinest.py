@@ -9,7 +9,10 @@ from .__forward import (
 )
 from .__plotting import *
 from .utils.likelihood import gaussian_loglike
-from .utils.prior import Mp_Rp_prior, gaussian_prior, uniform_prior
+from .utils.prior import (Mp_Rp_prior, gaussian_prior, uniform_prior,
+                          coupled_thermal_prior, conditional_water_prior,
+                          THERMAL_PARAMETERS)
+from .utils.thermodynamics import InvalidAtmosphereError
 from .utils.warnings_and_errors import InvalidVMRCompositionError
 from . import __version__
 
@@ -51,6 +54,9 @@ else:
 class MULTINEST:
     def __init__(self, par):
         self.param = par.copy()
+        if par.get('PT_profile_type') == 'parametric':
+            self._base_vmr = {key: copy.deepcopy(value) for key, value in par.items()
+                              if key.startswith('vmr_')}
         if MPIrank == 0:
             self.param = pre_load_variables(self.param)
             self.param = ranges(self.param)
@@ -106,6 +112,15 @@ class MULTINEST:
                 evaluation[mol] = (10.0 ** cube[par]) / evaluation['P0']
                 par += 1
 
+        if self.param['PT_profile_type'] == 'parametric':
+            # Empty conditional support uses NaNs, rejected before RT.
+            gas_param = self.param.copy()
+            for molecule in self.param['fit_molecules']:
+                gas_param['vmr_' + molecule] = evaluation[molecule]
+            if self.param.get('gas_fill') is not None:
+                gas_param['vmr_' + self.param['gas_fill']] = evaluation[self.param['gas_fill']]
+            validate_vmr_composition(gas_param)
+
         if self.param['fit_ag']:
             if self.param['surface_albedo_parameters'] == 1:
                 evaluation['ag'] = cube[par] + 0.0
@@ -128,13 +143,9 @@ class MULTINEST:
                 evaluation['Tp'] = cube[par] + 0.0
                 par += 1
             elif self.param['PT_profile_type'] == 'parametric':
-                evaluation['kappa_th'] = 10.0 ** cube[par]
-                evaluation['gamma'] = 10.0 ** cube[par + 1]
-                evaluation['beta'] = cube[par + 2] + 0.0
-                par += 3
-                if self.param['fit_Tint']:
-                    evaluation['Tint'] = cube[par] + 0.0
-                    par += 1
+                for name, value in zip(THERMAL_PARAMETERS, cube[par:par + 5]):
+                    evaluation[name] = 10.0 ** value if name == 'gamma' else float(value)
+                par += 5
 
         if self.param['fit_cld_frac']:
             evaluation['cld_frac'] = 10.0 ** cube[par]
@@ -178,14 +189,19 @@ class MULTINEST:
             'canc_metadata': True,
         }
 
+        base_param = self.param
+        if self.param['PT_profile_type'] == 'parametric':
+            base_param = copy.deepcopy(self.param)
+            base_param.update(copy.deepcopy(getattr(self, '_base_vmr', {})))
         if platform.system() == 'Darwin':
-            return forward(self.param, **forward_kwargs)
-
+            return forward(base_param, **forward_kwargs)
         try:
-            return forward(self.param, **forward_kwargs)
+            return forward(base_param, **forward_kwargs)
         except InvalidVMRCompositionError:
             raise
-        except Exception:
+        except Exception as exc:
+            if isinstance(exc, InvalidAtmosphereError) and self.param['PT_profile_type'] == 'parametric':
+                raise
             import traceback
 
             msg = (
@@ -242,6 +258,124 @@ class MULTINEST:
             return loglikelihood
         except InvalidVMRCompositionError:
             return -1e99
+        except InvalidAtmosphereError:
+            if self.param.get('PT_profile_type') == 'parametric':
+                return -1e99
+            raise
+
+    def _transform_prior(self, cube, clr_ppf=None):
+        par = 0
+        if self.param['fit_p0'] and self.param['gas_par_space'] != 'partial_pressure':
+            cube[par] = uniform_prior(self.param, 'p0', cube[par])  # uniform prior between   3  :  11    -> P0, surface pressure
+            par += 1
+        if self.param['fit_wtr_cld'] and self.param['PT_profile_type'] == 'isothermal':
+            cube[par] = uniform_prior(self.param, 'ptopw', cube[par])  # uniform prior between   0  :  8     -> P H2O cloud top [Pa]
+            cube[par + 1] = uniform_prior(self.param, 'dcldw', cube[par + 1])  # uniform prior between   0  :  8.5   -> D H2O cloud [Pa]
+            cube[par + 2] = uniform_prior(self.param, 'crh2o', cube[par + 2])  # uniform prior between -12  :  0     -> CR H2O
+            par += 3
+
+        if self.param['fit_amm_cld'] and self.param['PT_profile_type'] == 'isothermal':
+            cube[par] = uniform_prior(self.param, 'ptopa', cube[par])  # uniform prior between   0  :  8     -> P NH3 cloud top [Pa]
+            cube[par + 1] = uniform_prior(self.param, 'dclda', cube[par + 1])  # uniform prior between   0  :  8.5   -> D H2O cloud [Pa]
+            cube[par + 2] = uniform_prior(self.param, 'crnh3', cube[par + 2])  # uniform prior between -12  :  0     -> CR NH3
+            par += 3
+
+        gas_start = par
+        water_unit = None
+        if self.param['PT_profile_type'] == 'parametric' and 'H2O' in self.param['fit_molecules']:
+            water_unit = float(cube[gas_start + self.param['fit_molecules'].index('H2O')])
+        for mol in self.param['fit_molecules']:
+            if self.param['gas_par_space'] in ('centered_log_ratio', 'clr'):
+                if self.param['mod_prior']:
+                    cube[par] = clr_ppf[find_nearest(clr_ppf[:, 0], cube[par]), 1]  # modified prior for clr
+                else:
+                    cube[par] = uniform_prior(self.param, 'clr' + mol, cube[par])  # uniform clr prior between -25 : 25
+            elif self.param['gas_par_space'] in ('volume_mixing_ratio', 'vmr'):
+                cube[par] = uniform_prior(self.param, 'vmr' + mol, cube[par])  # uniform vmr prior between -12 : 0
+            elif self.param['gas_par_space'] == 'partial_pressure':
+                cube[par] = uniform_prior(self.param, 'pp' + mol, cube[par])  # uniform partial pressure prior between -10 : 10
+            par += 1
+
+        if self.param['fit_ag']:
+            if self.param['surface_albedo_parameters'] == 1:
+                cube[par] = uniform_prior(self.param, 'ag', cube[par])  # uniform prior between   0.0  :  0.5     -> Ag, surface albedo
+                par += 1
+            elif self.param['surface_albedo_parameters'] == 3:
+                for surf_alb in [1, 2]:
+                    cube[par + (surf_alb - 1)] = uniform_prior(self.param, 'ag' + str(surf_alb), cube[par + (surf_alb - 1)])
+                cube[par + surf_alb] = uniform_prior(self.param, 'ag_x1', cube[par + surf_alb])
+                par += 3
+            elif self.param['surface_albedo_parameters'] == 5:
+                for surf_alb in [1, 2, 3]:
+                    cube[par + (surf_alb - 1)] = uniform_prior(self.param, 'ag' + str(surf_alb), cube[par + (surf_alb - 1)])
+                cube[par + surf_alb] = uniform_prior(self.param, 'ag_x1', cube[par + surf_alb])
+                cube[par + surf_alb + 1] = cube[par + surf_alb] + uniform_prior(self.param, 'ag_x2', cube[par + surf_alb + 1])
+                par += 5
+
+        if self.param['fit_T']:
+            if self.param['PT_profile_type'] == 'isothermal':
+                cube[par] = uniform_prior(self.param, 'tp', cube[par])  # uniform prior between   0  :  700   -> Tp, planetary temperature
+                par += 1
+            elif self.param['PT_profile_type'] == 'parametric':
+                thermal_values = coupled_thermal_prior(self.param, [cube[par + j] for j in range(5)])
+                for j, value in enumerate(thermal_values):
+                    cube[par + j] = value
+                par += 5
+
+        if water_unit is not None:
+            temperature = thermal_values[0] if self.param['fit_T'] else self.param['T_surface']
+            pressure = (10.0 ** cube[0] if self.param['fit_p0']
+                        and self.param['gas_par_space'] != 'partial_pressure' else self.param.get('P0'))
+            coordinates = {mol: cube[gas_start + index]
+                           for index, mol in enumerate(self.param['fit_molecules'])}
+            water_index = gas_start + self.param['fit_molecules'].index('H2O')
+            cube[water_index] = conditional_water_prior(
+                self.param, water_unit, temperature, P0=pressure,
+                gas_coordinates=coordinates, clr_ppf=clr_ppf)
+
+        if self.param['fit_cld_frac']:
+            cube[par] = uniform_prior(self.param, 'cld_frac', cube[par])  # uniform prior between   -3.0  :  0.0     -> Log(clf_frac), cloud fraction
+            par += 1
+
+        if self.param['fit_g']:
+            cube[par] = uniform_prior(self.param, 'gp', cube[par])  # uniform prior between   1.0  :  6   -> g [cm/s2]
+            par += 1
+
+        if self.param['fit_Mp'] and self.param['fit_Rp']:
+            if self.param['Rp_prior_type'] != 'M_R_prior' and self.param['Mp_prior_type'] != 'M_R_prior':
+                cube[par] = Mp_Rp_prior(self.param, 'Mp', cube[par])  # Mass prior - independent or gaussian
+                cube[par + 1] = Mp_Rp_prior(self.param, 'Rp', cube[par + 1])  # Radius prior - independent or gaussian
+                par += 2
+            elif self.param['Rp_prior_type'] == 'M_R_prior' and self.param['Mp_prior_type'] != 'M_R_prior':
+                cube[par] = Mp_Rp_prior(self.param, 'Mp', cube[par])  # Mass prior - independent or gaussian
+                cube[par + 1] = Mp_Rp_prior(self.param, 'Rp', cube[par + 1], mp_value=cube[par])  # Radius prior - 2D prior
+                par += 2
+            elif self.param['Rp_prior_type'] != 'M_R_prior' and self.param['Mp_prior_type'] == 'M_R_prior':
+                cube[par + 1] = Mp_Rp_prior(self.param, 'Rp', cube[par + 1])  # Radius prior - independent or gaussian
+                cube[par] = Mp_Rp_prior(self.param, 'Mp', cube[par], rp_value=cube[par + 1])  # Mass prior - 2D prior
+                par += 2
+        elif self.param['fit_Mp'] and not self.param['fit_Rp']:
+            cube[par] = Mp_Rp_prior(self.param, 'Mp', cube[par])  # Mass prior
+            par += 1
+        elif self.param['fit_Rp'] and not self.param['fit_Mp']:
+            cube[par] = Mp_Rp_prior(self.param, 'Rp', cube[par])  # Radius prior
+            par += 1
+
+        if self.param['fit_p_size']:
+            cube[par] = uniform_prior(self.param, 'p_size', cube[par])  # Particle size uniform prior
+            par += 1
+
+        if self.param['fit_phi']:
+            if self.param['obs_numb'] is None:
+                if self.param['phi_err'] is None: 
+                    cube[par] = uniform_prior(self.param, 'phi', cube[par])  # uniform prior between   0  :  180   -> deg
+                else:
+                    cube[par] = gaussian_prior(self.param, 'phi', cube[par])  # gaussian prior -> phi, phase angle
+                par += 1
+            else:
+                for _ in range(0, self.param['obs_numb']):
+                    cube[par] = uniform_prior(self.param, 'phi', cube[par])  # uniform prior between   0  :  180   -> deg
+                    par += 1
 
     def run_retrieval(self):
         is_root = (not MPIimport) or MPIrank == 0
@@ -263,6 +397,7 @@ class MULTINEST:
 
         parameters, n_params = retrieval_par_and_npar(self.param)
         self.param['fitting_parameters'] = parameters
+        ppf = None
         if self.param['gas_par_space'] in ('clr', 'centered_log_ratio') and self.param['mod_prior']:
             ppf = np.loadtxt(self.param['pkg_dir'] + 'forward_mod/Data/prior/prior_cube_' + str(len(self.param['fit_molecules'])) + 'gas.dat')
 
@@ -277,106 +412,13 @@ class MULTINEST:
             MPI.COMM_WORLD.Barrier()  # wait for everybody to synchronize here
 
         def prior(cube, ndim, nparams):
-            par = 0
-            if self.param['fit_p0'] and self.param['gas_par_space'] != 'partial_pressure':
-                cube[par] = uniform_prior(self.param, 'p0', cube[par])  # uniform prior between   3  :  11    -> P0, surface pressure
-                par += 1
-            if self.param['fit_wtr_cld'] and self.param['PT_profile_type'] == 'isothermal':
-                cube[par] = uniform_prior(self.param, 'ptopw', cube[par])  # uniform prior between   0  :  8     -> P H2O cloud top [Pa]
-                cube[par + 1] = uniform_prior(self.param, 'dcldw', cube[par + 1])  # uniform prior between   0  :  8.5   -> D H2O cloud [Pa]
-                cube[par + 2] = uniform_prior(self.param, 'crh2o', cube[par + 2])  # uniform prior between -12  :  0     -> CR H2O
-                par += 3
-
-            if self.param['fit_amm_cld'] and self.param['PT_profile_type'] == 'isothermal':
-                cube[par] = uniform_prior(self.param, 'ptopa', cube[par])  # uniform prior between   0  :  8     -> P NH3 cloud top [Pa]
-                cube[par + 1] = uniform_prior(self.param, 'dclda', cube[par + 1])  # uniform prior between   0  :  8.5   -> D H2O cloud [Pa]
-                cube[par + 2] = uniform_prior(self.param, 'crnh3', cube[par + 2])  # uniform prior between -12  :  0     -> CR NH3
-                par += 3
-
-            for mol in self.param['fit_molecules']:
-                if self.param['gas_par_space'] in ('centered_log_ratio', 'clr'):
-                    if self.param['mod_prior']:
-                        cube[par] = ppf[find_nearest(ppf[:, 0], cube[par]), 1]  # modified prior for clr
-                    else:
-                        cube[par] = uniform_prior(self.param, 'clr' + mol, cube[par])  # uniform clr prior between -25 : 25
-                elif self.param['gas_par_space'] in ('volume_mixing_ratio', 'vmr'):
-                    cube[par] = uniform_prior(self.param, 'vmr' + mol, cube[par])  # uniform vmr prior between -12 : 0
-                elif self.param['gas_par_space'] == 'partial_pressure':
-                    cube[par] = uniform_prior(self.param, 'pp' + mol, cube[par])  # uniform partial pressure prior between -10 : 10
-                par += 1
-
-            if self.param['fit_ag']:
-                if self.param['surface_albedo_parameters'] == 1:
-                    cube[par] = uniform_prior(self.param, 'ag', cube[par])  # uniform prior between   0.0  :  0.5     -> Ag, surface albedo
-                    par += 1
-                elif self.param['surface_albedo_parameters'] == 3:
-                    for surf_alb in [1, 2]:
-                        cube[par + (surf_alb - 1)] = uniform_prior(self.param, 'ag' + str(surf_alb), cube[par + (surf_alb - 1)])
-                    cube[par + surf_alb] = uniform_prior(self.param, 'ag_x1', cube[par + surf_alb])
-                    par += 3
-                elif self.param['surface_albedo_parameters'] == 5:
-                    for surf_alb in [1, 2, 3]:
-                        cube[par + (surf_alb - 1)] = uniform_prior(self.param, 'ag' + str(surf_alb), cube[par + (surf_alb - 1)])
-                    cube[par + surf_alb] = uniform_prior(self.param, 'ag_x1', cube[par + surf_alb])
-                    cube[par + surf_alb + 1] = cube[par + surf_alb] + uniform_prior(self.param, 'ag_x2', cube[par + surf_alb + 1])
-                    par += 5
-
-            if self.param['fit_T']:
-                if self.param['PT_profile_type'] == 'isothermal':
-                    cube[par] = uniform_prior(self.param, 'tp', cube[par])  # uniform prior between   0  :  700   -> Tp, planetary temperature
-                    par += 1
-                elif self.param['PT_profile_type'] == 'parametric':
-                    cube[par] = uniform_prior(self.param, 'kappa_th', cube[par])  # log uniform prior between 1e-10 : 1e0 -> kappa_th, thermal radiation opacity
-                    cube[par + 1] = uniform_prior(self.param, 'gamma', cube[par + 1])  # log uniform prior between   1e-10 : 1e10   -> gamma, ratio visible opacity : kappa_th
-                    cube[par + 2] = uniform_prior(self.param, 'beta', cube[par + 2])  # uniform prior between   0 : 2   -> beta, scaling factor for T_equilibrium
-                    par += 3
-                    if self.param['fit_Tint']:
-                        cube[par] = uniform_prior(self.param, 'Tint', cube[par])  # uniform prior between   0 : 300   -> Tint, internal temperature
-                        par += 1
-
-            if self.param['fit_cld_frac']:
-                cube[par] = uniform_prior(self.param, 'cld_frac', cube[par])  # uniform prior between   -3.0  :  0.0     -> Log(clf_frac), cloud fraction
-                par += 1
-
-            if self.param['fit_g']:
-                cube[par] = uniform_prior(self.param, 'gp', cube[par])  # uniform prior between   1.0  :  6   -> g [cm/s2]
-                par += 1
-
-            if self.param['fit_Mp'] and self.param['fit_Rp']:
-                if self.param['Rp_prior_type'] != 'M_R_prior' and self.param['Mp_prior_type'] != 'M_R_prior':
-                    cube[par] = Mp_Rp_prior(self.param, 'Mp', cube[par])  # Mass prior - independent or gaussian
-                    cube[par + 1] = Mp_Rp_prior(self.param, 'Rp', cube[par + 1])  # Radius prior - independent or gaussian
-                    par += 2
-                elif self.param['Rp_prior_type'] == 'M_R_prior' and self.param['Mp_prior_type'] != 'M_R_prior':
-                    cube[par] = Mp_Rp_prior(self.param, 'Mp', cube[par])  # Mass prior - independent or gaussian
-                    cube[par + 1] = Mp_Rp_prior(self.param, 'Rp', cube[par + 1], mp_value=cube[par])  # Radius prior - 2D prior
-                    par += 2
-                elif self.param['Rp_prior_type'] != 'M_R_prior' and self.param['Mp_prior_type'] == 'M_R_prior':
-                    cube[par + 1] = Mp_Rp_prior(self.param, 'Rp', cube[par + 1])  # Radius prior - independent or gaussian
-                    cube[par] = Mp_Rp_prior(self.param, 'Mp', cube[par], rp_value=cube[par + 1])  # Mass prior - 2D prior
-                    par += 2
-            elif self.param['fit_Mp'] and not self.param['fit_Rp']:
-                cube[par] = Mp_Rp_prior(self.param, 'Mp', cube[par])  # Mass prior
-                par += 1
-            elif self.param['fit_Rp'] and not self.param['fit_Mp']:
-                cube[par] = Mp_Rp_prior(self.param, 'Rp', cube[par])  # Radius prior
-                par += 1
-
-            if self.param['fit_p_size']:
-                cube[par] = uniform_prior(self.param, 'p_size', cube[par])  # Particle size uniform prior
-                par += 1
-
-            if self.param['fit_phi']:
-                if self.param['obs_numb'] is None:
-                    if self.param['phi_err'] is None: 
-                        cube[par] = uniform_prior(self.param, 'phi', cube[par])  # uniform prior between   0  :  180   -> deg
-                    else:
-                        cube[par] = gaussian_prior(self.param, 'phi', cube[par])  # gaussian prior -> phi, phase angle
-                    par += 1
-                else:
-                    for _ in range(0, self.param['obs_numb']):
-                        cube[par] = uniform_prior(self.param, 'phi', cube[par])  # uniform prior between   0  :  180   -> deg
-                        par += 1
+            try:
+                self._transform_prior(cube, clr_ppf=ppf)
+            except InvalidAtmosphereError:
+                # Empty conditional support is a rejected proposal, not an MPI
+                # fatal error. NaNs are rejected by the composition validator.
+                for index in range(ndim):
+                    cube[index] = np.nan
 
         if is_root:
             time1 = time.time()
@@ -546,14 +588,19 @@ class MULTINEST:
         return s, len(s['modes'])
 
 
-    def cube_to_param(self, cube, n_obs=0):
-        """Prepare plotting/post-processing parameters from a retrieval cube."""
+    def cube_to_param(self, cube, n_obs=0, prepare_atmosphere=True):
+        """Decode a cube, optionally preparing the atmospheric column.
+
+        Restore lower-boundary abundances before each evaluation so plotting
+        or posterior reconstruction never uses a previously depleted column.
+        """
         evaluation = self._cube_to_evaluation(cube, n_obs=n_obs)
-        self.param = prepare_forward_parameters(
-            self.param,
-            evaluation=evaluation,
-            core_number=None,
-        )
+        base_param = self.param
+        if self.param['PT_profile_type'] == 'parametric':
+            base_param = copy.deepcopy(self.param)
+            base_param.update(copy.deepcopy(getattr(self, '_base_vmr', {})))
+        prepare = prepare_forward_parameters if prepare_atmosphere else apply_forward_evaluation
+        self.param = prepare(base_param, evaluation=evaluation, core_number=None)
 
 
     def calc_spectra(self, prefix, mds_orig):
@@ -649,28 +696,22 @@ class MULTINEST:
                 # Calculate temperature profile
                 if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
                     evaluation = self._cube_to_evaluation(cube)
-                    temp_param = apply_forward_evaluation(
-                        self.param,
-                        evaluation=evaluation,
-                        core_number=None,
+                    temp_param = prepare_forward_parameters(
+                        self.param, evaluation=evaluation, core_number=None,
+                        clear_clouds=True,
                     )
-
-                    # Match the pressure adjustment used by forward().
-                    if (
-                        temp_param['gas_par_space'] == 'partial_pressure'
-                        and temp_param['P0'] < 1.0
-                    ):
-                        temp_param['P0'] = 1.1
-
-                    temp_param['P'] = 10. ** np.arange(
-                        0.0,
-                        np.log10(temp_param['P0']) + 0.01,
-                        step=0.01,
+                    # The final boundary is the exact sampled P0, which need
+                    # not be a standard-grid point. Save only supported grid
+                    # temperatures and record the actual surface separately.
+                    pressure = np.asarray(temp_param['P'], dtype=float)
+                    temperature = np.asarray(temp_param['T'], dtype=float)
+                    standard = np.asarray(self.param['P_standard'], dtype=float)
+                    supported = (standard >= pressure[0]) & (standard <= pressure[-1])
+                    temp_samples[2 + np.flatnonzero(supported), i + 1] = np.interp(
+                        np.log(standard[supported]), np.log(pressure), temperature,
                     )
-                    T = temp_profile(temp_param)
-                    temp_samples[2:len(T)+2, i+1] = T
-                    temp_samples[0, i+1] = temp_param['P'][-1]
-                    temp_samples[1, i+1] = T[-1]
+                    temp_samples[0, i + 1] = pressure[-1]
+                    temp_samples[1, i + 1] = temperature[-1]
 
             np.savetxt(loglike_dir + 'loglike_' + str(MPIrank) + '.dat', loglike_data)
             np.savetxt(loglike_dir + 'samples_' + str(MPIrank) + '.dat', samples)

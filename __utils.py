@@ -16,6 +16,10 @@ from .utils.statistics import (
     waic_from_pointwise_log_likelihood_file,
 )
 from .utils.warnings_and_errors import InvalidVMRCompositionError
+from .utils.thermodynamics import (
+    coupled_temperature_profile, water_saturation_pressure,
+    ammonia_saturation_pressure, InvalidAtmosphereError,
+)
 import re
 import shutil
 
@@ -52,7 +56,13 @@ def default_parameters():
     param['gp'] = None  # Planet surface gravity [m/s^2]
     param['Tp'] = None  # Planet surface temperature [K]
     param['Tirr'] = 394.109  # Irradiation Temperature at 1 AU related to the Sun case [K]
-    param['Tint'] = 110.0  # Intrinsic (internal) Temperature [K]
+    param['Tint'] = 110.0  # Retained for the unchanged legacy C backend
+    param['T_surface'] = None  # Required surface temperature for parametric profiles [K]
+    param['T_join'] = 200.0  # Temperature at the adiabat/radiative join [K]
+    param['tau_join'] = 0.0  # Thermal optical depth at join; zero is an isothermal cap
+    param['gamma'] = -0.5228787452803376  # log10(stellar/thermal opacity ratio) in input files
+    param['eta'] = 0.1  # Intrinsic contribution to T_join**4
+    param['molar_heat_capacities'] = {}  # Optional species Cp overrides [J mol^-1 K^-1]
     param['phi'] = None  # Phase angle [deg]
     param['phi_err'] = None  # Phase angle error [deg]
     param['P0'] = None  # Surface pressure [Pa]
@@ -364,7 +374,8 @@ def par_and_calc(param):
                 t1 = ((param['Rs'] * const.R_sun.value) / (2. * param['major-a'] * const.au.value)) ** 0.5
                 param['Tp'] = t1 * ((1 - 0.3) ** 0.25) * param['Ts']
         elif param['PT_profile_type'] == 'parametric':
-            param['kappa_th'] = 10. ** param['kappa_th']
+            if param.get('T_surface') is None and 'T_surface_range' not in param:
+                raise ValueError("parametric profiles require T_surface, T_join, tau_join, gamma, eta")
             param['gamma'] = 10. ** param['gamma']
         else:
             PT_prof = np.genfromtxt(param['PT_profile_type'])
@@ -578,55 +589,6 @@ def particlesizef(g, T, P, M, MM, KE, deltaP):
 
 
 def cloud_pos(param, condensed_gas='H2O'):
-    def waterpressure(t):
-        # Saturation Vapor Pressure of Water
-        # t in K
-        # p in Pascal
-
-        try:
-            p = np.empty((len(t)))
-        except TypeError:
-            t = np.array([t])
-            p = np.empty(len(t))
-
-        for i in range(0, len(t)):
-            if t[i] < 273.16:
-                # Formulation from Murphy & Koop(2005)
-                p[i] = np.exp(9.550426 - (5723.265 / t[i]) + (3.53068 * np.log(t[i])) - (0.00728332 * t[i]))
-            elif t[i] < 373.15:
-                # Formulation from Seinfeld & Pandis(2006)
-                a = 1 - (373.15 / t[i])
-                p[i] = 101325. * np.exp((13.3185 * a) - (1.97 * (a ** 2.)) - (0.6445 * (a ** 3.)) - (0.1229 * (a ** 4.)))
-            elif t[i] < 647.09:
-                p[i] = (10. ** (8.14019 - (1810.94 / (244.485 + t[i] - 273.15)))) * 133.322387415
-            else:
-                p[i] = np.nan
-        return p
-
-    def ammoniapressure(t):
-        # Saturation Vapor Pressure of Ammonia
-        # tl in K
-        # psat in Pascal
-        # Lodders, K., Fegley Jr., B., 1998. The Planetary Scientist?s Companion. Oxford Univ. Press, 371 pp.
-        
-        tl_array = np.asarray(t, dtype=float)
-        tl_flat = tl_array.reshape(-1)
-        psat_flat = np.full_like(tl_flat, np.nan, dtype=float)
-
-        solid = tl_flat < 195.4
-        if solid.any():
-            psat_flat[solid] = 10.0 ** (6.9 - 1588.0 / tl_flat[solid]) * 1.0e5
-
-        liquid = (tl_flat >= 195.4) & (tl_flat < 300.0)
-        if liquid.any():
-            psat_flat[liquid] = 10.0 ** (5.201 - 1248.0 / tl_flat[liquid]) * 1.0e5
-
-        # Ackerman & Marley
-        # psat(i)=exp(10.53-2161/tl(i)-86596/tl(i)/tl(i))*1E+5;
-
-        psat = psat_flat.reshape(tl_array.shape)
-        return psat.item() if psat.shape == () else psat
-
     if condensed_gas == 'H2O':
         short_name = 'wtr'
         initial_letter = 'w'
@@ -639,9 +601,12 @@ def cloud_pos(param, condensed_gas='H2O'):
             P = param['P']
 
             if short_name == 'wtr':
-                psat = waterpressure(param['T'])
+                # Only the coupled parametric model uses this saturation law.
+                # Isothermal clouds retain the prescribed top/depth/depletion
+                # profile below and never evaluate saturation or its domain.
+                psat = water_saturation_pressure(param['T'])
             elif short_name == 'amm':
-                psat = ammoniapressure(param['T'])
+                psat = ammonia_saturation_pressure(param['T'])
             base_profile = np.asarray(param['vmr_' + condensed_gas], dtype=float)
             if base_profile.ndim == 0:
                 base_profile = np.full(len(P), float(base_profile))
@@ -784,16 +749,16 @@ def adjust_VMR(param, all_gases=True, condensed_gas='H2O'):
 def temp_profile(param):
     """
     Calculates temperature-pressure profile.
-    Can be isothermal or based on Guillot (2010). 
+    Can be isothermal or a water-coupled adiabat joined to a normalized Guillot radiative branch. 
     Paper ref DOI: 10.1051/0004-6361/200913396
     Paper ref link: https://www.aanda.org/articles/aa/pdf/2010/12/aa13396-09.pdf
 
     Parameters
     ----------
     param : dict
-        dictionary of settings. Must include pressure grid, PT_profile_type 
-        (isothermal, parametric, or a filepath), and (if parametric) the 
-        variables for parameterization
+        Prepared settings with pressure grid P and PT_profile_type. Isothermal
+        profiles require Tp. Parametric profiles require T_surface, T_join,
+        tau_join, linear gamma, eta, P0, and the undepleted gas composition.
 
     Returns
     -------
@@ -826,46 +791,7 @@ def temp_profile(param):
             raise TypeError("'Tp' must be a finite scalar.") from exc
         T = np.full(P.shape, Tp_val, dtype=float)
     else:
-        required = ('kappa_th', 'gamma', 'beta', 'Tint', 'Ts', 'Rs', 'major-a', 'gp')
-        missing = [key for key in required if param.get(key) is None]
-        if missing:
-            raise ValueError(
-                "Missing parameter(s) required for a parametric PT profile: "
-                + ", ".join(missing)
-            )
-
-        try:
-            kappa_th = float(param['kappa_th'])
-            gamma = float(param['gamma'])
-            beta = float(param['beta'])
-            Tint = float(param['Tint'])
-            Ts = float(param['Ts'])
-            Rs = float(param['Rs'])
-            major_a = float(param['major-a'])
-            gp = float(param['gp'])
-        except (TypeError, ValueError) as exc:
-            raise TypeError("Parametric PT profile parameters must be scalar numbers.") from exc
-
-        if kappa_th <= 0.0:
-            raise ValueError("'kappa_th' must be positive for a parametric PT profile.")
-        if gamma <= 0.0:
-            raise ValueError("'gamma' must be positive for a parametric PT profile.")
-        if gp <= 0.0:
-            raise ValueError("'gp' must be positive for a parametric PT profile.")
-        if major_a <= 0.0:
-            raise ValueError("'major-a' must be positive for a parametric PT profile.")
-        if Tint < 0.0:
-            raise ValueError("'Tint' must be non-negative for a parametric PT profile.")
-
-        tau = P * kappa_th / gp
-        E2 = sp.special.expn(2, gamma * tau)
-        m_gamma = (
-            1.0
-            + (1.0 / gamma) * (1 + (0.5 * gamma * tau - 1) * np.exp(-gamma * tau))
-            + gamma * (1 - 0.5 * tau**2) * E2
-        )
-        Teq = beta * Ts * np.sqrt(Rs * const.R_sun.value / (2 * major_a * const.au.value))
-        T = (0.75 * Tint**4 * (2 / 3 + tau) + 0.5 * Teq**4 * m_gamma) ** 0.25
+        T = coupled_temperature_profile(param)
     return T
 
 
@@ -880,16 +806,23 @@ def ozone_earth_mask(param):
 
 
 def ranges(param):
+    def gas_range(key, bounds):
+        if param['PT_profile_type'] == 'parametric':
+            param.setdefault(key, bounds)
+        else:
+            # Preserve the established isothermal range initialization.
+            param[key] = bounds
+
     if param['fit_p0'] and param['gas_par_space'] != 'partial_pressure':
         param['p0_range'] = [4.5, 8.0]             # Surface pressure
 
     for mol in param['fit_molecules']:
         if (param['gas_par_space'] == 'centered_log_ratio' or param['gas_par_space'] == 'clr') and not param['mod_prior']:
-            param['clr' + mol + '_range'] = [-25.0, 25.0]  # centered-log-ratio ranges
+            gas_range('clr' + mol + '_range', [-25.0, 25.0])  # centered-log-ratio ranges
         elif param['gas_par_space'] == 'volume_mixing_ratio' or param['gas_par_space'] == 'vmr':
-            param['vmr' + mol + '_range'] = [-12.0, 0.0]  # volume mixing ratio ranges
+            gas_range('vmr' + mol + '_range', [-12.0, 0.0])  # volume mixing ratio ranges
         elif param['gas_par_space'] == 'partial_pressure':
-            param['pp' + mol + '_range'] = [-7.0, 7.0]  # partial pressure ranges
+            gas_range('pp' + mol + '_range', [-7.0, 7.0])  # partial pressure ranges
 
     if param['fit_ag']:
         if param['surface_albedo_parameters'] == int(1):
@@ -908,11 +841,14 @@ def ranges(param):
         if param['PT_profile_type'] == 'isothermal':
             param['tp_range'] = [0.0, 700.0]            # Atmospheric equilibrium temperature
         elif param['PT_profile_type'] == 'parametric':
-            param['kappa_th_range'] = [-10., 1.]         # thermal radiation opacity
-            param['gamma_range'] = [-10., 10.]            # ratio visible opacity : thermal opacity
-            param['beta_range'] = [0., 2.]             # scaling factor for equilibrium temperature (albedo)
-            if param['fit_Tint']:
-                param['Tint_range'] = [0., 300.]       # internal temperature
+            for key, bounds in {
+                'T_surface_range': [240., 500.],
+                'T_join_range': [110.1, 500.],
+                'tau_join_range': [0., 100.],
+                'gamma_range': [-2., 2.],  # log10
+                'eta_range': [0., 1.],
+            }.items():
+                param.setdefault(key, bounds)
 
     if not param['rocky']:
         if param['fit_Rp']: 
@@ -1078,11 +1014,11 @@ def adjust_ranges_from_dataset(param):
 
     if param['fit_p0'] and param['gas_par_space'] != 'partial_pressure':
         require_and_set('p0_range')
-    if param['fit_wtr_cld']:
+    if param['fit_wtr_cld'] and param['PT_profile_type'] == 'isothermal':
         require_and_set('ptopw_range')
         require_and_set('dcldw_range')
         require_and_set('crh2o_range')
-    if param['fit_amm_cld']:
+    if param['fit_amm_cld'] and param['PT_profile_type'] == 'isothermal':
         require_and_set('ptopa_range')
         require_and_set('dclda_range')
         require_and_set('crnh3_range')
@@ -1100,7 +1036,11 @@ def adjust_ranges_from_dataset(param):
             require_and_set('ag_x1_range')
             require_and_set('ag_x2_range')
     if param['fit_T']:
-        require_and_set('tp_range')
+        if param['PT_profile_type'] == 'parametric':
+            for name in ('T_surface', 'T_join', 'tau_join', 'gamma', 'eta'):
+                require_and_set(name + '_range')
+        else:
+            require_and_set('tp_range')
     if param['fit_cld_frac']:
         require_and_set('cld_frac_range')
     if param['fit_g']:
@@ -2383,11 +2323,7 @@ def retrieval_par_and_npar(param):
         if param['PT_profile_type'] == 'isothermal':
             parameters.append("T$_p$")
         elif param['PT_profile_type'] == 'parametric':
-            parameters.append(r"$\kappa_{th}$")
-            parameters.append(r"$\gamma$")
-            parameters.append("$\beta$")
-            if param['fit_Tint']:
-                parameters.append("T$_{int}$")
+            parameters.extend(["T$_{surface}$", "T$_{join}$", r"$\tau_{join}$", r"$\gamma$", r"$\eta$"])
     if param['fit_cld_frac']:
         parameters.append("Log(cld frac)")
     if param['fit_g']:
@@ -2630,7 +2566,14 @@ def detect_gen_npar(param):
     parameters = []
     for key, value in param.items():
         if key.endswith('_range'):
-            if key == 'pp_range' or key == 'vmr_range':
+            if key in ('pp_range', 'vmr_range') or (
+                param.get('PT_profile_type') == 'parametric' and (
+                    key == 'clr_range' or any(
+                        key == prefix + mol + '_range'
+                        for mol in param['fit_molecules'] for prefix in ('pp', 'vmr', 'clr')
+                    )
+                )
+            ):
                 pass
             else:
                 parameters.append(key)

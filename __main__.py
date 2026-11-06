@@ -122,10 +122,8 @@ class CREATE_SPECTRUM:
             if self.param['PT_profile_type'] == 'isothermal':
                 print('Tp \t\t = \t' + str(self.param['Tp']))
             elif self.param['PT_profile_type'] == 'parametric':
-                print('Log(k_th) \t = \t' + str(np.log10(self.param['kappa_th'])))
-                print('Log(gamma) \t = \t' + str(np.log10(self.param['gamma'])))
-                print('beta \t\t = \t' + str(self.param['beta']))
-                print('Tint \t\t = \t' + str(self.param['Tint']))
+                for name in ('T_surface', 'T_join', 'tau_join', 'gamma', 'eta'):
+                    print(name + ' \t = \t' + str(self.param[name]))
             else:
                 print('P-T profile loaded from file.')
             if self.param['surface_albedo_parameters'] == int(1):
@@ -208,6 +206,10 @@ class CREATE_DATASET:
         self.param = read_parfile(self.param, parfile)
         self.param = setup_param_dict(self.param)
         self.param = load_input_spectrum(self.param)
+        # Input files use log10(gamma); sampled gamma coordinates are decoded
+        # by GEN_DATASET, while a fixed value must be converted here once.
+        if self.param['PT_profile_type'] == 'parametric' and 'gamma_range' not in self.param:
+            self.param['gamma'] = 10. ** self.param['gamma']
         from ExoReL.__gendataset import GEN_DATASET # type: ignore
         ob = GEN_DATASET(self.param)
         ob.run()

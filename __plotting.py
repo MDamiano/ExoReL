@@ -1038,41 +1038,15 @@ def plot_PT_profile(mnest, bestfit_cube, solutions=0):
     if mnest.param.get('truths') is not None:
         truths = np.genfromtxt(mnest.param['truths'])
     if truths is not None:
-        idx_PT_vars = 1 + len(mnest.param['fit_molecules']) + mnest.param['surface_albedo_parameters']
-
-        tmp_param = {
-            'PT_profile_type': 'parametric',
-            'Ts': mnest.param['Ts'],
-            'Rs': mnest.param['Rs'],
-            'major-a': mnest.param['major-a'],
-            'P': 10.0 ** np.arange(0.0, truths[0] + 0.01, step=0.01),
-            'kappa_th': 10 ** truths[idx_PT_vars],
-            'gamma': 10 ** truths[idx_PT_vars + 1],
-            'beta': truths[idx_PT_vars + 2],
-            'Tint': truths[idx_PT_vars + 3] if mnest.param['fit_Tint'] else mnest.param['Tint'],
-        }
-
-        if mnest.param['fit_p_size']:
-            locate_mp_rp = 4
-        else:
-            locate_mp_rp = 3
-
-        if mnest.param['fit_g']:
-            tmp_param['gp'] = truths[-(locate_mp_rp - 1)]
-        else:
-            if mnest.param['fit_Mp']:
-                Mp = truths[-locate_mp_rp] * const.M_earth.value
-            else:
-                Mp = mnest.param['Mp'] * const.M_jup.value
-            if mnest.param['fit_Rp']:
-                Rp = truths[-(locate_mp_rp - 1)] * const.R_earth.value
-            else:
-                Rp = mnest.param['Rp'] * const.R_jup.value
-            tmp_param['gp'] = (const.G.value * Mp) / (Rp ** 2.0)
-
-        truth_profile = temp_profile(tmp_param)
+        # Decode the same coordinates used by the retrieval, including gas
+        # composition: the moist profile cannot be reconstructed from thermal
+        # parameters alone, and partial-pressure retrievals have no filler.
+        from .__forward import prepare_forward_parameters
+        truth_evaluation = mnest._cube_to_evaluation(np.asarray(truths).reshape(-1))
+        tmp_param = prepare_forward_parameters(mnest.param, evaluation=truth_evaluation)
+        truth_profile = tmp_param['T']
         truth_pressure = tmp_param['P']
-        truth_surface_pressure = 10 ** truths[0]
+        truth_surface_pressure = tmp_param['P0']
 
         plotted = _overlay_truth_profile(
             truth_pressure,
@@ -1124,9 +1098,7 @@ def _mass_radius_sigma(param, sigma):
         if param['PT_profile_type'] == 'isothermal':
             idx += 1
         elif param['PT_profile_type'] == 'parametric':
-            idx += 3
-            if param['fit_Tint']:
-                idx += 1
+            idx += 5
 
     if param['fit_cld_frac']:
         idx += 1
@@ -1587,9 +1559,7 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
             if mnest.param['PT_profile_type'] == 'isothermal':
                 tail_idx += 1
             elif mnest.param['PT_profile_type'] == 'parametric':
-                tail_idx += 3
-                if mnest.param['fit_Tint']:
-                    tail_idx += 1
+                tail_idx += 5
 
         if mnest.param['fit_cld_frac']:
             tail_idx += 1
@@ -1699,11 +1669,8 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
                 if mnest.param['PT_profile_type'] == 'isothermal':
                     par.append("T$_p$")
                 elif mnest.param['PT_profile_type'] == 'parametric':
-                    par.append(r"$\kappa_{th}$")
-                    par.append(r"$\gamma$")
-                    par.append("$\\beta$")
-                    if mnest.param['fit_Tint']:
-                        par.append("T$_{int}$")
+                    par.extend([r"$T_{\rm surface}$ [K]", r"$T_{\rm join}$ [K]",
+                                r"$\tau_{\rm join}$", r"$\log_{10}\gamma$", r"$\eta$"])
             if mnest.param['fit_cld_frac']:
                 par.append("Log(cld frac)")
             if mnest.param['fit_g']:

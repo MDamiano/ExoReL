@@ -2,7 +2,8 @@ from .__basics import *
 from .__utils import *
 from .__forward import *
 from .utils.warnings_and_errors import InvalidVMRCompositionError
-from .utils.prior import Mp_Rp_prior
+from .utils.prior import Mp_Rp_prior, conditional_join_temperature, conditional_water_prior
+from .utils.thermodynamics import InvalidAtmosphereError, water_saturation_pressure, coupled_temperature_profile
 from . import __version__
 
 # trying to initiate MPI parallelization
@@ -176,6 +177,114 @@ def finite_dataset_row_mask(X_scaled, param, par):
     return finite
 
 
+def validate_dataset_thermal_row(param, values):
+    """Check the decoded column on the same pressure grid used by forward().
+
+    This runs before a design row is persisted or dispatched to a worker.
+    The shallow copy deliberately shares read-only opacity arrays; the
+    temperature evaluator only reads scalar composition and thermal inputs.
+    """
+    atmosphere = param.copy()
+    for name in ('T_surface', 'T_join', 'tau_join', 'gamma', 'eta'):
+        if name in values:
+            atmosphere[name] = 10.0 ** values[name] if name == 'gamma' else values[name]
+    space = param['gas_par_space']
+    species = param['fit_molecules']
+    if space == 'partial_pressure':
+        partials = {mol: 10.0 ** values[mol] for mol in species}
+        atmosphere['P0'] = sum(partials.values())
+        for mol, partial in partials.items():
+            atmosphere['vmr_' + mol] = partial / atmosphere['P0']
+    else:
+        if 'P0' in values:
+            atmosphere['P0'] = 10.0 ** values['P0']
+        if space in ('clr', 'centered_log_ratio'):
+            atmosphere, _ = clr_to_vmr(atmosphere, values)
+        else:
+            for mol in species:
+                if mol in values:
+                    atmosphere['vmr_' + mol] = 10.0 ** values[mol]
+            fill = atmosphere.get('gas_fill')
+            if fill is not None:
+                atmosphere['vmr_' + fill] = 1.0 - sum(float(atmosphere['vmr_' + mol]) for mol in species)
+    if param.get('mixed_planet_class', False):
+        gaseous = values.get('Mp', param.get('Mp', 0.0)) >= PLANET_CLASS_MASS_THRESHOLD_MJ
+        atmosphere['rocky'] = not gaseous
+        if gaseous:
+            atmosphere['P0'] = 10.0 ** 11.5
+    p0 = float(atmosphere['P0'])
+    if not np.isfinite(p0) or p0 <= 1.0:
+        raise InvalidAtmosphereError('Parametric surface pressure must exceed the 1 Pa model top.')
+    grid = 10.0 ** np.arange(0.0, np.log10(p0) + 0.01, step=0.01)
+    atmosphere['P'] = np.r_[grid[grid < p0 * (1.0 - 1e-12)], p0]
+    coupled_temperature_profile(atmosphere)
+
+
+def scale_dataset_design(unit_values, param, par, lower, upper):
+    """Scale a design and condition water/join temperature before CSV storage.
+
+    Saved design coordinates are the actual sampled values, so resume does
+    not apply these conditional transformations a second time.
+    """
+    scaled = sp.stats.qmc.scale(unit_values, lower, upper)
+    if param.get('PT_profile_type') != 'parametric':
+        return scaled
+    columns = [dataset_column_name(str(name)) for name in par]
+    indices = {name: index for index, name in enumerate(columns)}
+    space = param['gas_par_space']
+    prior_param = param.copy()
+    prefix = ('pp' if space == 'partial_pressure' else
+              'clr' if space in ('clr', 'centered_log_ratio') else 'vmr')
+    if 'H2O' in indices:
+        water_index = indices['H2O']
+        prior_param[prefix + 'H2O_range'] = [lower[water_index], upper[water_index]]
+    if 'T_join' in indices:
+        j = indices['T_join']
+        prior_param['T_join_range'] = [lower[j], upper[j]]
+
+    for row_index, row in enumerate(scaled):
+        values = dict(zip(columns, row))
+        try:
+            Ts = float(values.get('T_surface', param.get('T_surface')))
+            # Validate the temperature even for designs without sampled water.
+            es = float(water_saturation_pressure(Ts))
+            if 'T_join' in indices:
+                j = indices['T_join']
+                row[j] = conditional_join_temperature(prior_param, unit_values[row_index, j], Ts)
+            elif float(param['T_join']) > Ts:
+                raise InvalidAtmosphereError('Fixed T_join exceeds sampled T_surface.')
+            pressure = (10.0 ** values['P0'] if 'P0' in values else param.get('P0'))
+            if param.get('mixed_planet_class', False):
+                if values.get('Mp', param.get('Mp', 0.0)) >= PLANET_CLASS_MASS_THRESHOLD_MJ:
+                    pressure = 10.0 ** 11.5
+            gases = {mol: values[mol] for mol in param['fit_molecules'] if mol in values}
+            if 'H2O' in indices:
+                j = indices['H2O']
+                row[j] = conditional_water_prior(
+                    prior_param, unit_values[row_index, j], Ts,
+                    P0=pressure, gas_coordinates=gases,
+                )
+            elif space in ('vmr', 'volume_mixing_ratio'):
+                # If water is the filler it has no independent coordinate;
+                # retain the original dry-gas prior and reject invalid draws.
+                q = (1.0 - sum(10.0 ** v for v in gases.values())
+                     if param.get('gas_fill') == 'H2O'
+                     else float(param.get('vmr_H2O', 0.0)))
+                if q * float(pressure) > es * (1.0 + 1.0e-12):
+                    raise InvalidAtmosphereError('Fixed/filler water exceeds saturation.')
+            elif space in ('clr', 'centered_log_ratio') and param.get('gas_fill') == 'H2O':
+                z = np.asarray(list(gases.values()), dtype=float)
+                q = float(clr_inv(np.r_[z, -z.sum()])[-1])
+                if q * float(pressure) > es * (1.0 + 1.0e-12):
+                    raise InvalidAtmosphereError('Filler water exceeds saturation.')
+            validate_dataset_thermal_row(param, dict(zip(columns, row)))
+        except InvalidAtmosphereError:
+            # Resample unsupported conditioning states rather than clipping
+            # the sampled abundance or writing a spectrum from a different row.
+            scaled[row_index, :] = np.nan
+    return scaled
+
+
 def replace_nonfinite_dataset_rows(X_scaled, param, par, lower, upper, draw_unit_samples):
     finite = finite_dataset_row_mask(X_scaled, param, par)
     bad_rows = np.flatnonzero(~finite)
@@ -191,7 +300,7 @@ def replace_nonfinite_dataset_rows(X_scaled, param, par, lower, upper, draw_unit
     X_clean = X_scaled.copy()
     while bad_rows.size > 0 and attempts < max_attempts:
         attempts += 1
-        X_candidates = sp.stats.qmc.scale(draw_unit_samples(int(bad_rows.size)), lower, upper)
+        X_candidates = scale_dataset_design(draw_unit_samples(int(bad_rows.size)), param, par, lower, upper)
         candidate_finite = finite_dataset_row_mask(X_candidates, param, par)
         good_candidates = X_candidates[candidate_finite]
         if good_candidates.size == 0:
@@ -229,7 +338,9 @@ def dataset_thermal_state(param, evaluation, base_temperature):
     flux = luminosity / semi_major_axis ** 2.0
     equivalent_a = 1.0 / flux ** 0.5
     irradiation_temperature = 394.109 / equivalent_a ** 0.5
-    if 'Tp' in evaluation:
+    if param.get('PT_profile_type') == 'parametric':
+        temperature = evaluation.get('T_surface', param['T_surface'])
+    elif 'Tp' in evaluation:
         temperature = evaluation['Tp']
     elif base_temperature is not None:
         temperature = base_temperature
@@ -777,7 +888,7 @@ class GEN_DATASET:
             if include_planet_class:
                 print(f"Mixed planet classes enabled: Mp < {PLANET_CLASS_MASS_THRESHOLD_MJ} Mj is rocky, otherwise gaseous.")
             print("Columns mapping (index, parameter, lower, upper):\n" + "\n".join(lines))
-            X_scaled = sp.stats.qmc.scale(X, lower, upper)
+            X_scaled = scale_dataset_design(X, self.param, par, lower, upper)
             X_scaled, n_resampled_nonfinite_rows = replace_nonfinite_dataset_rows(
                 X_scaled,
                 self.param,
@@ -946,6 +1057,17 @@ class GEN_DATASET:
                 np.savetxt(csv_path, data, delimiter=',', header=header, comments='', fmt='%.17g')
 
             # Update sidecar metadata
+            resume_keys = (
+                'gas_par_space', 'gas_fill', 'PT_profile_type', 'fit_wtr_cld',
+                'fit_amm_cld', 'wtr_cld_type', 'add_noise', 'noise_model',
+                'gaussian_noise', 'curated_noise', 'save_clear_spectrum',
+                'save_derived_temperatures', 'albedo_calc', 'fp_over_fs',
+            )
+            if self.param['PT_profile_type'] == 'parametric':
+                resume_keys += tuple(
+                    key for key in ('T_surface', 'T_join', 'tau_join', 'gamma', 'eta')
+                    if key not in csv_param_columns
+                )
             meta = {
                 'columns': dataset_header_columns(
                     par,
@@ -961,12 +1083,7 @@ class GEN_DATASET:
                     {'Tp': 'K', 'Tirr': 'K'}
                     if self.param.get('save_derived_temperatures', False) else {}
                 ),
-                'resume_settings': {key: self.param.get(key) for key in (
-                    'gas_par_space', 'gas_fill', 'PT_profile_type', 'fit_wtr_cld',
-                    'fit_amm_cld', 'wtr_cld_type', 'add_noise', 'noise_model',
-                    'gaussian_noise', 'curated_noise', 'save_clear_spectrum',
-                    'save_derived_temperatures', 'albedo_calc', 'fp_over_fs',
-                )},
+                'resume_settings': {key: self.param.get(key) for key in resume_keys},
                 'n_rows': int(start_index + nrows),
                 'n_cols': int(data.shape[1] - 1),
                 'mixed_planet_class': bool(self.param.get('mixed_planet_class', False)),
@@ -1058,7 +1175,7 @@ class GEN_DATASET:
                         key = DATASET_RANGE_ALIASES.get(key, key)
                         eval_map[key] = row[j]
 
-                    if self.param['fit_p0'] and gps != 'partial_pressure' and 'P0' in eval_map:
+                    if (self.param['fit_p0'] or self.param['PT_profile_type'] == 'parametric') and gps != 'partial_pressure' and 'P0' in eval_map:
                         self.param['P0'] = 10. ** eval_map['P0']
 
                     if self.param['fit_wtr_cld'] and self.param['PT_profile_type'] == 'isothermal':
@@ -1102,15 +1219,11 @@ class GEN_DATASET:
                         for mol in self.param['fit_molecules']:
                             self.param['vmr_' + mol] = (10.0 ** eval_map[mol]) / self.param['P0']
 
-                    if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
-                        if 'kappa_th' in eval_map:
-                            self.param['kappa_th'] = 10. ** eval_map['kappa_th']
-                        if 'gamma' in eval_map:
-                            self.param['gamma'] = 10. ** eval_map['gamma']
-                        if 'beta' in eval_map:
-                            self.param['beta'] = eval_map['beta'] + 0.0
-                        if self.param.get('fit_Tint') and 'Tint' in eval_map:
-                            self.param['Tint'] = eval_map['Tint'] + 0.0
+                    if self.param['PT_profile_type'] == 'parametric':
+                        for name in ('T_surface', 'T_join', 'tau_join', 'gamma', 'eta'):
+                            if name in eval_map:
+                                self.param[name] = (10. ** eval_map[name]
+                                                    if name == 'gamma' else eval_map[name])
 
                     if 'Rp' in eval_map.keys():
                         self.param['Rp'] = eval_map['Rp'] + 0.0
