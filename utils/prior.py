@@ -103,10 +103,14 @@ def coupled_thermal_prior(param, unit_values):
 
 def conditional_water_prior(param, unit_value, T_surface, P0=None,
                             gas_coordinates=None, clr_ppf=None):
-    """Sample water within saturation, returning its native gas coordinate.
+    """Sample bottom water, returning its native gas coordinate.
+
+    Below the critical point, enforce the saturation cap. Hot bottoms have
+    no condensation cap; only the configured prior and composition apply.
 
     VMR mode: log-uniform water VMR conditional on temperature, total
-    pressure and the other fitted gas VMRs, leaving positive filler gas.
+    pressure and the other fitted gas VMRs, leaving positive filler gas when
+    configured. A pure-water composition with no filler can reach q=1.
     Partial-pressure mode: log-uniform water partial pressure <= e_s(T).
     CLR mode: the original water-CLR marginal (uniform or tabulated inverse
     CDF) truncated at the saturation bound, conditional on all other fitted
@@ -116,14 +120,12 @@ def conditional_water_prior(param, unit_value, T_surface, P0=None,
     """
     from scipy.optimize import brentq
     from scipy.special import logsumexp
-    from .thermodynamics import InvalidAtmosphereError, water_saturation_pressure
+    from .thermodynamics import InvalidAtmosphereError, vapor_pressure_limit
 
     space = param['gas_par_space']
     coordinates = dict(gas_coordinates or {})
     coordinates.pop('H2O', None)
-    es = float(water_saturation_pressure(float(T_surface)))
-    if not np.isfinite(es) or es <= 0.0:
-        raise InvalidAtmosphereError('Water saturation must be positive and finite.')
+    es = float(vapor_pressure_limit(float(T_surface)))
     if space == 'partial_pressure':
         lo, hi = param['ppH2O_range']
         return _bounded_uniform(unit_value, lo, min(hi, np.log10(es)), 'water partial pressure')
@@ -134,9 +136,11 @@ def conditional_water_prior(param, unit_value, T_surface, P0=None,
     qmax = min(1.0, es / pressure)
     if space in ('vmr', 'volume_mixing_ratio'):
         dry_total = sum(10.0 ** float(v) for v in coordinates.values())
-        # Strictly positive filling gas is required by the composition checker.
+        # Strictly positive filling gas is required only when configured.
         remaining = 1.0 - dry_total
-        qmax = min(qmax, remaining * (1.0 - 1.0e-12))
+        if param.get('gas_fill') is not None:
+            remaining *= 1.0 - 1.0e-12
+        qmax = min(qmax, remaining)
         if qmax <= 0.0:
             raise InvalidAtmosphereError('Other gases leave no water/filler prior support.')
         lo, hi = param['vmrH2O_range']

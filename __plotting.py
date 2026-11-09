@@ -948,7 +948,7 @@ def plot_PT_profile(mnest, bestfit_cube, solutions=0):
     ax.fill_betweenx(pressure_grid, q1_low, q1_high, color=color, alpha=0.65)
 
     mnest.cube_to_param(bestfit_cube)
-    bestfit_profile = temp_profile(mnest.param)
+    bestfit_profile = np.asarray(mnest.param['T'])
     bestfit_pressures = np.asarray(mnest.param['P'])
     ax.plot(bestfit_profile, bestfit_pressures, linestyle='--', color='orange', lw=1.2)
     ax.scatter(bestfit_profile[-1], bestfit_pressures[-1], marker='s', fc='orange', ec='black', s=30, zorder=6)
@@ -1066,7 +1066,7 @@ def plot_PT_profile(mnest, bestfit_cube, solutions=0):
     ax.autoscale(axis='x', tight=True)
     ax.margins(x=0.05)
 
-    legend = ax.legend(handles=legend_elements, loc='lower left', frameon=False)
+    legend = ax.legend(handles=legend_elements, loc='lower right', frameon=False)
     if legend is not None:
         legend._legend_box.align = 'left'
 

@@ -1,6 +1,7 @@
 from .__basics import *
 from .__utils import *
 from .__utils import _prepare_python_stellar_irradiance
+from .utils.thermodynamics import InvalidAtmosphereError
 from pathlib import Path
 
 

@@ -113,7 +113,7 @@ class MULTINEST:
                 par += 1
 
         if self.param['PT_profile_type'] == 'parametric':
-            # Empty conditional support uses NaNs, rejected before RT.
+            # Validate decoded gas abundances before radiative transfer.
             gas_param = self.param.copy()
             for molecule in self.param['fit_molecules']:
                 gas_param['vmr_' + molecule] = evaluation[molecule]
@@ -263,6 +263,22 @@ class MULTINEST:
                 return -1e99
             raise
 
+    def _prior_loglike(self, cube, ndim, nparams, clr_ppf=None):
+        """Transform and evaluate atomically, keeping rejected cubes finite."""
+        unit_cube = [cube[index] for index in range(ndim)]
+        try:
+            self._transform_prior(cube, clr_ppf=clr_ppf)
+            valid = all(np.isfinite(cube[index]) for index in range(ndim))
+        except InvalidAtmosphereError:
+            valid = False
+        if not valid:
+            # Coordinates are irrelevant below log_zero, but must stay finite:
+            # even zero-weight NaNs can poison MultiNest's mode moments.
+            for index, value in enumerate(unit_cube):
+                cube[index] = value
+            return -1e101
+        return self._loglike(cube, ndim, nparams)
+
     def _transform_prior(self, cube, clr_ppf=None):
         par = 0
         if self.param['fit_p0'] and self.param['gas_par_space'] != 'partial_pressure':
@@ -411,20 +427,15 @@ class MULTINEST:
             self.param = MPI.COMM_WORLD.bcast(self.param, root=0)
             MPI.COMM_WORLD.Barrier()  # wait for everybody to synchronize here
 
-        def prior(cube, ndim, nparams):
-            try:
-                self._transform_prior(cube, clr_ppf=ppf)
-            except InvalidAtmosphereError:
-                # Empty conditional support is a rejected proposal, not an MPI
-                # fatal error. NaNs are rejected by the composition validator.
-                for index in range(ndim):
-                    cube[index] = np.nan
+        def loglike(cube, ndim, nparams):
+            return self._prior_loglike(cube, ndim, nparams, clr_ppf=ppf)
 
         if is_root:
             time1 = time.time()
 
-        pymultinest.run(LogLikelihood=self._loglike,
-                        Prior=prior,
+        pymultinest.run(LogLikelihood=loglike,
+                        Prior=None,
+                        log_zero=-1e100,
                         n_dims=n_params,
                         multimodal=self.param['multimodal'],
                         max_modes=self.param['max_modes'],
@@ -449,12 +460,12 @@ class MULTINEST:
         multinest_results = pymultinest.Analyzer(n_params=self.param['model_n_par'], outputfiles_basename=prefix, verbose=False)
 
         if is_root:
+            s = multinest_results.get_stats()
+            mds_orig = len(s['modes'])
             if self.param['filter_multi_solutions']:
                 s, mds = self.filter_pymultinest_modes(multinest_results)
-                mds_orig = len(multinest_results.get_stats()['modes'])
             else:
-                s = multinest_results.get_stats()
-                mds_orig = mds = len(s['modes'])
+                mds = mds_orig
             
             if self.param['multimodal'] and mds_orig > 1:
                 self.store_nest_solutions(prefix)
@@ -555,28 +566,28 @@ class MULTINEST:
 
 
     def filter_pymultinest_modes(self, mres):
-        mds = len(mres.get_stats()['modes'])
+        s = mres.get_stats()
+        mds = len(s['modes'])
         if mds == 1:
-            return mres.get_stats(), mds
+            return s, mds
 
         max_ev, max_idx = -np.inf, 0
         for i in range(mds):
-            if mres.get_stats()['modes'][i]['local log-evidence'] > max_ev:
-                max_ev = mres.get_stats()['modes'][i]['local log-evidence'] + 0.0
+            if s['modes'][i]['local log-evidence'] > max_ev:
+                max_ev = s['modes'][i]['local log-evidence'] + 0.0
                 max_idx = i
 
-        filtered_modes = [mres.get_stats()['modes'][max_idx]]
+        filtered_modes = [s['modes'][max_idx]]
         filtered_modes[-1]['index'] = len(filtered_modes) - 1
         for i in range(mds):
             if (
                 i != max_idx
-                and max_ev - mres.get_stats()['modes'][i]['local log-evidence']
+                and max_ev - s['modes'][i]['local log-evidence']
                 < MULTI_SOLUTION_DELTA_LOG_EVIDENCE_THRESHOLD
             ):
-                filtered_modes.append(mres.get_stats()['modes'][i])
+                filtered_modes.append(s['modes'][i])
                 filtered_modes[-1]['index'] = len(filtered_modes) - 1
 
-        s = mres.get_stats()
         s['modes'] = filtered_modes
 
         filtered_count = mds - len(s['modes'])

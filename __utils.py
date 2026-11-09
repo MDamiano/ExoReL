@@ -17,8 +17,7 @@ from .utils.statistics import (
 )
 from .utils.warnings_and_errors import InvalidVMRCompositionError
 from .utils.thermodynamics import (
-    coupled_temperature_profile, water_saturation_pressure,
-    ammonia_saturation_pressure, InvalidAtmosphereError,
+    coupled_temperature_profile, vapor_pressure_limit,
 )
 import re
 import shutil
@@ -57,15 +56,15 @@ def default_parameters():
     param['Tp'] = None  # Planet surface temperature [K]
     param['Tirr'] = 394.109  # Irradiation Temperature at 1 AU related to the Sun case [K]
     param['Tint'] = 110.0  # Retained for the unchanged legacy C backend
-    param['T_surface'] = None  # Required surface temperature for parametric profiles [K]
+    param['T_surface'] = None  # Required temperature at bottom pressure P0 [K]
     param['T_join'] = 200.0  # Temperature at the adiabat/radiative join [K]
     param['tau_join'] = 0.0  # Thermal optical depth at join; zero is an isothermal cap
     param['gamma'] = -0.5228787452803376  # log10(stellar/thermal opacity ratio) in input files
     param['eta'] = 0.1  # Intrinsic contribution to T_join**4
-    param['molar_heat_capacities'] = {}  # Optional species Cp overrides [J mol^-1 K^-1]
+    param['molar_heat_capacities'] = {}  # Optional constant overrides of species Cp(T) [J mol^-1 K^-1]
     param['phi'] = None  # Phase angle [deg]
     param['phi_err'] = None  # Phase angle error [deg]
-    param['P0'] = None  # Surface pressure [Pa]
+    param['P0'] = None  # Surface or parametric lower-boundary pressure [Pa]
     param['Ag'] = None  # Surface albedo
 
     #### [ATMOSPHERIC_PAR] ####
@@ -255,8 +254,9 @@ def setup_param_dict(param):
 
     if param['gaseous_planet']:
         param['rocky'] = False
-        param['fit_p0'] = False
-        param['P0'] = 10 ** 11.5
+        if param['PT_profile_type'] != 'parametric':
+            param['fit_p0'] = False
+            param['P0'] = 10 ** 11.5
         param['fit_ag'] = False
         param['Ag'] = 0.0
         param['gas_par_space'] = 'vmr'
@@ -283,8 +283,8 @@ def setup_param_dict(param):
     elif 'pp_range' in param.keys():
         param['gas_par_space'] = 'partial_pressure'
 
-    if param['rocky'] and not param['fit_p0'] and param['P0'] is None and param['gas_par_space'] != 'partial_pressure':
-        raise ValueError("Surface pressure (P0) needs to be specified since it is not a free parameter.")
+    if (param['rocky'] or param['PT_profile_type'] == 'parametric') and not param['fit_p0'] and param['P0'] is None and param['gas_par_space'] != 'partial_pressure':
+        raise ValueError("Surface/lower-boundary pressure (P0) needs to be specified since it is not a free parameter.")
 
     if param['gas_par_space'] == 'partial_pressure' and param['fit_p0']:
         param['fit_p0'] = False
@@ -600,13 +600,10 @@ def cloud_pos(param, condensed_gas='H2O'):
         if param['PT_profile_type'] == 'parametric':
             P = param['P']
 
-            if short_name == 'wtr':
-                # Only the coupled parametric model uses this saturation law.
-                # Isothermal clouds retain the prescribed top/depth/depletion
-                # profile below and never evaluate saturation or its domain.
-                psat = water_saturation_pressure(param['T'])
-            elif short_name == 'amm':
-                psat = ammonia_saturation_pressure(param['T'])
+            # Hot layers have no condensation cap. Phase laws are evaluated
+            # only below each species' critical point; depletion from lower
+            # cold traps still persists through a warm upper inversion.
+            psat = vapor_pressure_limit(param['T'], condensed_gas)
             base_profile = np.asarray(param['vmr_' + condensed_gas], dtype=float)
             if base_profile.ndim == 0:
                 base_profile = np.full(len(P), float(base_profile))
@@ -814,7 +811,7 @@ def ranges(param):
             param[key] = bounds
 
     if param['fit_p0'] and param['gas_par_space'] != 'partial_pressure':
-        param['p0_range'] = [4.5, 8.0]             # Surface pressure
+        gas_range('p0_range', [4.5, 8.0])  # Surface/lower-boundary pressure
 
     for mol in param['fit_molecules']:
         if (param['gas_par_space'] == 'centered_log_ratio' or param['gas_par_space'] == 'clr') and not param['mod_prior']:
@@ -842,7 +839,7 @@ def ranges(param):
             param['tp_range'] = [0.0, 700.0]            # Atmospheric equilibrium temperature
         elif param['PT_profile_type'] == 'parametric':
             for key, bounds in {
-                'T_surface_range': [240., 500.],
+                'T_surface_range': [200., 2000.],
                 'T_join_range': [110.1, 500.],
                 'tau_join_range': [0., 100.],
                 'gamma_range': [-2., 2.],  # log10

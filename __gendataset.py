@@ -3,7 +3,7 @@ from .__utils import *
 from .__forward import *
 from .utils.warnings_and_errors import InvalidVMRCompositionError
 from .utils.prior import Mp_Rp_prior, conditional_join_temperature, conditional_water_prior
-from .utils.thermodynamics import InvalidAtmosphereError, water_saturation_pressure, coupled_temperature_profile
+from .utils.thermodynamics import InvalidAtmosphereError, vapor_pressure_limit, coupled_temperature_profile
 from . import __version__
 
 # trying to initiate MPI parallelization
@@ -210,8 +210,6 @@ def validate_dataset_thermal_row(param, values):
     if param.get('mixed_planet_class', False):
         gaseous = values.get('Mp', param.get('Mp', 0.0)) >= PLANET_CLASS_MASS_THRESHOLD_MJ
         atmosphere['rocky'] = not gaseous
-        if gaseous:
-            atmosphere['P0'] = 10.0 ** 11.5
     p0 = float(atmosphere['P0'])
     if not np.isfinite(p0) or p0 <= 1.0:
         raise InvalidAtmosphereError('Parametric surface pressure must exceed the 1 Pa model top.')
@@ -247,16 +245,13 @@ def scale_dataset_design(unit_values, param, par, lower, upper):
         try:
             Ts = float(values.get('T_surface', param.get('T_surface')))
             # Validate the temperature even for designs without sampled water.
-            es = float(water_saturation_pressure(Ts))
+            es = float(vapor_pressure_limit(Ts))
             if 'T_join' in indices:
                 j = indices['T_join']
                 row[j] = conditional_join_temperature(prior_param, unit_values[row_index, j], Ts)
             elif float(param['T_join']) > Ts:
                 raise InvalidAtmosphereError('Fixed T_join exceeds sampled T_surface.')
             pressure = (10.0 ** values['P0'] if 'P0' in values else param.get('P0'))
-            if param.get('mixed_planet_class', False):
-                if values.get('Mp', param.get('Mp', 0.0)) >= PLANET_CLASS_MASS_THRESHOLD_MJ:
-                    pressure = 10.0 ** 11.5
             gases = {mol: values[mol] for mol in param['fit_molecules'] if mol in values}
             if 'H2O' in indices:
                 j = indices['H2O']
@@ -1268,8 +1263,13 @@ class GEN_DATASET:
                         if row_is_gaseous:
                             self.param['rocky'] = False
                             self.param['gaseous_planet'] = True
-                            self.param['fit_p0'] = False
-                            self.param['P0'] = 10. ** 11.5
+                            if self.param['PT_profile_type'] == 'parametric':
+                                self.param['fit_p0'] = base_class_values['fit_p0']
+                                if 'P0' not in eval_map and base_class_values['P0'] is not None:
+                                    self.param['P0'] = base_class_values['P0']
+                            else:
+                                self.param['fit_p0'] = False
+                                self.param['P0'] = 10. ** 11.5
                             self.param['fit_ag'] = False
                             self.param['Ag'] = 0.0
                             if self.param['surface_albedo_parameters'] == int(3):
