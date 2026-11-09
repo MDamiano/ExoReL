@@ -144,7 +144,7 @@ class MULTINEST:
                 par += 1
             elif self.param['PT_profile_type'] == 'parametric':
                 for name, value in zip(THERMAL_PARAMETERS, cube[par:par + 5]):
-                    evaluation[name] = 10.0 ** value if name == 'gamma' else float(value)
+                    evaluation[name] = 10.0 ** value if name in ('tau_join', 'gamma') else float(value)
                 par += 5
 
         if self.param['fit_cld_frac']:

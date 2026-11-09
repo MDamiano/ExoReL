@@ -206,10 +206,6 @@ class CREATE_DATASET:
         self.param = read_parfile(self.param, parfile)
         self.param = setup_param_dict(self.param)
         self.param = load_input_spectrum(self.param)
-        # Input files use log10(gamma); sampled gamma coordinates are decoded
-        # by GEN_DATASET, while a fixed value must be converted here once.
-        if self.param['PT_profile_type'] == 'parametric' and 'gamma_range' not in self.param:
-            self.param['gamma'] = 10. ** self.param['gamma']
         from ExoReL.__gendataset import GEN_DATASET # type: ignore
         ob = GEN_DATASET(self.param)
         ob.run()

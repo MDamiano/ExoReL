@@ -1670,7 +1670,7 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
                     par.append("T$_p$")
                 elif mnest.param['PT_profile_type'] == 'parametric':
                     par.extend([r"$T_{\rm surface}$ [K]", r"$T_{\rm join}$ [K]",
-                                r"$\tau_{\rm join}$", r"$\log_{10}\gamma$", r"$\eta$"])
+                                r"$\log_{10}\tau_{\rm join}$", r"$\log_{10}\gamma$", r"$\eta$"])
             if mnest.param['fit_cld_frac']:
                 par.append("Log(cld frac)")
             if mnest.param['fit_g']:

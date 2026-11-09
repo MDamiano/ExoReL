@@ -58,7 +58,7 @@ def default_parameters():
     param['Tint'] = 110.0  # Retained for the unchanged legacy C backend
     param['T_surface'] = None  # Required temperature at bottom pressure P0 [K]
     param['T_join'] = 200.0  # Temperature at the adiabat/radiative join [K]
-    param['tau_join'] = 0.0  # Thermal optical depth at join; zero is an isothermal cap
+    param['tau_join'] = -4.0  # log10(thermal optical depth at join) in input files
     param['gamma'] = -0.5228787452803376  # log10(stellar/thermal opacity ratio) in input files
     param['eta'] = 0.1  # Intrinsic contribution to T_join**4
     param['molar_heat_capacities'] = {}  # Optional constant overrides of species Cp(T) [J mol^-1 K^-1]
@@ -376,7 +376,8 @@ def par_and_calc(param):
         elif param['PT_profile_type'] == 'parametric':
             if param.get('T_surface') is None and 'T_surface_range' not in param:
                 raise ValueError("parametric profiles require T_surface, T_join, tau_join, gamma, eta")
-            param['gamma'] = 10. ** param['gamma']
+            for name in ('tau_join', 'gamma'):
+                param[name] = 10. ** param[name]
         else:
             PT_prof = np.genfromtxt(param['PT_profile_type'])
             param['Pp'] = PT_prof[:,0] + 0.0
@@ -755,7 +756,7 @@ def temp_profile(param):
     param : dict
         Prepared settings with pressure grid P and PT_profile_type. Isothermal
         profiles require Tp. Parametric profiles require T_surface, T_join,
-        tau_join, linear gamma, eta, P0, and the undepleted gas composition.
+        linear tau_join and gamma, eta, P0, and the undepleted gas composition.
 
     Returns
     -------
@@ -841,7 +842,7 @@ def ranges(param):
             for key, bounds in {
                 'T_surface_range': [200., 2000.],
                 'T_join_range': [110.1, 500.],
-                'tau_join_range': [0., 100.],
+                'tau_join_range': [-4., 2.],  # log10
                 'gamma_range': [-2., 2.],  # log10
                 'eta_range': [0., 1.],
             }.items():

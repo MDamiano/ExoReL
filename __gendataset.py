@@ -187,7 +187,7 @@ def validate_dataset_thermal_row(param, values):
     atmosphere = param.copy()
     for name in ('T_surface', 'T_join', 'tau_join', 'gamma', 'eta'):
         if name in values:
-            atmosphere[name] = 10.0 ** values[name] if name == 'gamma' else values[name]
+            atmosphere[name] = 10.0 ** values[name] if name in ('tau_join', 'gamma') else values[name]
     space = param['gas_par_space']
     species = param['fit_molecules']
     if space == 'partial_pressure':
@@ -222,7 +222,8 @@ def scale_dataset_design(unit_values, param, par, lower, upper):
     """Scale a design and condition water/join temperature before CSV storage.
 
     Saved design coordinates are the actual sampled values, so resume does
-    not apply these conditional transformations a second time.
+    not apply these conditional transformations a second time. tau_join and
+    gamma coordinates and bounds are log10, as in retrievals.
     """
     scaled = sp.stats.qmc.scale(unit_values, lower, upper)
     if param.get('PT_profile_type') != 'parametric':
@@ -787,8 +788,16 @@ def add_dataset_noise(param, data, sample_index, rank, sampled_values):
 
 
 class GEN_DATASET:
+    """Generate datasets from configured parameters, including log thermal inputs."""
+
     def __init__(self, par):
         self.param = copy.deepcopy(par)
+        # Decode fixed optical parameters once on our private copy. Sampled
+        # coordinates stay logarithmic until each design row is evaluated.
+        if self.param['PT_profile_type'] == 'parametric':
+            for name in ('tau_join', 'gamma'):
+                if name + '_range' not in self.param:
+                    self.param[name] = 10. ** self.param[name]
         # Preserve the configured temperature when the same instance runs again.
         self._base_temperature = copy.deepcopy(self.param.get('Tp'))
         if 'Tirr_range' in self.param:
@@ -1218,7 +1227,7 @@ class GEN_DATASET:
                         for name in ('T_surface', 'T_join', 'tau_join', 'gamma', 'eta'):
                             if name in eval_map:
                                 self.param[name] = (10. ** eval_map[name]
-                                                    if name == 'gamma' else eval_map[name])
+                                                    if name in ('tau_join', 'gamma') else eval_map[name])
 
                     if 'Rp' in eval_map.keys():
                         self.param['Rp'] = eval_map['Rp'] + 0.0

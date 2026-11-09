@@ -40,7 +40,7 @@
   "return_bins": true,
   "T_surface": 340.0,
   "T_join": 200.0,
-  "tau_join": 0.0,
+  "tau_join": -4.0,
   "gamma": -0.5228787453,
   "eta": 0.1,
   "physics_model_code_language": "Python",

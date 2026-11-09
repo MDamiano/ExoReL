@@ -85,10 +85,9 @@ def conditional_join_temperature(param, unit_value, T_surface):
 def coupled_thermal_prior(param, unit_values):
     """Transform five unit coordinates to thermal sampler coordinates.
 
-    Order is THERMAL_PARAMETERS. T_surface, T_join, tau_join and eta are
-    linear; gamma is log10. T_join has conditional support below T_surface.
-    A tau_join range starting at zero retains the exact isothermal endpoint;
-    zero has zero prior mass unless the parameter is fixed there.
+    Order is THERMAL_PARAMETERS. T_surface, T_join and eta are linear;
+    tau_join and gamma are log10, with uniform priors in log10 space.
+    T_join has conditional support below T_surface.
     """
     unit_values = np.asarray(unit_values, dtype=float)
     if unit_values.shape != (5,):
