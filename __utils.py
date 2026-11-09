@@ -2674,7 +2674,7 @@ def add_noise(param, data, noise_model=0):
     def gaussian_noise_curated(spec):
         spec_copy = spec + 0.0
         spec_final = spec + 0.0
-        red_chi = 100.0
+        red_chi = None
 
         for _ in range(1000):
             new_spec = gaussian_noise(spec_copy, no_less_zero=True)
@@ -2687,7 +2687,10 @@ def add_noise(param, data, noise_model=0):
                 new_chi_square,
                 len(new_spec[:, 0]),
             )
-            if 1.0 < new_red_chi < red_chi:
+            # Until a draw exceeds 1, keep the closest draw from below.
+            if (red_chi is None
+                    or 1.0 < new_red_chi < red_chi
+                    or (red_chi <= 1.0 and new_red_chi > red_chi)):
                 red_chi = new_red_chi + 0.0
                 spec_final = new_spec + 0.0
 
