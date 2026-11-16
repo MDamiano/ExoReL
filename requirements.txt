@@ -8,7 +8,7 @@ spectres
 stsynphot
 synphot
 gdown
-arviz
+arviz>=1.2,<2
 
 # Optional (not installed by default):
 # pymultinest==2.11  # requires MultiNest system libraries

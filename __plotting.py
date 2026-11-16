@@ -18,8 +18,8 @@ from scipy.interpolate import interp1d
 from .__utils import (
     MULTI_SOLUTION_DELTA_LOG_EVIDENCE_THRESHOLD,
     find_nearest,
-    temp_profile,
     reso_range,
+    water_cloud_ice_mask,
 )
 
 _COMMON_PLOT_STYLE = 'seaborn-v0_8-white'
@@ -67,8 +67,47 @@ def _forward_plot_spectrum(mnest, cube, n_obs=0, phi=None):
     )
 
 
+def _plot_spectrum_residuals(ax, observation, model, model_interval=None):
+    """Raw data-minus-model residuals with measurement errors and model bounds.
+
+    The shaded reference is the model interval minus the best-fit model,
+    in the same units as the spectrum; it is separate from measurement errors.
+    """
+    data = np.asarray(observation['Fplanet'], dtype=float)
+    uncertainty = np.asarray(observation['error_p'], dtype=float)
+    model = np.asarray(model, dtype=float)
+    if model.shape != data.shape:
+        raise ValueError('Residual model must match the observed spectrum shape.')
+    if np.any(~np.isfinite(uncertainty)) or np.any(uncertainty <= 0):
+        raise ValueError('Residuals require finite, positive measurement uncertainties.')
+    residual = data - model
+    extents = [np.abs(residual) + uncertainty]
+    if model_interval is not None:
+        lower, upper = np.asarray(model_interval) - model
+        ax.fill_between(observation['wl'], lower, upper,
+                        color='#404784', alpha=.25, linewidth=0, zorder=0,
+                        label='_nolegend_')
+        extents.extend([np.abs(lower), np.abs(upper)])
+    ax.axhline(0., color='#666666', linestyle='--', linewidth=.9, zorder=1)
+    ax.errorbar(
+        observation['wl'], residual, yerr=uncertainty,
+        linestyle='', elinewidth=.6, ecolor=(.25, .25, .25, .35),
+        color='#e24a33', marker='o', markerfacecolor='#e24a33',
+        markeredgecolor='none', markersize=2.4, capsize=0., zorder=2,
+    )
+    ax.set_ylabel('Residuals', fontsize=11)
+    ax.yaxis.set_major_locator(ticker.MaxNLocator(nbins=3))
+    ax.ticklabel_format(axis='y', style='sci', scilimits=(-3, 3))
+    ax.yaxis.get_offset_text().set_fontsize(10)
+    finite = np.concatenate(extents)
+    finite = finite[np.isfinite(finite)]
+    limit = 1.15 * np.max(finite) if finite.size else 1.
+    ax.set_ylim(-limit, limit)
+    ax.tick_params(axis='both', labelsize=11)
+
+
 def plot_nest_spec(mnest, cube, solutions=0):
-    """Plot retrieved spectrum and confidence bands.
+    """Plot retrieved spectra, confidence bands, and raw residual panels.
 
     Parameters
     - mnest: MULTINEST instance (provides `param`, `_forward_cube`, and
@@ -96,10 +135,16 @@ def plot_nest_spec(mnest, cube, solutions=0):
 
     # Single observation
     if mnest.param['obs_numb'] is None:
-        fig = plt.figure(figsize=(10.0, 4.0), dpi=150)
+        fig, (ax, residual_ax) = plt.subplots(
+            2, 1, sharex=True, figsize=(10., 5.4), dpi=150, layout='constrained',
+            gridspec_kw={'height_ratios': [3.5, 1], 'hspace': .08},
+        )
+        _, model_native = _forward_plot_spectrum(mnest, cube)
+        observed_wavelength = np.asarray(mnest.param['spectrum']['wl']).copy()
+        residual_interval = None
 
         # Data
-        plt.errorbar(
+        ax.errorbar(
             mnest.param['spectrum']['wl'],
             mnest.param['spectrum']['Fplanet'],
             yerr=mnest.param['spectrum']['error_p'],
@@ -131,7 +176,7 @@ def plot_nest_spec(mnest, cube, solutions=0):
 
         # Model on R=500 grid. ``forward`` owns the cloudy/clear mixture.
         wl, model = _forward_plot_spectrum(mnest, cube)
-        plt.plot(wl, model, color='#404784', linewidth=1.2, label='Best fit')
+        ax.plot(wl, model, color='#404784', linewidth=1.2, label='Best fit')
 
         best_fit = np.array([wl, model]).T
 
@@ -157,6 +202,16 @@ def plot_nest_spec(mnest, cube, solutions=0):
             q16, q84 = np.nanquantile(fl[:, 1:], [0.16, 0.84], axis=1)
             q2, q98 = np.nanquantile(fl[:, 1:], [0.0225, 0.9775], axis=1)
             q003, q997 = np.nanquantile(fl[:, 1:], [0.00135, 0.99865], axis=1)
+
+            # Match the upper panel's model-uncertainty widths, evaluated in
+            # the original data bins; no division by measurement uncertainty.
+            residual_interval = tuple(
+                np.maximum(model_native + np.interp(
+                    observed_wavelength, sample_wavelength, quantile - q50,
+                    left=np.nan, right=np.nan,
+                ), 0.)
+                for quantile in (q16, q84)
+            )
 
             plot_wavelength = best_fit[:, 0]
 
@@ -186,9 +241,9 @@ def plot_nest_spec(mnest, cube, solutions=0):
 
             best_fit = np.column_stack([best_fit, p84, p16, p98, p2, p997, p003])
 
-            plt.fill_between(plot_wavelength, p003, p997, ec=(0, 0, 0, 0), fc=(64/255, 71/255, 132/255, 0.20), label='3σ')
-            plt.fill_between(plot_wavelength, p2, p98, ec=(0, 0, 0, 0), fc=(64/255, 71/255, 132/255, 0.35), label='2σ')
-            plt.fill_between(plot_wavelength, p16, p84, ec=(0, 0, 0, 0), fc=(64/255, 71/255, 132/255, 0.50), label='1σ')
+            ax.fill_between(plot_wavelength, p003, p997, ec=(0, 0, 0, 0), fc=(64/255, 71/255, 132/255, 0.20), label='3σ')
+            ax.fill_between(plot_wavelength, p2, p98, ec=(0, 0, 0, 0), fc=(64/255, 71/255, 132/255, 0.35), label='2σ')
+            ax.fill_between(plot_wavelength, p16, p84, ec=(0, 0, 0, 0), fc=(64/255, 71/255, 132/255, 0.50), label='1σ')
 
         # Save best fit table
         np.savetxt(mnest.param['out_dir'] + f'Best_fit_sol{solutions}.dat', best_fit)
@@ -207,22 +262,36 @@ def plot_nest_spec(mnest, cube, solutions=0):
             mnest.param['stop_c_wl_grid'] = find_nearest(mnest.param['wl_C_grid'], mnest.param['max_wl']) + 35
 
         # Labels and cosmetics
-        plt.legend(frameon=False, ncol=1, loc='center left', bbox_to_anchor=(1.02, 0.5))
-        plt.xlabel(r'Wavelength [$\mu$m]')
+        _plot_spectrum_residuals(
+            residual_ax, mnest.param['spectrum'], model_native, residual_interval,
+        )
+        handles, labels = ax.get_legend_handles_labels()
+        order = sorted(range(len(labels)), key=lambda i: labels[i] != 'Data')
+        ax.legend(
+            [handles[i] for i in order], [labels[i] for i in order],
+            frameon=False, ncol=len(labels),
+            loc='lower left', bbox_to_anchor=(0., 1.08, 1., 0.),
+            mode='expand', borderaxespad=0.,
+        )
+        residual_ax.set_xlabel(r'Wavelength [$\mu$m]')
         if mnest.param['albedo_calc']:
-            plt.ylabel('Albedo')
+            ax.set_ylabel('Albedo')
         elif mnest.param['fp_over_fs']:
-            plt.ylabel(r'Contrast Ratio (F$_p$/F$_{\star}$)')
+            ax.set_ylabel(r'Contrast Ratio (F$_p$/F$_{\star}$)')
         else:
-            plt.ylabel('Planetary flux [W/m$^2$]')
-        fig.tight_layout()
+            ax.set_ylabel('Planetary flux [W/m$^2$]')
 
     # Multiple observations stacked
     else:
-        fig, axs = plt.subplots(2, sharex=True, gridspec_kw={'hspace': 0}, figsize=(8.5, 6.0), dpi=130)
+        n_observations = mnest.param['obs_numb']
+        fig, panels = plt.subplots(
+            2 * n_observations, 1, sharex=True, squeeze=False,
+            gridspec_kw={'height_ratios': [3.5, 1] * n_observations, 'hspace': .12},
+            figsize=(10., 4.2 * n_observations), dpi=130, layout='constrained',
+        )
+        axs, residual_axes = panels[::2, 0], panels[1::2, 0]
         new_wl, new_wl_central = _load_target_bins()
         spectrum_bins = mnest.param['spectrum']['bins']
-        mnest.param['spectrum']['bins'] = False
 
         for obs in range(0, mnest.param['obs_numb']):
             observation_phi = (
@@ -230,6 +299,7 @@ def plot_nest_spec(mnest, cube, solutions=0):
                 if mnest.param['fit_phi']
                 else mnest.param.get('phi' + str(obs))
             )
+            mnest.param['spectrum']['bins'] = spectrum_bins
             _, model_native = _forward_plot_spectrum(
                 mnest,
                 cube,
@@ -237,6 +307,9 @@ def plot_nest_spec(mnest, cube, solutions=0):
                 phi=observation_phi,
             )
 
+            _plot_spectrum_residuals(
+                residual_axes[obs], mnest.param['spectrum'][str(obs)], model_native,
+            )
             axs[obs].plot(mnest.param['spectrum'][str(obs)]['wl'], model_native, linestyle='', color='#1f77b4',
                           marker='D', markerfacecolor='#4c78a8', markeredgecolor='#1f77b4', markersize=4.0)
 
@@ -254,6 +327,7 @@ def plot_nest_spec(mnest, cube, solutions=0):
             start = find_nearest(new_wl_central, min(mnest.param['spectrum'][str(obs)]['wl']) - 0.05)
             stop = find_nearest(new_wl_central, max(mnest.param['spectrum'][str(obs)]['wl']) + 0.05)
 
+            mnest.param['spectrum']['bins'] = False
             temp = mnest.param['spectrum'][str(obs)]['wl'] + 0.0
             mnest.param['spectrum'][str(obs)]['wl'] = new_wl_central[start:stop]
 
@@ -267,19 +341,26 @@ def plot_nest_spec(mnest, cube, solutions=0):
             axs[obs].plot(wl, model, color='#404784', linewidth=1.2, label='MAP (R=500)')
             mnest.param['spectrum'][str(obs)]['wl'] = temp + 0.0
 
-            axs[obs].legend(frameon=False)
+            handles, labels = axs[obs].get_legend_handles_labels()
+            order = sorted(range(len(labels)), key=lambda i: labels[i] != lab)
+            axs[obs].legend(
+                [handles[i] for i in order], [labels[i] for i in order],
+                frameon=False, ncol=2, loc='lower left',
+                bbox_to_anchor=(0., 1.08, 1., 0.), mode='expand', borderaxespad=0.,
+            )
             axs[obs].set_ylim([-0.2 * min(model), max(model) + 0.2 * max(model)])
 
         mnest.param['spectrum']['bins'] = spectrum_bins
 
         if mnest.param['albedo_calc']:
-            fig.text(0.04, 0.5, 'Albedo', va='center', rotation='vertical')
+            ylabel = 'Albedo'
+        elif mnest.param['fp_over_fs']:
+            ylabel = r'Contrast Ratio (F$_p$/F$_{\star}$)'
         else:
-            if mnest.param['fp_over_fs']:
-                fig.text(0.04, 0.5, 'F$_p$/F$_{\\star}$', va='center', rotation='vertical')
-            else:
-                fig.text(0.04, 0.5, 'Planetary flux [W/m$^2$]', va='center', rotation='vertical')
-        fig.text(0.5, 0.04, 'Wavelength [$\\mu$m]', ha='center')
+            ylabel = r'Planetary flux [W/m$^2$]'
+        for ax in axs:
+            ax.set_ylabel(ylabel, fontsize=11)
+        residual_axes[-1].set_xlabel(r'Wavelength [$\mu$m]')
 
     # Leave atmospheric profiles prepared for the chemistry and P-T plots that
     # run immediately after the spectrum plot.
@@ -421,8 +502,388 @@ def plot_contribution(mnest, cube, solutions=0):
     mnest.cube_to_param(cube)
 
 
+def _cloud_density_samples(param):
+    """Physical density per cloud phase; absent phases contribute zero."""
+    pressure = np.asarray(param['P'], dtype=float)
+    temperature = np.broadcast_to(np.asarray(param['T'], dtype=float), pressure.shape)
+    profiles = {}
+    for molecule, enabled, mass in (
+        ('H2O', param.get('fit_wtr_cld'), .018),
+        ('NH3', param.get('fit_amm_cld'), .017),
+    ):
+        if not enabled:
+            continue
+        density = np.zeros(pressure.shape)
+        density[:-1] = np.maximum(
+            np.asarray(param['condensation_loss_' + molecule])[:-1]
+            * mass * pressure[:-1] / const.R.value / temperature[:-1], 0.,
+        )
+        if molecule == 'H2O':
+            ice = (water_cloud_ice_mask(param, temperature)
+                   if param['wtr_cld_type'] == 'mixed'
+                   else np.full(pressure.shape, param['wtr_cld_type'] == 'ice'))
+            profiles['H2O_liquid'] = np.where(~ice, density, 0.)
+            profiles['H2O_ice'] = np.where(ice, density, 0.)
+        else:
+            profiles[molecule] = density
+    return profiles
+
+
+def chemistry_posterior_bands(mnest, solutions=0, *, include_clouds=False):
+    """Pointwise median and central 68.27% VMR intervals from posterior atmospheres.
+
+    Use all saved equal-weight parameter samples when available; otherwise
+    reproducibly draw 2048 samples from the solution's weighted posterior.
+    Reconstruct atmospheres only (no spectra), and restore the best-fit state.
+    With include_clouds, also summarize physical density separately per phase;
+    absent phases contribute zero rather than being omitted from quantiles.
+    At each pressure, quantiles condition on the draw containing that layer;
+    never extrapolate below a draw's surface or above its atmospheric grid.
+    """
+    param = mnest.param
+    sample_path = os.path.join(param['out_dir'], f'parameters_samples_sol{solutions}.dat')
+    if os.path.isfile(sample_path):
+        samples = np.loadtxt(sample_path, ndmin=2)
+    else:
+        prefix = os.path.join(param['out_dir'], param.get('name_p', '') + '_')
+        posterior_path = prefix + f'solution{solutions}.txt'
+        if not os.path.isfile(posterior_path) and solutions == 0:
+            posterior_path = prefix + '.txt'
+        if not os.path.isfile(posterior_path):
+            return None
+        posterior = np.loadtxt(posterior_path, ndmin=2)
+        weights = posterior[:, 0]
+        if (posterior.shape[1] < 3 or np.any(~np.isfinite(posterior))
+                or np.any(weights < 0) or weights.sum() <= 0):
+            raise ValueError('Invalid posterior samples for chemistry intervals.')
+        indices = np.random.default_rng(42).choice(
+            len(posterior), 2048, replace=True, p=weights / weights.sum(),
+        )
+        samples = posterior[indices, 2:]
+    if len(samples) < 2 or np.any(~np.isfinite(samples)):
+        raise ValueError('Chemistry intervals require at least two finite posterior samples.')
+
+    pressure = np.asarray(param.get('P_standard', param['P']), dtype=float)
+    pressure = np.unique(pressure[np.isfinite(pressure) & (pressure > 0)])
+    molecules = list(param['fit_molecules'])
+    if param.get('gas_fill') is not None:
+        molecules.append(param['gas_fill'])
+        if not param['rocky']:
+            molecules.append('He')
+    molecules = list(dict.fromkeys(molecules))
+    profiles = {mol: np.full((len(samples), len(pressure)), np.nan) for mol in molecules}
+    cloud_profiles = {}
+    water_boundaries = np.full((len(samples), 2), np.nan)
+    if include_clouds:
+        cloud_profiles = {
+            phase: np.full((len(samples), len(pressure)), np.nan)
+            for phase in _cloud_density_samples(param)
+        }
+    print(f'Calculating atmospheric 1-sigma intervals from {len(samples)} posterior draws.', flush=True)
+    try:
+        for index, cube in enumerate(samples):
+            # Each draw starts from the same input, not the previous depleted column.
+            mnest.param = param
+            mnest.cube_to_param(cube)
+            atmosphere = mnest.param
+            p = np.asarray(atmosphere['P'], dtype=float)
+            order = np.argsort(p)
+            p = p[order]
+            supported = ((pressure >= p[0])
+                         & (pressure <= min(p[-1], atmosphere['P0'])))
+            for mol in molecules:
+                vmr = np.broadcast_to(
+                    np.asarray(atmosphere['vmr_' + mol], dtype=float), p.shape,
+                )[order]
+                # Interpolate VMR in log pressure; retain exact zeros (e.g. ozone masks).
+                profiles[mol][index, supported] = np.interp(
+                    np.log(pressure[supported]), np.log(p), vmr,
+                )
+            if include_clouds:
+                for phase, density in _cloud_density_samples(atmosphere).items():
+                    cloud_profiles[phase][index, supported] = np.interp(
+                        np.log(pressure[supported]), np.log(p), density[order],
+                    )
+                if atmosphere.get('fit_wtr_cld'):
+                    # Same top/base convention as the chemistry cloud markers.
+                    changes = np.flatnonzero(np.diff(np.asarray(atmosphere['vmr_H2O'])[order]) != 0.)
+                    if changes.size:
+                        water_boundaries[index] = p[[changes[0], changes[-1]]]
+    finally:
+        mnest.param = param
+
+    tail = 0.5 * (1.0 - math.erf(1.0 / np.sqrt(2.0)))
+    bands = {'pressure': pressure, 'sample_count': len(samples), 'vmr': {}, 'median': {}}
+    for mol, values in profiles.items():
+        supported = np.sum(np.isfinite(values), axis=0) >= 2
+        quantiles = np.full((3, len(pressure)), np.nan)
+        quantiles[:, supported] = np.nanquantile(
+            values[:, supported], [tail, 0.5, 1 - tail], axis=0,
+        )
+        bands['vmr'][mol] = quantiles[[0, 2]]
+        bands['median'][mol] = quantiles[1]
+    if include_clouds:
+        bands['cloud_density'] = {}
+        bands['cloud_median'] = {}
+        valid_boundaries = np.all(np.isfinite(water_boundaries), axis=1)
+        bands['cloud_boundaries'] = {
+            'H2O': (np.median(water_boundaries[valid_boundaries], axis=0)
+                    if np.any(valid_boundaries) else np.array([np.nan, np.nan]))
+        }
+        for phase, values in cloud_profiles.items():
+            supported = np.sum(np.isfinite(values), axis=0) >= 2
+            bounds = np.full((3, len(pressure)), np.nan)
+            bounds[:, supported] = np.nanquantile(
+                values[:, supported], [tail, .5, 1 - tail], axis=0,
+            )
+            bands['cloud_density'][phase] = bounds[[0, 2]]
+            bands['cloud_median'][phase] = bounds[1]
+    return bands
+
+
+def _draw_chemistry_profile(ax, param, *, secondary_axis=True, report=False,
+                            molecule_colors=None, credible_bands=None, use_median=False):
+    """Draw MAP profiles, or pointwise posterior medians with credible bands."""
+    # Paul Tol's colour-blind-safe muted palette, retaining the requested H2O
+    # blue. Neutral colors remain reserved for surface and cloud boundaries.
+    # https://sronpersonalpages.nl/~pault/
+    # Assign by species so both figures remain consistent across gas order.
+    gas_colors = {
+        'H2O': '#2878B5', 'NH3': '#332288', 'CH4': '#DDCC77',
+        'H2S': '#44AA99', 'SO2': '#882255', 'CO2': '#CC6677',
+        'CO': '#88CCEE', 'O2': '#999933', 'O3': '#AA4499',
+        'N2O': '#CC6677', 'N2': '#117733', 'He': '#117733',
+        'H2': '#AA4499',
+    }
+    # The palette has nine colors; distinguish reused colors by line style.
+    gas_linestyles = {'N2O': '--', 'He': '--', 'H2': '--'}
+    ax.set_prop_cycle(color=list(gas_colors.values()))
+    molecule_colors = {**gas_colors, **(molecule_colors or {})}
+
+    def above_surface(pressure, values):
+        """Truncate at P0, interpolating an endpoint when it lies between layers."""
+        pressure = np.asarray(pressure, dtype=float)
+        values = np.broadcast_to(np.asarray(values, dtype=float), pressure.shape)
+        order = np.argsort(pressure)
+        pressure, values = pressure[order], values[order]
+        surface = float(param['P0'])
+        keep = pressure <= surface
+        clipped_p, clipped_values = pressure[keep], values[keep]
+        if clipped_p.size and clipped_p[-1] < surface < pressure[-1]:
+            endpoint = np.interp(np.log(surface), np.log(pressure), values)
+            clipped_p = np.append(clipped_p, surface)
+            clipped_values = np.append(clipped_values, endpoint)
+        return clipped_p, clipped_values
+
+    def draw_gas(molecule):
+        if use_median and credible_bands is not None:
+            abundance = credible_bands['median'][molecule]
+            pressure = credible_bands['pressure']
+        else:
+            abundance = param['vmr_' + molecule]
+            pressure = param['P']
+        pressure, abundance = above_surface(pressure, abundance)
+        line, = ax.loglog(
+            abundance, pressure, label=molecule,
+            color=molecule_colors.get(molecule),
+            linestyle=gas_linestyles.get(molecule, '-'),
+            zorder=3,
+        )
+        if credible_bands is not None and molecule in credible_bands['vmr']:
+            lower, upper = credible_bands['vmr'][molecule]
+            band_pressure, lower = above_surface(credible_bands['pressure'], lower)
+            _, upper = above_surface(credible_bands['pressure'], upper)
+            valid = np.isfinite(lower) & np.isfinite(upper) & (upper > 0)
+            ax.fill_betweenx(
+                band_pressure, np.maximum(lower, 1e-18),
+                np.maximum(upper, 1e-18), where=valid,
+                color=line.get_color(), alpha=0.14, linewidth=0,
+                edgecolor='none', zorder=1, label='_nolegend_',
+            )
+
+    for mol in param['fit_molecules']:
+        draw_gas(mol)
+        if report and mol == 'O3' and param['O3_earth']:
+            print(
+                str(mol)
+                + ' -> Stratosphere: '
+                + str(param['vmr_' + mol][np.where(param['vmr_' + mol] > 10.0 ** (-11.0))[0][0]])
+                + ', Elsewhere: 0.0'
+            )
+        elif report:
+            print(
+                str(mol)
+                + ' -> Top: '
+                + str(param['vmr_' + mol][0])
+                + ', Bottom: '
+                + str(param['vmr_' + mol][-1])
+            )
+
+    if param['gas_fill'] is not None:
+        if not param['rocky']:
+            if report:
+                print('He' + ' -> Top: ' + str(param['vmr_He'][0]) + ', Bottom: ' + str(param['vmr_He'][-1]))
+            draw_gas('He')
+        if report:
+            print(
+                str(param['gas_fill'])
+                + ' -> Top: '
+                + str(param['vmr_' + param['gas_fill']][0])
+                + ', Bottom: '
+                + str(param['vmr_' + param['gas_fill']][-1])
+            )
+        draw_gas(param['gas_fill'])
+
+    ax.set_xlim((1e-18, 1.5))
+    ax.set_xlabel('Molecule VMR')
+    ax.set_ylabel('Pressure [Pa]')
+
+    def pa_to_bar(y):
+        return y / (10.0 ** 5.0)
+
+    def bar_to_pa(y):
+        return y * (10.0 ** 5.0)
+
+    if param['fit_wtr_cld']:
+        cld_idx = np.where(np.diff(param['vmr_H2O']) != 0.)[0]
+        if len(cld_idx) == 0:
+            cld_idx = [len(param['P']) - 1]
+        cloud_top = param['P'][min(cld_idx)]
+        cloud_base = param['P'][max(cld_idx)]
+        if use_median and credible_bands is not None:
+            cloud_top, cloud_base = credible_bands.get('cloud_boundaries', {}).get(
+                'H2O', (cloud_top, cloud_base),
+            )
+
+        ax.hlines(
+            cloud_base,
+            ax.get_xlim()[0],
+            ax.get_xlim()[1],
+            linestyle='--',
+            alpha=0.5,
+            color='black',
+            label='H$_2$O cloud',
+        )
+        ax.hlines(
+            cloud_top,
+            ax.get_xlim()[0],
+            ax.get_xlim()[1],
+            linestyle='--',
+            alpha=0.5,
+            color='black',
+        )
+    if param['rocky']:
+        ax.hlines(
+            param['P0'],
+            ax.get_xlim()[0],
+            ax.get_xlim()[1],
+            linestyle='-',
+            color='black',
+            alpha=0.75,
+            label='Surface',
+        )
+
+    ax.yaxis.set_ticks(10.0 ** np.arange(1.0, 12.1, 1))
+    if secondary_axis and sys.version[0] == '3':
+        secax_y = ax.secondary_yaxis('right', functions=(pa_to_bar, bar_to_pa))
+        secax_y.set_ylabel('Pressure [bar]')
+
+    if param['rocky']:
+        ax.set_ylim((1.0, param['P0'] + (0.1 * param['P0'])))
+    else:
+        bottom = 5 * param['P'][max(cld_idx)] if param['fit_wtr_cld'] else param['P'][-1]
+        ax.set_ylim([1.0, bottom])
+    ax.set_ylim(sorted(ax.get_ylim(), reverse=True))
+
+    ax.legend(loc='upper left', frameon=False)
+
+
+def _draw_cloud_density(ax, param, *, secondary_axis=True, credible_bands=None,
+                        use_median=False):
+    """Draw MAP or posterior median cloud densities with optional 1-sigma bands."""
+    cloud_profiles = []
+    pressure = np.asarray(param['P'], dtype=float)
+    temperature = np.broadcast_to(np.asarray(param['T'], dtype=float), pressure.shape)
+    for enabled, molecule, molar_mass in (
+        (param['fit_wtr_cld'], 'H2O', 0.018),
+        (param['fit_amm_cld'], 'NH3', 0.017),
+    ):
+        if enabled:
+            condensation_loss = np.asarray(param['condensation_loss_' + molecule], dtype=float)
+            density = np.full(len(pressure), 1.0e-36)
+            density[:-1] = np.maximum(
+                condensation_loss[:-1] * molar_mass * pressure[:-1]
+                / const.R.value / temperature[:-1],
+                1.0e-25,
+            )
+            cloud_profiles.append((molecule, density))
+
+    median_clouds = use_median and credible_bands is not None and 'cloud_median' in credible_bands
+    for molecule, density in ([] if median_clouds else cloud_profiles):
+        if molecule == 'H2O':
+            if param['wtr_cld_type'] == 'mixed':
+                ice_mask = water_cloud_ice_mask(param, temperature)
+            else:
+                ice_mask = np.full(pressure.shape, param['wtr_cld_type'] == 'ice')
+            for phase, mask, color in (
+                ('liquid', ~ice_mask, '#2878B5'),
+                ('ice', ice_mask, '#8054B3'),
+            ):
+                if np.any(mask):
+                    # Mask other phases so separated layers are not joined.
+                    ax.loglog(
+                        np.where(mask, density, np.nan), pressure,
+                        color=color,
+                        label=r'H$_2$O (' + phase + ')',
+                    )
+        else:
+            ax.loglog(density, pressure, color='#505A89', linestyle='--', label=molecule)
+    if credible_bands is not None:
+        colors = {'H2O_liquid': '#2878B5', 'H2O_ice': '#8054B3', 'NH3': '#505A89'}
+        band_p = np.asarray(credible_bands['pressure'])
+        plot_p = band_p[band_p <= param['P0']]
+        if plot_p.size and plot_p[-1] < param['P0'] < band_p[-1]:
+            plot_p = np.append(plot_p, param['P0'])
+        for phase, bounds in credible_bands.get('cloud_density', {}).items():
+            low, high = [np.interp(np.log(plot_p), np.log(band_p), bound)
+                         for bound in bounds]
+            if median_clouds:
+                median = np.interp(np.log(plot_p), np.log(band_p),
+                                   credible_bands['cloud_median'][phase])
+                label = {'H2O_liquid': r'H$_2$O (liquid)',
+                         'H2O_ice': r'H$_2$O (ice)', 'NH3': 'NH3'}[phase]
+                ax.loglog(np.maximum(median, 1e-25), plot_p, color=colors[phase],
+                          label=label, linestyle='--' if phase == 'NH3' else '-', zorder=3)
+            # Zero-density draws belong to the interval; only clip for log display.
+            valid = np.isfinite(low) & np.isfinite(high) & (high > 0)
+            ax.fill_betweenx(
+                plot_p, np.maximum(low, 1e-25), np.maximum(high, 1e-25),
+                where=valid, color=colors[phase], alpha=.14,
+                linewidth=0, edgecolor='none', zorder=1, label='_nolegend_',
+            )
+    ax.set_xlim(left=1.0e-15, right=max(ax.get_xlim()[1], 1.0e-14))
+    if param['rocky']:
+        ax.hlines(
+            param['P0'],
+            ax.get_xlim()[0],
+            ax.get_xlim()[1],
+            linestyle='-',
+            color='black',
+            alpha=0.75,
+            label='Surface',
+        )
+    ax.set_xlabel(r'Cloud density [kg m$^{-3}$]')
+    ax.set_ylabel('Pressure [Pa]')
+    if secondary_axis:
+        ax.secondary_yaxis('right', functions=(lambda p: p / 1.0e5, lambda p: p * 1.0e5)).set_ylabel('Pressure [bar]')
+    ax.set_ylim(sorted(ax.get_ylim(), reverse=True))
+    if param['rocky']:
+        ax.set_ylim(bottom=param['P0'] + (0.1 * param['P0']))
+    ax.legend(frameon=False)
+
+
 def plot_chemistry(param, solutions=0):
-    """Plot retrieved atmospheric chemistry, cloud density, and molecular mass.
+    """Plot MAP chemistry without uncertainty bands, plus clouds and molecular mass.
 
     Parameters
     - param: Parameter dictionary containing atmospheric structure, fitted molecules
@@ -448,96 +909,21 @@ def plot_chemistry(param, solutions=0):
     # Chemistry plot
     fig, ax = plt.subplots()
 
-    for mol in param['fit_molecules']:
-        ax.loglog(param['vmr_' + mol], param['P'], label=mol)
-        if mol == 'O3' and param['O3_earth']:
-            print(
-                str(mol)
-                + ' -> Stratosphere: '
-                + str(param['vmr_' + mol][np.where(param['vmr_' + mol] > 10.0 ** (-11.0))[0][0]])
-                + ', Elsewhere: 0.0'
-            )
-        else:
-            print(
-                str(mol)
-                + ' -> Top: '
-                + str(param['vmr_' + mol][0])
-                + ', Bottom: '
-                + str(param['vmr_' + mol][-1])
-            )
-
-    if param['gas_fill'] is not None:
-        if not param['rocky']:
-            print('He' + ' -> Top: ' + str(param['vmr_He'][0]) + ', Bottom: ' + str(param['vmr_He'][-1]))
-            ax.loglog(param['vmr_He'], param['P'], label='He')
-        print(
-            str(param['gas_fill'])
-            + ' -> Top: '
-            + str(param['vmr_' + param['gas_fill']][0])
-            + ', Bottom: '
-            + str(param['vmr_' + param['gas_fill']][-1])
-        )
-        ax.loglog(param['vmr_' + param['gas_fill']], param['P'], label=param['gas_fill'])
-
-    ax.set_xlim((1e-18, 1.5))
-    ax.set_xlabel('Molecule VMR')
-    ax.set_ylabel('Pressure [Pa]')
-
-    def pa_to_bar(y):
-        return y / (10.0 ** 5.0)
-
-    def bar_to_pa(y):
-        return y * (10.0 ** 5.0)
-
-    if param['fit_wtr_cld']:
-        cld_idx = np.where(np.diff(param['vmr_H2O']) != 0.)[0]
-        if len(cld_idx) == 0:
-            cld_idx = [len(param['P']) - 1]
-
-        plt.hlines(
-            param['P'][max(cld_idx)],
-            ax.get_xlim()[0],
-            ax.get_xlim()[1],
-            linestyle='--',
-            alpha=0.5,
-            color='black',
-            label='H$_2$O cloud',
-        )
-        plt.hlines(
-            param['P'][min(cld_idx)],
-            ax.get_xlim()[0],
-            ax.get_xlim()[1],
-            linestyle='--',
-            alpha=0.5,
-            color='black',
-        )
-    if param['rocky']:
-        plt.hlines(
-            param['P'][int(find_nearest(param['P'], param['P0']))],
-            ax.get_xlim()[0],
-            ax.get_xlim()[1],
-            linestyle='-',
-            color='black',
-            alpha=0.75,
-            label='Surface',
-        )
-
-    ax.yaxis.set_ticks(10.0 ** np.arange(1.0, 12.1, 1))
-    if sys.version[0] == '3':
-        secax_y = ax.secondary_yaxis('right', functions=(pa_to_bar, bar_to_pa))
-        secax_y.set_ylabel('Pressure [bar]')
-
-    if param['rocky']:
-        ax.set_ylim((1.0, param['P0'] + (0.1 * param['P0'])))
-    else:
-        bottom = 5 * param['P'][max(cld_idx)]
-        ax.set_ylim([1.0, bottom])
-    plt.gca().invert_yaxis()
-
-    ax.legend(loc='upper left', frameon=False)
+    _draw_chemistry_profile(ax, param, report=True)
     fig.tight_layout()
     fig.savefig(param['out_dir'] + f'Nest_chemistry_sol{solutions}.pdf', bbox_inches='tight')
     plt.close()
+
+    if param['fit_wtr_cld']:
+        cld_idx = np.flatnonzero(np.diff(param['vmr_H2O']) != 0.)
+        if len(cld_idx) == 0:
+            cld_idx = [len(param['P']) - 1]
+
+    def pa_to_bar(y):
+        return y / 1.0e5
+
+    def bar_to_pa(y):
+        return y * 1.0e5
 
     # Mean Molecular Mass plot
     fig, ax = plt.subplots()
@@ -602,35 +988,12 @@ def plot_chemistry(param, solutions=0):
     plt.close()
 
     # Cloud density plot
-    cloud_profiles = []
-    pressure = np.asarray(param['P'], dtype=float)
-    temperature = np.broadcast_to(np.asarray(param['T'], dtype=float), pressure.shape)
-    for enabled, molecule, molar_mass in (
-        (param['fit_wtr_cld'], 'H2O', 0.018),
-        (param['fit_amm_cld'], 'NH3', 0.017),
-    ):
-        if enabled:
-            condensation_loss = np.asarray(param['condensation_loss_' + molecule], dtype=float)
-            density = np.full(len(pressure), 1.0e-36)
-            density[:-1] = np.maximum(
-                condensation_loss[:-1] * molar_mass * pressure[:-1]
-                / const.R.value / temperature[:-1],
-                1.0e-25,
-            )
-            cloud_profiles.append((molecule, density))
-
-    if cloud_profiles:
+    if param['fit_wtr_cld'] or param['fit_amm_cld']:
         fig, ax = plt.subplots()
-        for molecule, density in cloud_profiles:
-            ax.loglog(density, pressure, label=molecule)
-        ax.set_xlabel(r'Cloud density [kg m$^{-3}$]')
-        ax.set_ylabel('Pressure [Pa]')
-        ax.secondary_yaxis('right', functions=(pa_to_bar, bar_to_pa)).set_ylabel('Pressure [bar]')
-        ax.invert_yaxis()
-        ax.legend(frameon=False)
+        _draw_cloud_density(ax, param)
         fig.tight_layout()
         fig.savefig(param['out_dir'] + f'Nest_cloud_density_sol{solutions}.pdf', bbox_inches='tight')
-        plt.close()
+        plt.close(fig)
 
 
 def _surface_albedo_sigma_slice(param, sigma):
@@ -887,8 +1250,9 @@ def plot_surface_albedo(param, solutions=0, sigma=None):
     plt.close()
 
 
-def plot_PT_profile(mnest, bestfit_cube, solutions=0):
-    """Render the retrieved P–T profile and surface (P0, T0) credible contours."""
+def plot_PT_profile(mnest, bestfit_cube, solutions=0, *, ax=None,
+                    bestfit_color='orange', legend_loc='lower right'):
+    """Render P–T bands and contours; return the upper 3-sigma P0 quantile."""
     def _central_quantiles(sigmas):
         sigmas = np.asarray(sigmas, dtype=float)
         inv_sqrt2 = 1.0 / np.sqrt(2.0)
@@ -912,7 +1276,9 @@ def plot_PT_profile(mnest, bestfit_cube, solutions=0):
             levels.append(flat[order[idx]])
         return np.asarray(levels)
 
-    _apply_plot_style()
+    standalone = ax is None
+    if standalone:
+        _apply_plot_style()
 
     sample_path = mnest.param['out_dir'] + f'random_temp_samples_sol{solutions}.dat'
 
@@ -935,11 +1301,11 @@ def plot_PT_profile(mnest, bestfit_cube, solutions=0):
     quantiles = np.nanquantile(profile_samples, quantile_targets, axis=1)
     q3_low, q2_low, q1_low, q50, q1_high, q2_high, q3_high = quantiles
 
-    fig, ax = plt.subplots(figsize=(6.4, 5.6), dpi=130)
+    if standalone:
+        fig, ax = plt.subplots(figsize=(6.4, 5.6), dpi=130)
     color = (64.0 / 255.0, 71.0 / 255.0, 132.0 / 255.0)
 
     ax.set_yscale('log')
-    ax.invert_yaxis()
     ax.set_xlabel('Temperature [K]')
     ax.set_ylabel('Pressure [Pa]')
 
@@ -950,14 +1316,18 @@ def plot_PT_profile(mnest, bestfit_cube, solutions=0):
     mnest.cube_to_param(bestfit_cube)
     bestfit_profile = np.asarray(mnest.param['T'])
     bestfit_pressures = np.asarray(mnest.param['P'])
-    ax.plot(bestfit_profile, bestfit_pressures, linestyle='--', color='orange', lw=1.2)
-    ax.scatter(bestfit_profile[-1], bestfit_pressures[-1], marker='s', fc='orange', ec='black', s=30, zorder=6)
+    ax.plot(bestfit_profile, bestfit_pressures, linestyle='--', color=bestfit_color, lw=1.2)
+    ax.scatter(bestfit_profile[-1], bestfit_pressures[-1], marker='s', fc=bestfit_color, ec='black', s=30, zorder=6)
 
+    valid_surface_pressures = surface_pressures[
+        np.isfinite(surface_pressures) & (surface_pressures > 0.0)
+    ]
+    surface_pressure_upper = np.percentile(valid_surface_pressures, _sigma_percentile(3.0))
     axis_top_candidates = [pressure_grid[0], bestfit_pressures[0]]
     axis_bottom_candidates = [
         pressure_grid[-1],
         bestfit_pressures[-1],
-        np.nanpercentile(surface_pressures, _sigma_percentile(3.0)),
+        surface_pressure_upper,
     ]
     axis_top_candidates = [val for val in axis_top_candidates if np.isfinite(val) and val > 0.0]
     axis_bottom_candidates = [val for val in axis_bottom_candidates if np.isfinite(val) and val > 0.0]
@@ -990,7 +1360,7 @@ def plot_PT_profile(mnest, bestfit_cube, solutions=0):
             if thresholds.size > 0:
                 inset_ax.contour(TT, PP, density, levels=np.sort(thresholds), colors=[color], linewidths=1.0)
 
-    inset_ax.scatter(bestfit_profile[-1], bestfit_pressures[-1], marker='s', fc='orange', ec='black', s=30, zorder=7)
+    inset_ax.scatter(bestfit_profile[-1], bestfit_pressures[-1], marker='s', fc=bestfit_color, ec='black', s=30, zorder=7)
     inset_ax.set_xlabel(r'T$_0$ [K]', fontsize=9)
     inset_ax.set_ylabel(r'P$_0$ [Pa]', fontsize=9)
     inset_ax.set_yscale('log')
@@ -999,8 +1369,7 @@ def plot_PT_profile(mnest, bestfit_cube, solutions=0):
     inset_ax.margins(x=0.05, y=0.05)
 
     legend_elements = [
-        Patch(fc='none', ec='none', label='Retrieval:'),
-        Line2D([], [], color='orange', linestyle='--', linewidth=1.2, label='Best fit model'),
+        Line2D([], [], color=bestfit_color, linestyle='--', linewidth=1.2, label='Best fit model'),
         Patch(fc=(color[0], color[1], color[2], 0.65), ec='none', label=r'1$\sigma$'),
         Patch(fc=(color[0], color[1], color[2], 0.40), ec='none', label=r'2$\sigma$'),
         Patch(fc=(color[0], color[1], color[2], 0.25), ec='none', label=r'3$\sigma$'),
@@ -1066,13 +1435,153 @@ def plot_PT_profile(mnest, bestfit_cube, solutions=0):
     ax.autoscale(axis='x', tight=True)
     ax.margins(x=0.05)
 
-    legend = ax.legend(handles=legend_elements, loc='lower right', frameon=False)
+    legend = ax.legend(handles=legend_elements, loc=legend_loc, frameon=False)
     if legend is not None:
         legend._legend_box.align = 'left'
 
-    fig.tight_layout()
-    fig.savefig(mnest.param['out_dir'] + f'PT_profile_sol{solutions}.pdf')
-    plt.close(fig)
+    if standalone:
+        fig.tight_layout()
+        fig.savefig(mnest.param['out_dir'] + f'PT_profile_sol{solutions}.pdf')
+        plt.close(fig)
+    return surface_pressure_upper
+
+
+def _place_atmosphere_legends(fig, axes):
+    """Wrap each existing legend above its panel, within the panel width."""
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    legend_height = 0.0
+    for ax in axes:
+        previous = ax.get_legend()
+        handles = previous.legend_handles
+        labels = [text.get_text() for text in previous.get_texts()]
+        options = dict(
+            loc='lower left', bbox_to_anchor=(0, 1.02),
+            borderaxespad=0, frameon=False, handlelength=2,
+            handletextpad=0.5, columnspacing=1.1, labelspacing=0.35,
+        )
+        for columns in range(min(4, len(labels)), 0, -1):
+            legend = ax.legend(handles, labels, ncols=columns, **options)
+            if legend.get_window_extent(renderer).width <= ax.get_window_extent(renderer).width:
+                break
+        legend = ax.legend(
+            handles, labels, ncols=columns,
+            **{**options, 'bbox_to_anchor': (0, 1.02, 1, 0), 'mode': 'expand'},
+        )
+        legend_height = max(legend_height, legend.get_window_extent(renderer).height)
+    # Align the panel titles above the tallest wrapped legend.
+    for ax in axes:
+        ax.set_title(ax.get_title(loc='left'), loc='left',
+                     pad=legend_height * 72 / fig.dpi + 18)
+
+
+def plot_atmosphere(mnest, bestfit_cube, solutions=0, *, chemistry_bands=None):
+    """Save a shared-pressure PT, chemistry, and cloud-density publication figure.
+
+    Chemistry curves are pointwise posterior medians within their original
+    1-sigma credible bands, truncated at the plotted surface.
+    Cloud curves and chemistry cloud-boundary markers use posterior medians.
+    PT retains the MAP profile. Surface lines mark the
+    posterior median P0, with its central 1-sigma interval shaded in all panels.
+    Cloud density bands show central 1-sigma posterior intervals per phase,
+    including zero-density draws, and stop at the median surface pressure.
+    Requires fitted parametric temperatures, enabled clouds, and the same
+    posterior temperature samples as ``plot_PT_profile``. Existing standalone
+    figures are produced separately by the retrieval plotting workflow.
+    The shared lower boundary is the upper 3-sigma posterior P0 quantile.
+    """
+    param = mnest.param
+    if not (
+        param.get('fit_T')
+        and param.get('PT_profile_type') == 'parametric'
+        and (param.get('fit_wtr_cld') or param.get('fit_amm_cld'))
+    ):
+        return
+
+    with plt.rc_context():
+        _apply_plot_style()
+        plt.rcParams.update({
+            'font.size': 12,
+            'axes.labelsize': 13,
+            'axes.titlesize': 13,
+            'legend.fontsize': 10,
+            'xtick.labelsize': 11,
+            'ytick.labelsize': 11,
+            'lines.linewidth': 1.6,
+            'pdf.fonttype': 42,
+            'ps.fonttype': 42,
+        })
+        fig, axes = plt.subplots(
+            1, 3, sharey=True, figsize=(15, 6.2), layout='constrained',
+        )
+        try:
+            surface_pressure_upper = plot_PT_profile(
+                mnest, bestfit_cube, solutions=solutions,
+                ax=axes[0], bestfit_color='#E87524',
+                legend_loc='lower left',
+            )
+            pressure_top = axes[0].get_ylim()[1]
+            # Display the marginal surface posterior without changing the atmosphere.
+            param = mnest.param
+            display_param = param.copy()
+            if param['rocky']:
+                surface_samples = np.loadtxt(
+                    os.path.join(param['out_dir'], f'random_temp_samples_sol{solutions}.dat'),
+                    max_rows=1,
+                )[1:]
+                surface_samples = surface_samples[
+                    np.isfinite(surface_samples) & (surface_samples > 0)
+                ]
+                tail = 0.5 * (1.0 - math.erf(1.0 / np.sqrt(2.0)))
+                surface_low, surface_median, surface_high = np.quantile(
+                    surface_samples, [tail, 0.5, 1.0 - tail],
+                )
+                display_param['P0'] = surface_median
+            if chemistry_bands is None:
+                chemistry_bands = chemistry_posterior_bands(
+                    mnest, solutions=solutions, include_clouds=True,
+                )
+            _draw_chemistry_profile(
+                axes[1], display_param, secondary_axis=False,
+                molecule_colors={'H2O': '#2878B5'},
+                credible_bands=chemistry_bands, use_median=True,
+            )
+            _draw_cloud_density(axes[2], display_param, secondary_axis=True,
+                                credible_bands=chemistry_bands, use_median=True)
+
+            for ax, title in zip(axes, (
+                '(a) Temperature profile', '(b) Chemistry', '(c) Cloud density',
+            )):
+                ax.set_title(title, loc='left', pad=12)
+                ax.tick_params(axis='both', which='both', direction='in', top=True)
+                ax.yaxis.set_major_locator(ticker.LogLocator(base=10, numticks=9))
+                ax.yaxis.set_minor_locator(ticker.LogLocator(base=10, subs=np.arange(2, 10)))
+                ax.yaxis.set_minor_formatter(ticker.NullFormatter())
+
+            axes[0].set_ylabel('Pressure [Pa]')
+            axes[1].set_ylabel('')
+            axes[2].set_ylabel('')
+            axes[1].set_xlim(left=1e-12)
+            axes[1].xaxis.set_major_locator(ticker.LogLocator(base=10, numticks=6))
+            axes[2].xaxis.set_major_locator(ticker.LogLocator(base=10, numticks=6))
+            if param['rocky']:
+                for ax in axes:
+                    ax.axhspan(surface_low, surface_high, color='#666666',
+                               alpha=0.16, linewidth=0, zorder=0.5,
+                               label='_nolegend_')
+                axes[0].axhline(
+                    surface_median,
+                    color='black', linestyle='-', alpha=0.75,
+                )
+            axes[0].set_ylim(surface_pressure_upper, pressure_top)
+            _place_atmosphere_legends(fig, axes)
+
+            fig.savefig(
+                param['out_dir'] + f'Nest_atmosphere_sol{solutions}.pdf',
+                bbox_inches='tight',
+            )
+        finally:
+            plt.close(fig)
 
 
 def _mass_radius_sigma(param, sigma):
@@ -1285,13 +1794,16 @@ def elpd_loo_stats(mnest, parameters, solutions=0):
         for i in range(mnest.param['model_n_par'])
     }
 
-    idata = az.from_dict(
-        posterior=posterior_samples,
-        observed_data=observed_data,
-        log_likelihood={"data": loglike_samples}
-    )
+    groups = {
+        'posterior': posterior_samples,
+        'observed_data': observed_data,
+        'log_likelihood': {'data': loglike_samples},
+    }
+    idata = az.from_dict(groups, sample_dims=['chain', 'draw'])
 
-    loo_result = az.loo(idata, pointwise=True)
+    # Preserve the legacy single-chain reff=1 convention for these saved
+    # equal-weight nested-sampling draws (not an ordered MCMC chain).
+    loo_result = az.loo(idata, pointwise=True, reff=1.0)
     pareto_k = np.asarray(loo_result.pareto_k)
 
     bad_mask = pareto_k > 0.7
@@ -1319,9 +1831,9 @@ def elpd_loo_stats(mnest, parameters, solutions=0):
     else:
         print('No pareto k values above 0.7 detected.')
 
-    total_elpd_loo = loo_result.elpd_loo
+    total_elpd_loo = loo_result.elpd
     elpd_loo_se = loo_result.se
-    elpd_loo_pointwise = np.asarray(loo_result.loo_i)
+    elpd_loo_pointwise = np.asarray(loo_result.elpd_i)
 
     fig, ax = plt.subplots(figsize=(7.2, 5.0), dpi=150)
     ax.scatter(pareto_k[good_mask], elpd_loo_pointwise[good_mask], s=36, color='#1f77b4',
@@ -1672,7 +2184,7 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
                     par.extend([r"$T_{\rm surface}$ [K]", r"$T_{\rm join}$ [K]",
                                 r"$\log_{10}\tau_{\rm join}$", r"$\log_{10}\gamma$", r"$\eta$"])
             if mnest.param['fit_cld_frac']:
-                par.append("Log(cld frac)")
+                par.append("Cloud fraction")
             if mnest.param['fit_g']:
                 par.append("Log(g [m/s$^2$])")
             if mnest.param['fit_Mp']:

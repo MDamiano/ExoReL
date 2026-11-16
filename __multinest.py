@@ -148,7 +148,7 @@ class MULTINEST:
                 par += 5
 
         if self.param['fit_cld_frac']:
-            evaluation['cld_frac'] = 10.0 ** cube[par]
+            evaluation['cld_frac'] = float(cube[par])
             par += 1
 
         if self.param['fit_g']:
@@ -350,7 +350,7 @@ class MULTINEST:
                 gas_coordinates=coordinates, clr_ppf=clr_ppf)
 
         if self.param['fit_cld_frac']:
-            cube[par] = uniform_prior(self.param, 'cld_frac', cube[par])  # uniform prior between   -3.0  :  0.0     -> Log(clf_frac), cloud fraction
+            cube[par] = uniform_prior(self.param, 'cld_frac', cube[par])  # Linear cloud fraction; default range [0, 1].
             par += 1
 
         if self.param['fit_g']:
@@ -542,6 +542,7 @@ class MULTINEST:
 
                     if os.path.exists(self.param['out_dir'] + f'random_temp_samples_sol{i}.dat') and self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
                         plot_PT_profile(self, cube[:, i], solutions=i)
+                        plot_atmosphere(self, cube[:, i], solutions=i)
                     elif self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
                         print('\nTo plot P-T profiles, the calculation of the temperatures samples must be enabled (calc_likelihood_data = True).')
 

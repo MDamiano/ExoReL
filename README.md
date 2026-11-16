@@ -23,7 +23,7 @@ Navigate to the desired location for the ExoReL folder. Therefore clone the code
 
 `git clone https://github.com/MDamiano/ExoReL.git`
 
-Navigate into the downloaded ExoReL folder. Activate yout preferred python environment. Install python packages dependency:
+Navigate into the downloaded ExoReL folder. Activate a Python 3.12 or newer environment. Install the Python dependencies:
 
 `pip install -r requirements.txt`
 

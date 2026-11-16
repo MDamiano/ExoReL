@@ -898,7 +898,7 @@ def ranges(param):
         pass
 
     if param['fit_cld_frac']:
-        param['cld_frac_range'] = [-3.0, 0.0]
+        param['cld_frac_range'] = [0.0, 1.0]
 
     if param['fit_wtr_cld'] and param['PT_profile_type'] == 'isothermal':
         param['ptopw_range'] = [2.0, 7.0]       # Top pressure H2O
@@ -2323,7 +2323,7 @@ def retrieval_par_and_npar(param):
         elif param['PT_profile_type'] == 'parametric':
             parameters.extend(["T$_{surface}$", "T$_{join}$", r"$\tau_{join}$", r"$\gamma$", r"$\eta$"])
     if param['fit_cld_frac']:
-        parameters.append("Log(cld frac)")
+        parameters.append("Cloud fraction")
     if param['fit_g']:
         parameters.append("Log(g)")
     if param['fit_Mp']:
