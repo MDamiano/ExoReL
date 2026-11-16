@@ -14,6 +14,8 @@ from matplotlib.patches import Patch
 from astropy import constants as const
 import arviz as az
 from scipy.interpolate import interp1d
+from scipy.special import ndtri
+from scipy.stats import gaussian_kde
 
 from .__utils import (
     MULTI_SOLUTION_DELTA_LOG_EVIDENCE_THRESHOLD,
@@ -106,8 +108,122 @@ def _plot_spectrum_residuals(ax, observation, model, model_interval=None):
     ax.tick_params(axis='both', labelsize=11)
 
 
+def _plot_residual_qq(ax, observation, model):
+    """Unbinned standardized residuals against fixed N(0, 1) quantiles."""
+    residual = (np.asarray(observation['Fplanet']) - np.asarray(model)) / np.asarray(observation['error_p'])
+    observed = np.sort(residual[np.isfinite(residual)])
+    if not observed.size:
+        raise ValueError('Q-Q plot requires at least one finite residual.')
+    theoretical = ndtri((np.arange(observed.size) + .5) / observed.size)
+    low = min(theoretical.min(), observed.min())
+    high = max(theoretical.max(), observed.max())
+    pad = .08 * max(high - low, 1.)
+    limits = (low - pad, high + pad)
+    ax.plot(limits, limits, color='#666666', linestyle='--', linewidth=.9, zorder=1)
+    ax.plot(theoretical, observed, linestyle='', marker='o', markersize=2.4,
+            markeredgecolor='none', color='#404784', zorder=2)
+    ax.set(xlim=limits, ylim=limits)
+    ax.set_aspect('auto')
+    ax.set_title('Normal Q–Q', fontsize=12)
+    ax.set_xlabel('Standard-normal quantiles', fontsize=10)
+    ax.set_ylabel(r'Standardized residuals [$\sigma$]', fontsize=10)
+    ax.tick_params(labelsize=10)
+    ax.xaxis.set_major_locator(ticker.MaxNLocator(nbins=4))
+    ax.yaxis.set_major_locator(ticker.MaxNLocator(nbins=4))
+
+
+def _plot_residual_distribution(ax, observation, model):
+    """Compare an unbinned Scott-bandwidth KDE of standardized residuals to N(0,1)."""
+    z = (np.asarray(observation['Fplanet']) - np.asarray(model)) / np.asarray(observation['error_p'])
+    z = z[np.isfinite(z)]
+    if not z.size:
+        raise ValueError('Residual density requires at least one finite residual.')
+    kde = gaussian_kde(z, bw_method='scott') if z.size > 1 and np.ptp(z) > 0 else None
+    bandwidth = float(np.sqrt(kde.covariance[0, 0])) if kde is not None else 0.
+    x = np.linspace(min(-4.5, z.min() - 4 * bandwidth),
+                    max(4.5, z.max() + 4 * bandwidth), 600)
+    if kde is not None:
+        ax.plot(x, kde(x), color='#404784', linewidth=1.5, label='Residuals (KDE)')
+    else:
+        ax.axvline(z[0], color='#404784', linewidth=1.5, label='Residuals (constant)')
+    ax.plot(x, np.exp(-.5 * x**2) / np.sqrt(2 * np.pi),
+            color='#666666', linestyle='--', linewidth=1.2, label=r'$N(0,1)$')
+    ax.set_xlim(x[0], x[-1])
+    ax.set_ylim(bottom=0.)
+    ax.set_title('Residual distribution', fontsize=12)
+    ax.set_xlabel(r'Standardized residuals [$\sigma$]', fontsize=10)
+    ax.set_ylabel('Probability density', fontsize=10)
+    ax.tick_params(labelsize=10)
+    ax.xaxis.set_major_locator(ticker.MaxNLocator(nbins=4))
+    ax.yaxis.set_major_locator(ticker.MaxNLocator(nbins=4))
+    ax.legend(frameon=False, fontsize=8, loc='upper right')
+
+
+def _annotate_spectrum_fit(ax, observations, models, n_parameters):
+    """Annotate the joint diagonal-error chi-square with nominal N-p degrees of freedom."""
+    chi2 = sum(float(np.sum(((np.asarray(obs['Fplanet']) - np.asarray(model))
+                            / np.asarray(obs['error_p'])) ** 2))
+               for obs, model in zip(observations, models))
+    n_data = sum(np.asarray(obs['Fplanet']).size for obs in observations)
+    dof = n_data - n_parameters
+    reduced = f'{chi2 / dof:.3f}' if dof > 0 else r'\mathrm{undefined}'
+    label = ('Joint fit\n' if len(observations) > 1 else '')
+    label += f'$\\chi^2 = {chi2:.2f}$\n$\\chi^2_\\nu = {reduced}$\n$\\nu = {dof}$'
+    ax.text(.05, .95, label, transform=ax.transAxes, ha='left', va='top',
+            fontsize=10, bbox=dict(facecolor='white', edgecolor='none', alpha=.85),
+            zorder=4)
+
+
+def _plot_wavelength_diagnostics(standardized_ax, observation, model):
+    """Show signed standardized residuals at every data wavelength."""
+    wavelength = np.asarray(observation['wl'])
+    uncertainty = np.asarray(observation['error_p'])
+    if np.any(~np.isfinite(uncertainty)) or np.any(uncertainty <= 0):
+        raise ValueError('Residuals require finite, positive measurement uncertainties.')
+    z = (np.asarray(observation['Fplanet']) - np.asarray(model)) / uncertainty
+    standardized_ax.axhspan(-2, 2, color='#404784', alpha=.08, linewidth=0)
+    standardized_ax.axhspan(-1, 1, color='#404784', alpha=.16, linewidth=0)
+    standardized_ax.axhline(0, color='#666666', linestyle='--', linewidth=.8)
+    standardized_ax.vlines(wavelength, 0, z, color='#404784', alpha=.35, linewidth=.6)
+    standardized_ax.plot(wavelength, z, linestyle='', marker='o', markersize=2.4,
+                         markeredgecolor='none', color='#404784')
+    standardized_ax.set_ylabel('Standardized\nresiduals [$\\sigma$]', fontsize=10)
+    finite = z[np.isfinite(z)]
+    limit = 1.15 * max(2., np.max(np.abs(finite)) if finite.size else 2.)
+    standardized_ax.set_ylim(-limit, limit)
+    standardized_ax.tick_params(labelsize=10)
+    standardized_ax.yaxis.set_major_locator(ticker.MaxNLocator(nbins=3))
+
+
+
+def _spectrum_diagnostic_axes(n_observations, dpi):
+    """Aligned spectrum/residual axes at left; density above Q-Q at right."""
+    fig = plt.figure(figsize=(14., 8.6 * n_observations), dpi=dpi, layout='constrained')
+    grid = fig.add_gridspec(n_observations, 2, width_ratios=[3.3, 1.55], wspace=.08)
+    axes, residual_axes, qq_axes, density_axes = [], [], [], []
+    standardized_axes = []
+    for obs in range(n_observations):
+        left = grid[obs, 0].subgridspec(3, 1, height_ratios=[3.5, 1, 1], hspace=.10)
+        right = grid[obs, 1].subgridspec(2, 1, height_ratios=[1, 1.45], hspace=.15)
+        main = fig.add_subplot(left[0], sharex=axes[0] if axes else None)
+        residual = fig.add_subplot(left[1], sharex=main)
+        qq = fig.add_subplot(right[1])
+        density = fig.add_subplot(right[0])
+        standardized = fig.add_subplot(left[2], sharex=main)
+        main.tick_params(labelbottom=False)
+        residual.tick_params(labelbottom=False)
+        if obs < n_observations - 1:
+            standardized.tick_params(labelbottom=False)
+        axes.append(main)
+        residual_axes.append(residual)
+        qq_axes.append(qq)
+        density_axes.append(density)
+        standardized_axes.append(standardized)
+    return fig, axes, residual_axes, qq_axes, density_axes, standardized_axes
+
+
 def plot_nest_spec(mnest, cube, solutions=0):
-    """Plot retrieved spectra, confidence bands, and raw residual panels.
+    """Plot retrieved spectra, confidence bands, residuals, densities and normal Q-Q plots.
 
     Parameters
     - mnest: MULTINEST instance (provides `param`, `_forward_cube`, and
@@ -135,11 +251,16 @@ def plot_nest_spec(mnest, cube, solutions=0):
 
     # Single observation
     if mnest.param['obs_numb'] is None:
-        fig, (ax, residual_ax) = plt.subplots(
-            2, 1, sharex=True, figsize=(10., 5.4), dpi=150, layout='constrained',
-            gridspec_kw={'height_ratios': [3.5, 1], 'hspace': .08},
-        )
+        fig, axes, residual_axes, qq_axes, density_axes, standardized_axes = _spectrum_diagnostic_axes(1, dpi=150)
+        ax, residual_ax = axes[0], residual_axes[0]
         _, model_native = _forward_plot_spectrum(mnest, cube)
+        _plot_residual_qq(qq_axes[0], mnest.param['spectrum'], model_native)
+        _plot_residual_distribution(density_axes[0], mnest.param['spectrum'], model_native)
+        _plot_wavelength_diagnostics(standardized_axes[0], mnest.param['spectrum'], model_native)
+        _annotate_spectrum_fit(
+            qq_axes[0], [mnest.param['spectrum']], [model_native],
+            int(mnest.param.get('model_n_par', np.size(cube))),
+        )
         observed_wavelength = np.asarray(mnest.param['spectrum']['wl']).copy()
         residual_interval = None
 
@@ -273,7 +394,7 @@ def plot_nest_spec(mnest, cube, solutions=0):
             loc='lower left', bbox_to_anchor=(0., 1.08, 1., 0.),
             mode='expand', borderaxespad=0.,
         )
-        residual_ax.set_xlabel(r'Wavelength [$\mu$m]')
+        standardized_axes[0].set_xlabel(r'Wavelength [$\mu$m]')
         if mnest.param['albedo_calc']:
             ax.set_ylabel('Albedo')
         elif mnest.param['fp_over_fs']:
@@ -284,14 +405,10 @@ def plot_nest_spec(mnest, cube, solutions=0):
     # Multiple observations stacked
     else:
         n_observations = mnest.param['obs_numb']
-        fig, panels = plt.subplots(
-            2 * n_observations, 1, sharex=True, squeeze=False,
-            gridspec_kw={'height_ratios': [3.5, 1] * n_observations, 'hspace': .12},
-            figsize=(10., 4.2 * n_observations), dpi=130, layout='constrained',
-        )
-        axs, residual_axes = panels[::2, 0], panels[1::2, 0]
+        fig, axs, residual_axes, qq_axes, density_axes, standardized_axes = _spectrum_diagnostic_axes(n_observations, dpi=130)
         new_wl, new_wl_central = _load_target_bins()
         spectrum_bins = mnest.param['spectrum']['bins']
+        native_models = []
 
         for obs in range(0, mnest.param['obs_numb']):
             observation_phi = (
@@ -306,10 +423,14 @@ def plot_nest_spec(mnest, cube, solutions=0):
                 n_obs=obs,
                 phi=observation_phi,
             )
+            native_models.append(np.asarray(model_native).copy())
 
             _plot_spectrum_residuals(
                 residual_axes[obs], mnest.param['spectrum'][str(obs)], model_native,
             )
+            _plot_residual_qq(qq_axes[obs], mnest.param['spectrum'][str(obs)], model_native)
+            _plot_residual_distribution(density_axes[obs], mnest.param['spectrum'][str(obs)], model_native)
+            _plot_wavelength_diagnostics(standardized_axes[obs], mnest.param['spectrum'][str(obs)], model_native)
             axs[obs].plot(mnest.param['spectrum'][str(obs)]['wl'], model_native, linestyle='', color='#1f77b4',
                           marker='D', markerfacecolor='#4c78a8', markeredgecolor='#1f77b4', markersize=4.0)
 
@@ -351,6 +472,10 @@ def plot_nest_spec(mnest, cube, solutions=0):
             axs[obs].set_ylim([-0.2 * min(model), max(model) + 0.2 * max(model)])
 
         mnest.param['spectrum']['bins'] = spectrum_bins
+        _annotate_spectrum_fit(
+            qq_axes[0], [mnest.param['spectrum'][str(i)] for i in range(n_observations)],
+            native_models, int(mnest.param.get('model_n_par', np.size(cube))),
+        )
 
         if mnest.param['albedo_calc']:
             ylabel = 'Albedo'
@@ -360,7 +485,7 @@ def plot_nest_spec(mnest, cube, solutions=0):
             ylabel = r'Planetary flux [W/m$^2$]'
         for ax in axs:
             ax.set_ylabel(ylabel, fontsize=11)
-        residual_axes[-1].set_xlabel(r'Wavelength [$\mu$m]')
+        standardized_axes[-1].set_xlabel(r'Wavelength [$\mu$m]')
 
     # Leave atmospheric profiles prepared for the chemistry and P-T plots that
     # run immediately after the spectrum plot.
@@ -368,6 +493,17 @@ def plot_nest_spec(mnest, cube, solutions=0):
         mnest.cube_to_param(cube)
     else:
         mnest.cube_to_param(cube, n_obs=mnest.param['obs_numb'] - 1)
+
+    # Resolve legend spacing before aligning the distribution and spectrum tops.
+    fig.canvas.draw()
+    fig.set_layout_engine('none')
+    spectrum_axes = axes if mnest.param['obs_numb'] is None else axs
+    for spectrum_ax, density_ax in zip(spectrum_axes, density_axes):
+        position = density_ax.get_position()
+        density_ax.set_position([
+            position.x0, spectrum_ax.get_position().y1 - position.height,
+            position.width, position.height,
+        ])
 
     # Save figure
     plt.savefig(mnest.param['out_dir'] + f'Nest_spectrum_sol{solutions}.pdf')
