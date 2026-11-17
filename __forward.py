@@ -3244,11 +3244,13 @@ def prepare_forward_parameters(
     return _prepare_forward_column(param, clear_clouds=clear_clouds)
 
 
-def forward(parameters_dictionary, evaluation=None, phi=None, n_obs=None, retrieval_mode=True, core_number=None, albedo_calc=False, fp_over_fs=False, canc_metadata=False, return_clear_spectrum=False):
+def forward(parameters_dictionary, evaluation=None, phi=None, n_obs=None, retrieval_mode=True, core_number=None, albedo_calc=False, fp_over_fs=False, canc_metadata=False, return_clear_spectrum=False, return_native=False):
     """Return the model, optionally with its clear spectrum in the same units/grid.
 
     Outside retrieval mode, return_clear_spectrum=True returns
     (wavelength, model, clear_model). Retrieval mode always returns model.
+    return_native=True instead returns (prepared parameters, native wavelength,
+    native albedo), allowing one physical spectrum to serve multiple observations.
     """
     validate_cloud_species_configuration(parameters_dictionary)
     param = apply_forward_evaluation(
@@ -3346,6 +3348,9 @@ def forward(parameters_dictionary, evaluation=None, phi=None, n_obs=None, retrie
             cloud_fraction * cloudy_alb
             + (1.0 - cloud_fraction) * clear_alb
         )
+
+    if return_native:
+        return result_param, alb_wl, alb
 
     wl, model = model_finalizzation(
         result_param,

@@ -175,6 +175,7 @@ class MULTINEST:
         phi=None,
         n_obs=0,
         retrieval_mode=True,
+        return_native=False,
     ):
         """Evaluate one retrieval cube through the public forward pipeline."""
         evaluation = self._cube_to_evaluation(cube, n_obs=n_obs)
@@ -188,6 +189,8 @@ class MULTINEST:
             'fp_over_fs': self.param['fp_over_fs'],
             'canc_metadata': True,
         }
+        if return_native:
+            forward_kwargs['return_native'] = True
 
         base_param = self.param
         if self.param['PT_profile_type'] == 'parametric':
@@ -226,6 +229,20 @@ class MULTINEST:
 
             raise
 
+    def _observation_offset(self, cube, n_obs):
+        """Positive correction to the data, never to the physical model."""
+        offsets = self.param.get('offset_to_fit', [])
+        key = f'spectrum{n_obs}'
+        if key not in offsets:
+            return 0.0
+        start = retrieval_par_and_npar(self.param)[1] - len(offsets)
+        return 10.0 ** cube[start + offsets.index(key)]
+
+    def _observations(self):
+        if self.param.get('obs_numb') is None:
+            return [self.param['spectrum']]
+        return [self.param['spectrum'][str(obs)] for obs in range(self.param['obs_numb'])]
+
     def _loglike(self, cube, ndim=None, nparams=None):
         """Return the retrieval log likelihood for one physical cube."""
         try:
@@ -250,8 +267,9 @@ class MULTINEST:
                     n_obs=obs,
                 )
                 observation = self.param['spectrum'][str(obs)]
+                data = observation['Fplanet'] + self._observation_offset(cube, obs)
                 loglikelihood += gaussian_loglike(
-                    observation['Fplanet'],
+                    data,
                     model,
                     observation['error_p'],
                 )
@@ -393,6 +411,10 @@ class MULTINEST:
                     cube[par] = uniform_prior(self.param, 'phi', cube[par])  # uniform prior between   0  :  180   -> deg
                     par += 1
 
+        for _ in self.param.get('offset_to_fit', []):
+            cube[par] = uniform_prior(self.param, 'offset', cube[par])
+            par += 1
+
     def run_retrieval(self):
         is_root = (not MPIimport) or MPIrank == 0
 
@@ -461,8 +483,9 @@ class MULTINEST:
 
         if is_root:
             s = multinest_results.get_stats()
-            mds_orig = len(s['modes'])
-            if self.param['filter_multi_solutions']:
+            # Non-multimodal MultiNest runs can expose only global statistics.
+            mds_orig = max(1, len(s['modes']))
+            if self.param['filter_multi_solutions'] and s['modes']:
                 s, mds = self.filter_pymultinest_modes(multinest_results)
             else:
                 mds = mds_orig
@@ -474,11 +497,29 @@ class MULTINEST:
             MPI.COMM_WORLD.Barrier()  # wait for everybody to synchronize here
             mds_orig = MPI.COMM_WORLD.bcast(mds_orig if MPIrank == 0 else None, root=0)
 
-        check_files = os.path.exists(
-            self.param['out_dir'] + 'loglike_per_datapoint_sol0.dat'
-        )
+        posterior_files = ['posterior_wavelength_grid.dat']
+        for mode_idx in range(mds_orig):
+            posterior_files.extend(f'{name}_sol{mode_idx}.dat' for name in (
+                'loglike_per_datapoint', 'random_samples', 'parameters_samples',
+            ))
+            if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
+                posterior_files.append(f'random_temp_samples_sol{mode_idx}.dat')
+        grid_path = self.param['out_dir'] + 'posterior_wavelength_grid.dat'
+        pending_grid = grid_path + '.pending'
+        check_files = False
+        if is_root:
+            check_files = all(os.path.exists(self.param['out_dir'] + name) for name in posterior_files)
+            if check_files:
+                oldest_output = min(os.path.getmtime(self.param['out_dir'] + name) for name in posterior_files)
+                chains = [prefix + '.txt'] if mds_orig == 1 else [prefix + 'post_separate.dat']
+                check_files = all(os.path.getmtime(path) <= oldest_output for path in chains)
+        if MPIimport and MPIsize > 1:
+            check_files = MPI.COMM_WORLD.bcast(check_files if is_root else None, root=0)
 
         if self.param['calc_likelihood_data'] and not check_files:
+            # Publish the grid only after every mode/rank has been merged.
+            if is_root and os.path.exists(grid_path):
+                os.remove(grid_path)
             self.calc_spectra(prefix, mds_orig)
 
             if MPIimport and MPIsize > 1:
@@ -498,6 +539,8 @@ class MULTINEST:
                         rank_n = np.loadtxt(folder + f'loglike_{i}.dat', ndmin=2)
                         rank_n_spec = np.loadtxt(folder + f'samples_{i}.dat', ndmin=2)
                         rank_n_par = np.loadtxt(folder + f'samples_par_{i}.dat', ndmin=2)
+                        if not np.array_equal(rank_0_spec[:, 0], rank_n_spec[:, 0]):
+                            raise ValueError('Posterior wavelength grids differ between MPI ranks.')
                         rank_0 = np.concatenate((rank_0, rank_n), axis=0)
                         rank_0_spec = np.concatenate((rank_0_spec, rank_n_spec[:, 1:]), axis=1)
                         rank_0_par = np.concatenate((rank_0_par, rank_n_par), axis=0)
@@ -514,23 +557,25 @@ class MULTINEST:
 
                     self.param['spec_sample'] = rank_0_spec + 0.0
                     del rank_0, rank_0_spec, rank_0_par
+                os.replace(pending_grid, grid_path)
         elif self.param['calc_likelihood_data'] and check_files:
             if is_root:
-                print('\n"loglike_per_datapoint" files already exist. Skipping likelihood per data point calculation.')
+                print('\nPosterior sample files and wavelength grid already exist. Skipping likelihood per data point calculation.')
 
         if is_root:
-            if self.param['spectrum']['bins']:
-                data_spec = np.array([self.param['spectrum']['wl_low'], self.param['spectrum']['wl_high'], self.param['spectrum']['wl'], self.param['spectrum']['Fplanet'], self.param['spectrum']['error_p']]).T
-            else:
-                data_spec = np.array([self.param['spectrum']['wl'], self.param['spectrum']['Fplanet'], self.param['spectrum']['error_p']]).T
-            np.savetxt(self.param['out_dir'] + 'data_spectrum.dat', data_spec)
+            for obs, observation in enumerate(self._observations()):
+                columns = ['wl', 'Fplanet', 'error_p']
+                if self.param['spectrum']['bins']:
+                    columns = ['wl_low', 'wl_high'] + columns
+                suffix = '' if self.param['obs_numb'] is None else str(obs)
+                np.savetxt(self.param['out_dir'] + f'data_spectrum{suffix}.dat',
+                           np.column_stack([observation[key] for key in columns]))
 
             ### PRODUCE PLOTS FROM HERE ###
-            cube = np.ones((len(s['modes'][0]['maximum a posterior']), mds))
+            cube = np.ones((n_params, mds))
             for i in range(0, mds):
-                cube[:, i] = list(s['modes'][i]['maximum a posterior'])
-
                 if self.param['plot_models']:
+                    cube[:, i] = list(s['modes'][i]['maximum a posterior'])
                     print(f"\nPlotting solution {i + 1} of {mds} with log-evidence: {s['modes'][i]['local log-evidence']:.2f}\n")
 
                     plot_nest_spec(self, cube[:, i], solutions=i)
@@ -560,7 +605,13 @@ class MULTINEST:
                 plot_posteriors(self, prefix, multinest_results, parameters, mds_orig)
 
         if is_root:
-            write_stats_summary_files(self.param, prefix, multinest_results.get_stats(), len(parameters))
+            summary_stats = multinest_results.get_stats()
+            if not summary_stats['modes']:
+                summary_stats['modes'] = [{
+                    'local log-evidence': summary_stats.get('global evidence', np.nan),
+                    'local log-evidence error': summary_stats.get('global evidence error', np.nan),
+                }]
+            write_stats_summary_files(self.param, prefix, summary_stats, len(parameters))
 
         # Keep MPI available for subsequent retrievals in this Python process.
         # mpi4py finalizes it at process exit when it owns initialization.
@@ -616,7 +667,7 @@ class MULTINEST:
 
 
     def calc_spectra(self, prefix, mds_orig):
-        """Draw posterior samples and evaluate them on the observed grid."""
+        """Evaluate each observed grid, saving models/likelihoods in wavelength order."""
         def sample_from_weighted_distr(x, w, m, rng=None):
             rng = np.random.default_rng() if rng is None else rng
             x = np.asarray(x)
@@ -635,11 +686,26 @@ class MULTINEST:
         if MPIrank == 0:
             print('\nCalculating the likelihood per data point')
 
-        input_wavelength = np.asarray(
-            self.param['spectrum']['wl'],
-            dtype=float,
-        )
-        wl_len = len(input_wavelength)
+        observations = self._observations()
+        input_wavelength = np.concatenate([obs['wl'] for obs in observations])
+        order = np.argsort(input_wavelength, kind='stable')
+        grid = np.column_stack((
+            input_wavelength,
+            np.concatenate([np.full(len(obs['wl']), i) for i, obs in enumerate(observations)]),
+            np.concatenate([np.arange(len(obs['wl'])) for obs in observations]),
+        ))
+        header = 'wavelength_micron spectrum_index row_index'
+        formats = ['%.18e', '%d', '%d']
+        if self.param['spectrum']['bins']:
+            grid = np.column_stack((grid, *[
+                np.concatenate([obs[key] for obs in observations])
+                for key in ('wl_low', 'wl_high')
+            ]))
+            header += ' wl_low_micron wl_high_micron'
+            formats += ['%.18e', '%.18e']
+        # Stable sorting retains duplicate wavelengths and overlapping bins.
+        grid = grid[order]
+        wl_len = len(grid)
         n_samples = int(self.param['n_likelihood_data'])
         if n_samples <= 0:
             raise ValueError("'n_likelihood_data' must be a positive integer.")
@@ -647,6 +713,9 @@ class MULTINEST:
             raise ValueError(
                 "'n_likelihood_data' must be at least the number of MPI ranks."
             )
+        if MPIrank == 0:
+            np.savetxt(self.param['out_dir'] + 'posterior_wavelength_grid.dat.pending',
+                       grid, fmt=formats, header=header)
 
         distributions = []
 
@@ -681,7 +750,7 @@ class MULTINEST:
             stop_idx = start_idx + local_n
 
             samples = np.zeros((wl_len, local_n + 1))
-            samples[:, 0] = input_wavelength
+            samples[:, 0] = grid[:, 0]
             loglike_data = np.zeros((local_n, wl_len))
 
             if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':
@@ -690,20 +759,42 @@ class MULTINEST:
 
             for i, sample_idx in enumerate(range(start_idx, stop_idx)):
                 cube = sample_par[sample_idx, :]
-                model_wavelength, model = self._forward_cube(
-                    cube,
-                    retrieval_mode=False,
-                )
-                if not np.array_equal(model_wavelength, input_wavelength):
-                    raise ValueError(
-                        'Posterior spectrum wavelength grid does not match '
-                        'the input spectrum grid.'
+                models, pointwise = [None] * len(observations), [None] * len(observations)
+                phases = []
+                for obs, observation in enumerate(observations):
+                    if self.param['fit_phi']:
+                        phi = self._cube_to_evaluation(cube, n_obs=obs)['phi']
+                    else:
+                        phi = (self.param.get('phi') if self.param.get('obs_numb') is None
+                               else self.param['phi' + str(obs)])
+                    phases.append(phi)
+                groups = {}
+                for obs, phi in enumerate(phases):
+                    # Preserve per-observation draws in the stochastic mass mode.
+                    draw = obs if self.param.get('Mp_prior_type') == 'random_error' else None
+                    groups.setdefault((phi, draw), []).append(obs)
+                for (phi, _), indices in groups.items():
+                    # Keep only one prepared atmosphere (including opacities) alive.
+                    native_spectrum = self._forward_cube(
+                        cube, phi=phi, n_obs=indices[0], retrieval_mode=False, return_native=True,
                     )
-                samples[:, i + 1] = model
-
-                # Calculate likelihood per single datapoint
-                chi = (self.param['spectrum']['Fplanet'] - model) / self.param['spectrum']['error_p']
-                loglike_data[i, :] = ((-1.) * np.log(self.param['spectrum']['error_p'] * np.sqrt(2.0 * math.pi))) - (0.5 * chi * chi)
+                    for obs in indices:
+                        observation = observations[obs]
+                        model_wavelength, model = model_finalizzation(
+                            *native_spectrum, planet_albedo=self.param['albedo_calc'],
+                            fp_over_fs=self.param['fp_over_fs'], n_obs=obs,
+                        )
+                        if not np.array_equal(model_wavelength, observation['wl']):
+                            raise ValueError('Posterior spectrum wavelength grid does not match '
+                                             'the input spectrum grid.')
+                        models[obs] = model
+                        data = observation['Fplanet'] + self._observation_offset(cube, obs)
+                        error = observation['error_p']
+                        chi = (data - model) / error
+                        pointwise[obs] = -np.log(error * np.sqrt(2.0 * math.pi)) - 0.5 * chi * chi
+                    del native_spectrum
+                samples[:, i + 1] = np.concatenate(models)[order]
+                loglike_data[i, :] = np.concatenate(pointwise)[order]
 
                 # Calculate temperature profile
                 if self.param['fit_T'] and self.param['PT_profile_type'] == 'parametric':

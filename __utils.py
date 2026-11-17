@@ -121,6 +121,8 @@ def default_parameters():
     param['output_directory'] = None  # name of the output directory where all the results will be stored. If None, the output will be stored in the working directory
     param['file_output_name'] = None  # name of the output file for the spectrum and posterior distribution. If None, the output file will be named "spectrum.dat"
     param['obs_numb'] = None  # Number of observations to be taken into account during retrieval
+    param['reference_spec'] = None  # Spectrum key whose baseline stays fixed
+    param['offset_to_fit'] = []  # Spectrum keys with positive offsets added to their data
     param['optimizer'] = None  # Which optimizer to use during retrieval. 'multinest' is the only possibility currently
     param['gen_dataset_mode'] = False
     param['resume_dataset'] = False  # Reuse dataset.csv and generate only unfinished samples
@@ -242,7 +244,41 @@ def copy_parfile_to_output(param):
     return destination
 
 
+def validate_spectrum_offsets(param):
+    offsets = param.get('offset_to_fit', [])
+    reference = param.get('reference_spec')
+    if not isinstance(offsets, list) or any(not isinstance(key, str) for key in offsets):
+        raise ValueError('offset_to_fit must be a list of spectrum keys, e.g. ["spectrum1"].')
+    if not offsets and reference is None:
+        return
+    count = param.get('obs_numb')
+    if isinstance(count, bool) or not isinstance(count, int) or count < 2:
+        raise ValueError('Spectrum offsets require integer obs_numb >= 2.')
+    keys = {f'spectrum{i}' for i in range(count)}
+    if not isinstance(reference, str) or reference not in keys:
+        raise ValueError('reference_spec must name a spectrum within obs_numb, e.g. "spectrum0".')
+    if reference in offsets:
+        raise ValueError('reference_spec must not appear in offset_to_fit; its baseline is fixed.')
+    if len(set(offsets)) != len(offsets) or any(key not in keys for key in offsets):
+        raise ValueError('offset_to_fit must contain unique spectrum keys within obs_numb.')
+    missing = [f'spectrum{i}' for i in range(count)
+               if not isinstance(param.get(f'spectrum{i}'), str) or not param[f'spectrum{i}'].strip()]
+    if missing:
+        raise ValueError('Define all spectra from spectrum0 through spectrum'
+                         f'{count - 1}; missing file paths: {", ".join(missing)}.')
+    bounds = param.get('offset_range', [-12.0, -3.0])
+    if (not isinstance(bounds, list) or len(bounds) != 2
+            or any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in bounds)
+            or not np.isfinite(bounds).all() or bounds[0] >= bounds[1]):
+        raise ValueError('offset_range must contain two finite increasing log10 bounds.')
+    with np.errstate(over='ignore', under='ignore'):
+        linear_bounds = np.power(10.0, bounds)
+    if not np.isfinite(linear_bounds).all() or np.any(linear_bounds <= 0.0):
+        raise ValueError('offset_range must produce finite, positive offsets in linear space.')
+
+
 def setup_param_dict(param):
+    validate_spectrum_offsets(param)
     if param['obs_numb'] is not None:
         param['obs_numb'] = int(param['obs_numb'])
 
@@ -804,6 +840,9 @@ def ozone_earth_mask(param):
 
 
 def ranges(param):
+    if param.get('offset_to_fit'):
+        param.setdefault('offset_range', [-12.0, -3.0])
+
     def gas_range(key, bounds):
         if param['PT_profile_type'] == 'parametric':
             param.setdefault(key, bounds)
@@ -2339,6 +2378,7 @@ def retrieval_par_and_npar(param):
             for obs in range(0, param['obs_numb']):
                 parameters.append(r"$\phi_" + str(obs) + "$")
 
+    parameters.extend(f'Log(offset {key})' for key in param.get('offset_to_fit', []))
     return parameters, len(parameters)
 
 

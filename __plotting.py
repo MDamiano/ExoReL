@@ -12,7 +12,7 @@ from matplotlib import ticker
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from astropy import constants as const
-import arviz as az
+import arviz as az # type: ignore
 from scipy.interpolate import interp1d
 from scipy.special import ndtri
 from scipy.stats import gaussian_kde
