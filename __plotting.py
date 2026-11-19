@@ -21,6 +21,7 @@ from .__utils import (
     MULTI_SOLUTION_DELTA_LOG_EVIDENCE_THRESHOLD,
     find_nearest,
     reso_range,
+    model_finalizzation,
     water_cloud_ice_mask,
 )
 
@@ -69,11 +70,28 @@ def _forward_plot_spectrum(mnest, cube, n_obs=0, phi=None):
     )
 
 
-def _plot_spectrum_residuals(ax, observation, model, model_interval=None):
+def _fill_spectral_band(ax, observation, lower, upper, **kwargs):
+    """Draw independent bins, or separate continuous segments for each spectrum."""
+    if observation.get('bins', True) and 'wl_low' in observation and 'wl_high' in observation:
+        gap = np.full(len(lower), np.nan)
+        x = np.column_stack((observation['wl_low'], observation['wl_high'], gap)).ravel()
+        low = np.column_stack((lower, lower, gap)).ravel()
+        high = np.column_stack((upper, upper, gap)).ravel()
+        ax.fill_between(x, low, high, **kwargs)
+    else:
+        groups = observation.get('spectrum_index', np.zeros(len(lower), dtype=int))
+        for index in np.unique(groups):
+            mask = groups == index
+            ax.fill_between(np.asarray(observation['wl'])[mask], np.asarray(lower)[mask],
+                            np.asarray(upper)[mask], **kwargs)
+
+
+def _plot_spectrum_residuals(ax, observation, model, model_interval=None, residual_interval=None):
     """Raw data-minus-model residuals with measurement errors and model bounds.
 
-    The shaded reference is the model interval minus the best-fit model,
-    in the same units as the spectrum; it is separate from measurement errors.
+    Model intervals are relative to the best-fit model. Alternatively,
+    residual_interval contains quantiles of data + sampled offset - sampled model.
+    Both are separate from measurement errors.
     """
     data = np.asarray(observation['Fplanet'], dtype=float)
     uncertainty = np.asarray(observation['error_p'], dtype=float)
@@ -84,11 +102,12 @@ def _plot_spectrum_residuals(ax, observation, model, model_interval=None):
         raise ValueError('Residuals require finite, positive measurement uncertainties.')
     residual = data - model
     extents = [np.abs(residual) + uncertainty]
-    if model_interval is not None:
-        lower, upper = np.asarray(model_interval) - model
-        ax.fill_between(observation['wl'], lower, upper,
-                        color='#404784', alpha=.25, linewidth=0, zorder=0,
-                        label='_nolegend_')
+    if model_interval is not None or residual_interval is not None:
+        lower, upper = (np.asarray(residual_interval) if residual_interval is not None
+                        else np.asarray(model_interval) - model)
+        _fill_spectral_band(ax, observation, lower, upper,
+                            color='#404784', alpha=.25, linewidth=0, zorder=0,
+                            label='_nolegend_')
         extents.extend([np.abs(lower), np.abs(upper)])
     ax.axhline(0., color='#666666', linestyle='--', linewidth=.9, zorder=1)
     ax.errorbar(
@@ -220,6 +239,154 @@ def _spectrum_diagnostic_axes(n_observations, dpi):
         density_axes.append(density)
         standardized_axes.append(standardized)
     return fig, axes, residual_axes, qq_axes, density_axes, standardized_axes
+
+
+def _posterior_observation_grid(mnest, observations):
+    """Validate the saved likelihood/model ordering, including overlapping bins."""
+    grid = np.column_stack((
+        np.concatenate([obs['wl'] for obs in observations]),
+        np.concatenate([np.full(len(obs['wl']), i) for i, obs in enumerate(observations)]),
+        np.concatenate([np.arange(len(obs['wl'])) for obs in observations]),
+    ))
+    if mnest.param['spectrum'].get('bins', False):
+        grid = np.column_stack((grid, *[
+            np.concatenate([obs[key] for obs in observations]) for key in ('wl_low', 'wl_high')
+        ]))
+    order = np.argsort(grid[:, 0], kind='stable')
+    grid = grid[order]
+    path = os.path.join(mnest.param['out_dir'], 'posterior_wavelength_grid.dat')
+    if len(observations) > 1 or os.path.isfile(path):
+        saved = np.loadtxt(path, ndmin=2)
+        if not np.array_equal(saved, grid):
+            raise ValueError('Posterior wavelength mapping or bin boundaries differ from input observations.')
+    return grid, order
+
+
+def _observation_posterior_samples(mnest, observations, solutions):
+    """Restore saved model rows to each input's order, preserving overlapping bins."""
+    path = os.path.join(mnest.param['out_dir'], f'random_samples_sol{solutions}.dat')
+    if not os.path.isfile(path):
+        return None, None
+    samples = np.loadtxt(path, ndmin=2)
+    if samples.shape[1] < 2 or not np.isfinite(samples).all():
+        raise ValueError('Posterior spectra must contain finite wavelengths and model samples.')
+    grid, _ = _posterior_observation_grid(mnest, observations)
+    if not np.array_equal(grid[:, 0], samples[:, 0]):
+        raise ValueError('Posterior wavelength mapping does not match the model samples.')
+    models = []
+    for index, obs in enumerate(observations):
+        rows = np.flatnonzero(grid[:, 1] == index)
+        rows = rows[np.argsort(grid[rows, 2], kind='stable')]
+        models.append(samples[rows, 1:])
+    parameters = None
+    if mnest.param.get('offset_to_fit'):
+        parameters = np.loadtxt(os.path.join(mnest.param['out_dir'],
+                                             f'parameters_samples_sol{solutions}.dat'), ndmin=2)
+        if (parameters.shape != (samples.shape[1] - 1, mnest.param['model_n_par'])
+                or not np.isfinite(parameters).all()):
+            raise ValueError('Posterior offsets and model samples must have matching sample counts.')
+    return models, parameters
+
+
+def _phase_groups(mnest, cube):
+    if mnest.param.get('obs_numb') is None:
+        return {None: [0]}
+    groups = {}
+    for obs in range(mnest.param['obs_numb']):
+        phi = (mnest._cube_to_evaluation(cube, n_obs=obs)['phi'] if mnest.param['fit_phi']
+               else mnest.param['phi' + str(obs)])
+        groups.setdefault(phi, []).append(obs)
+    return groups
+
+
+def _smooth_plot_spectrum(prepared, native_wl, native_albedo):
+    """Rebin a full-range physical spectrum onto a copied R=500 plotting grid."""
+    smooth = prepared.copy()
+    bins = reso_range(prepared['min_wl'], prepared['max_wl'], res=500, bins=True)
+    bins[-1, 1] = prepared['max_wl']
+    smooth.update(obs_numb=None, wl_native=False, spectrum={
+        'wl': bins.mean(axis=1), 'wl_low': bins[:, 0], 'wl_high': bins[:, 1], 'bins': True,
+    })
+    smooth.pop('starfx', None)  # Flux output needs stellar flux on this new grid.
+    return model_finalizzation(smooth, native_wl, native_albedo,
+                               planet_albedo=prepared['albedo_calc'], fp_over_fs=prepared['fp_over_fs'])
+
+
+def _plot_grouped_spectra(mnest, cube, solutions):
+    observations = mnest._observations()
+    posterior, parameters = _observation_posterior_samples(mnest, observations, solutions)
+    groups = _phase_groups(mnest, cube)
+    result = _spectrum_diagnostic_axes(len(groups), dpi=130)
+    fig, axes, residual_axes, qq_axes, density_axes, standardized_axes = result
+    all_data, all_models = [], []
+    for panel, (phi, indices) in enumerate(groups.items()):
+        native = mnest._forward_cube(cube, phi=phi, n_obs=indices[0],
+                                    retrieval_mode=False, return_native=True)
+        wl, curve = _smooth_plot_spectrum(*native)
+        axes[panel].plot(wl, curve, color='#404784', lw=1.2, label='MAP (R=500)')
+        suffix = '' if len(groups) == 1 else f'_phase{panel}'
+        np.savetxt(os.path.join(mnest.param['out_dir'], f'Best_fit{suffix}_sol{solutions}.dat'),
+                   np.column_stack((wl, curve)), header=f'wavelength_micron model; phase_deg={np.rad2deg(phi):g}')
+        corrected, models, intervals = [], [], []
+        for obs in indices:
+            original = observations[obs]
+            offset = mnest._observation_offset(cube, obs)
+            data = dict(original, Fplanet=original['Fplanet'] + offset, bins=mnest.param['spectrum']['bins'])
+            _, model = model_finalizzation(*native, planet_albedo=mnest.param['albedo_calc'],
+                                           fp_over_fs=mnest.param['fp_over_fs'], n_obs=obs)
+            corrected.append(data)
+            models.append(model)
+            color = plt.get_cmap('tab10')(obs % 10)
+            label = os.path.splitext(os.path.basename(mnest.param.get(f'spectrum{obs}', f'spectrum{obs}')))[0]
+            label += ' (offset corrected)' if f'spectrum{obs}' in mnest.param.get('offset_to_fit', []) else ''
+            axes[panel].errorbar(data['wl'], data['Fplanet'], yerr=data['error_p'],
+                                fmt='o', color=color, markersize=4., linewidth=.8, capsize=2., label=label)
+            axes[panel].plot(data['wl'], model, linestyle='', marker='D', color='#404784', markersize=3.)
+            columns = [data['wl'], model, original['Fplanet'], data['Fplanet'], data['error_p']]
+            header = 'wavelength_micron model original_data corrected_data error'
+            if mnest.param['spectrum']['bins']:
+                columns = [data['wl_low'], data['wl_high']] + columns
+                header = 'wl_low_micron wl_high_micron ' + header
+            if posterior is not None:
+                quantiles = np.quantile(posterior[obs], [.00135, .02275, .16, .5, .84, .97725, .99865], axis=1)
+                for level, (lo, hi, alpha) in enumerate(((0, 6, .12), (1, 5, .20), (2, 4, .30))):
+                    _fill_spectral_band(axes[panel], data, quantiles[lo], quantiles[hi],
+                                        color=color, alpha=alpha, linewidth=0,
+                                        label=f'{3-level}σ model' if obs == indices[0] else '_nolegend_')
+                draw_offsets = 0. if parameters is None else mnest._observation_offset(parameters.T, obs)
+                residuals = original['Fplanet'][:, None] + draw_offsets - posterior[obs]
+                interval = np.quantile(residuals, [.16, .84], axis=1)
+                intervals.append(interval)
+                columns += list(quantiles) + list(interval)
+                header += ' model_q00135 model_q02275 model_q16 model_q50 model_q84 model_q97725 model_q99865 residual_q16 residual_q84'
+            np.savetxt(os.path.join(mnest.param['out_dir'], f'Best_fit_spectrum{obs}_sol{solutions}.dat'),
+                       np.column_stack(columns), header=header)
+        combined = {key: np.concatenate([data[key] for data in corrected])
+                    for key in ('wl', 'Fplanet', 'error_p')}
+        combined['spectrum_index'] = np.concatenate([np.full(len(data['wl']), obs)
+                                                      for obs, data in zip(indices, corrected)])
+        if mnest.param['spectrum']['bins']:
+            combined.update({key: np.concatenate([data[key] for data in corrected])
+                             for key in ('wl_low', 'wl_high')})
+        combined_model = np.concatenate(models)
+        _plot_spectrum_residuals(residual_axes[panel], combined, combined_model,
+                                 residual_interval=np.concatenate(intervals, axis=1) if intervals else None)
+        _plot_residual_qq(qq_axes[panel], combined, combined_model)
+        _plot_residual_distribution(density_axes[panel], combined, combined_model)
+        _plot_wavelength_diagnostics(standardized_axes[panel], combined, combined_model)
+        axes[panel].legend(frameon=False, ncol=3, loc='lower left', bbox_to_anchor=(0., 1.01),
+                           title=rf'$\phi = {np.rad2deg(phi):g}^\circ$')
+        all_data.extend(corrected)
+        all_models.extend(models)
+        del native  # Release the prepared atmosphere before the next phase.
+    _annotate_spectrum_fit(qq_axes[0], all_data, all_models,
+                           int(mnest.param.get('model_n_par', np.size(cube))))
+    ylabel = ('Albedo' if mnest.param['albedo_calc'] else
+              r'Contrast Ratio (F$_p$/F$_{\star}$)' if mnest.param['fp_over_fs'] else 'Planetary flux [W/m$^2$]')
+    for ax in axes:
+        ax.set_ylabel(ylabel, fontsize=11)
+    standardized_axes[-1].set_xlabel(r'Wavelength [$\mu$m]')
+    return result
 
 
 def plot_nest_spec(mnest, cube, solutions=0):
@@ -402,90 +569,11 @@ def plot_nest_spec(mnest, cube, solutions=0):
         else:
             ax.set_ylabel('Planetary flux [W/m$^2$]')
 
-    # Multiple observations stacked
+    # Numbered observations share a panel when their MAP phase angles match.
     else:
-        n_observations = mnest.param['obs_numb']
-        fig, axs, residual_axes, qq_axes, density_axes, standardized_axes = _spectrum_diagnostic_axes(n_observations, dpi=130)
-        new_wl, new_wl_central = _load_target_bins()
-        spectrum_bins = mnest.param['spectrum']['bins']
-        native_models = []
-
-        for obs in range(0, mnest.param['obs_numb']):
-            observation_phi = (
-                None
-                if mnest.param['fit_phi']
-                else mnest.param.get('phi' + str(obs))
-            )
-            mnest.param['spectrum']['bins'] = spectrum_bins
-            _, model_native = _forward_plot_spectrum(
-                mnest,
-                cube,
-                n_obs=obs,
-                phi=observation_phi,
-            )
-            native_models.append(np.asarray(model_native).copy())
-
-            _plot_spectrum_residuals(
-                residual_axes[obs], mnest.param['spectrum'][str(obs)], model_native,
-            )
-            _plot_residual_qq(qq_axes[obs], mnest.param['spectrum'][str(obs)], model_native)
-            _plot_residual_distribution(density_axes[obs], mnest.param['spectrum'][str(obs)], model_native)
-            _plot_wavelength_diagnostics(standardized_axes[obs], mnest.param['spectrum'][str(obs)], model_native)
-            axs[obs].plot(mnest.param['spectrum'][str(obs)]['wl'], model_native, linestyle='', color='#1f77b4',
-                          marker='D', markerfacecolor='#4c78a8', markeredgecolor='#1f77b4', markersize=4.0)
-
-            if mnest.param['fit_phi']:
-                lab = f'Input spectrum {obs}'
-            else:
-                lab = 'Data, $\\phi=$' + str(mnest.param['phi' + str(obs)] * 180.0 / math.pi) + ' deg'
-            axs[obs].errorbar(
-                mnest.param['spectrum'][str(obs)]['wl'],
-                mnest.param['spectrum'][str(obs)]['Fplanet'],
-                yerr=mnest.param['spectrum'][str(obs)]['error_p'],
-                linestyle='', linewidth=0.8, color='#222222', marker='o', markerfacecolor='#e24a33',
-                markeredgecolor='#222222', markersize=4.5, capsize=2.0, label=lab)
-
-            start = find_nearest(new_wl_central, min(mnest.param['spectrum'][str(obs)]['wl']) - 0.05)
-            stop = find_nearest(new_wl_central, max(mnest.param['spectrum'][str(obs)]['wl']) + 0.05)
-
-            mnest.param['spectrum']['bins'] = False
-            temp = mnest.param['spectrum'][str(obs)]['wl'] + 0.0
-            mnest.param['spectrum'][str(obs)]['wl'] = new_wl_central[start:stop]
-
-            wl, model = _forward_plot_spectrum(
-                mnest,
-                cube,
-                n_obs=obs,
-                phi=observation_phi,
-            )
-
-            axs[obs].plot(wl, model, color='#404784', linewidth=1.2, label='MAP (R=500)')
-            mnest.param['spectrum'][str(obs)]['wl'] = temp + 0.0
-
-            handles, labels = axs[obs].get_legend_handles_labels()
-            order = sorted(range(len(labels)), key=lambda i: labels[i] != lab)
-            axs[obs].legend(
-                [handles[i] for i in order], [labels[i] for i in order],
-                frameon=False, ncol=2, loc='lower left',
-                bbox_to_anchor=(0., 1.08, 1., 0.), mode='expand', borderaxespad=0.,
-            )
-            axs[obs].set_ylim([-0.2 * min(model), max(model) + 0.2 * max(model)])
-
-        mnest.param['spectrum']['bins'] = spectrum_bins
-        _annotate_spectrum_fit(
-            qq_axes[0], [mnest.param['spectrum'][str(i)] for i in range(n_observations)],
-            native_models, int(mnest.param.get('model_n_par', np.size(cube))),
+        fig, axs, residual_axes, qq_axes, density_axes, standardized_axes = _plot_grouped_spectra(
+            mnest, cube, solutions,
         )
-
-        if mnest.param['albedo_calc']:
-            ylabel = 'Albedo'
-        elif mnest.param['fp_over_fs']:
-            ylabel = r'Contrast Ratio (F$_p$/F$_{\star}$)'
-        else:
-            ylabel = r'Planetary flux [W/m$^2$]'
-        for ax in axs:
-            ax.set_ylabel(ylabel, fontsize=11)
-        standardized_axes[-1].set_xlabel(r'Wavelength [$\mu$m]')
 
     # Leave atmospheric profiles prepared for the chemistry and P-T plots that
     # run immediately after the spectrum plot.
@@ -501,8 +589,8 @@ def plot_nest_spec(mnest, cube, solutions=0):
     for spectrum_ax, density_ax in zip(spectrum_axes, density_axes):
         position = density_ax.get_position()
         density_ax.set_position([
-            position.x0, spectrum_ax.get_position().y1 - position.height,
-            position.width, position.height,
+            position.x0, position.y0, position.width,
+            spectrum_ax.get_position().y1 - position.y0,
         ])
 
     # Save figure
@@ -511,131 +599,80 @@ def plot_nest_spec(mnest, cube, solutions=0):
 
 
 def plot_contribution(mnest, cube, solutions=0):
-    """Plot per-molecule spectral contributions at R≈500 and export components.
-
-    Parameters
-    - mnest: MULTINEST instance (provides `param`, `_forward_cube`, and
-      `cube_to_param`).
-    - cube: parameter cube (array-like)
-    - solutions: Optional solution index for filenames
-
-    Behavior
-    - Saves per-molecule contribution curves to `contr_comp[/ _{solutions}]/*.dat`.
-    - Plots all contributions, the cloud-only curve, and overlays the data with errors.
-    - Restores all temporarily modified `mnest.param` fields.
-    """
+    """Plot full-range molecular contributions once per phase, with corrected data."""
     _apply_plot_style()
+    param = mnest.param
+    numbered = param['obs_numb'] is not None
+    observations = mnest._observations() if numbered else [param['spectrum']]
+    groups = _phase_groups(mnest, cube)
+    out_dir = os.path.join(param['out_dir'], f'contr_comp_sol{solutions}')
+    os.makedirs(out_dir, exist_ok=True)
+    molecules = list(param['fit_molecules'])
+    if param['gas_par_space'] != 'partial_pressure' and param['gas_fill'] is not None:
+        molecules.append(param['gas_fill'])
+    cloud_species = [mol for mol, enabled in (('H2O', param['fit_wtr_cld']),
+                                             ('NH3', param['fit_amm_cld'])) if enabled]
+    continuum_label = ' + '.join(cloud_species) + ' cloud' if cloud_species else 'Continuum'
+    continuum_name = '_'.join(cloud_species) + '_cld' if cloud_species else 'continuum'
+    fig, axes = plt.subplots(len(groups), 1, squeeze=False, sharex=True,
+                             figsize=(10., 4. * len(groups)), dpi=150)
+    try:
+        # Keep contribution flags and plotting grids out of the retrieval state.
+        mnest.param = dict(param, contribution=True)
+        for panel, (phi, indices) in enumerate(groups.items()):
+            ax = axes[panel, 0]
+            curves = []
+            suffix = f'_phase{panel}' if len(groups) > 1 else ''
+            header = 'wavelength_micron model'
+            if phi is not None:
+                header += f'; phase_deg={np.rad2deg(phi):g}'
+                ax.set_title(rf'$\phi = {np.rad2deg(phi):g}^\circ$', loc='left')
+            for mol in molecules + [None]:
+                mnest.param['mol_contr'] = mol
+                native = mnest._forward_cube(cube, phi=phi, n_obs=indices[0],
+                                            retrieval_mode=False, return_native=True)
+                wl, model = _smooth_plot_spectrum(*native)
+                del native
+                if mol is None:
+                    ax.plot(wl, model, color='black', linestyle='--', linewidth=1.7,
+                            alpha=.9, label=continuum_label)
+                    filename = continuum_name
+                    for mol_wl, mol_model, color in curves:
+                        ax.fill_between(mol_wl, np.interp(mol_wl, wl, model), mol_model,
+                                        color=color, alpha=.4, linewidth=0.)
+                else:
+                    line, = ax.plot(wl, model, linewidth=1.4, label=mol)
+                    curves.append((wl, model, line.get_color()))
+                    filename = mol
+                np.savetxt(os.path.join(out_dir, filename + suffix + '.dat'),
+                           np.column_stack((wl, model)), header=header)
+            for obs in indices:
+                data = observations[obs]
+                offset = mnest._observation_offset(cube, obs) if numbered else 0.
+                label = (os.path.splitext(os.path.basename(param.get(f'spectrum{obs}', f'spectrum{obs}')))[0]
+                         if numbered else 'Data')
+                if f'spectrum{obs}' in param.get('offset_to_fit', []):
+                    label += ' (offset corrected)'
+                ax.errorbar(data['wl'], data['Fplanet'] + offset, yerr=data['error_p'],
+                            linestyle='', linewidth=.6, marker='o', markersize=4.2,
+                            capsize=1.8, color=plt.get_cmap('tab10')(obs % 10), label=label)
+            ax.set_ylabel('Albedo' if param['albedo_calc'] else
+                          r'Contrast Ratio (F$_p$/F$_{\star}$)' if param['fp_over_fs'] else
+                          'Planetary flux [W/m$^2$]')
+            ax.legend(loc='upper left', bbox_to_anchor=(1, 1), frameon=False)
+        axes[-1, 0].set_xlabel(r'Wavelength [$\mu$m]')
+        fig.tight_layout()
+        extended = '_extended' if param['mol_custom_wl'] else ''
+        plt.savefig(os.path.join(param['out_dir'], f'Nest_mol_contribution{extended}_sol{solutions}.pdf'))
+    finally:
+        mnest.param = param
+        plt.close(fig)
 
-    # Output directory handling (single check, avoid repeated os.path operations)
-    subdir = f'contr_comp_sol{solutions}/'
-    out_dir = mnest.param['out_dir'] + subdir
-    if not os.path.isdir(out_dir):
-        os.mkdir(out_dir)
-
-    # Load R=500 bins once
-    new_wl = reso_range(mnest.param['min_wl'] - 0.05, mnest.param['max_wl'] + 0.05, 500, bins=True)
-    new_wl_central = np.mean(new_wl, axis=1)
-
-    # Cache and temporarily override spectrum grid/bins
-    is_bins = mnest.param['spectrum']['bins']
-    mnest.param['spectrum']['bins'] = False
-
-    if mnest.param['mol_custom_wl']:
-        start, stop = 0, len(new_wl_central) - 1
+    # Preserve the prepared atmospheric state expected by subsequent plots.
+    if numbered:
+        mnest.cube_to_param(cube, n_obs=param['obs_numb'] - 1)
     else:
-        start = find_nearest(new_wl_central, min(mnest.param['spectrum']['wl']) - 0.05)
-        stop = find_nearest(new_wl_central, max(mnest.param['spectrum']['wl']) + 0.05)
-
-    temp_wl = mnest.param['spectrum']['wl'] + 0.0
-    mnest.param['spectrum']['wl'] = new_wl_central[start:stop]
-    if mnest.param['physics_model_code_language'] != 'Python':
-        mnest.param['start_c_wl_grid'] = find_nearest(mnest.param['wl_C_grid'], float(np.min(mnest.param['spectrum']['wl']))) - 35
-        mnest.param['stop_c_wl_grid'] = find_nearest(mnest.param['wl_C_grid'], float(np.max(mnest.param['spectrum']['wl']))) + 35
-
-    # Prepare figure
-    fig = plt.figure(figsize=(10.0, 4.0), dpi=150)
-
-    # Toggle contribution mode and compute each molecule contribution on the same grid
-    mnest.param['contribution'] = True
-    if mnest.param['gas_par_space'] == 'partial_pressure':
-        gas_to_loop = mnest.param['fit_molecules']
-    else:
-        gas_to_loop = mnest.param['fit_molecules'] + [mnest.param['gas_fill']]
-    contribution_curves = []
-    for mol in gas_to_loop:
-        vmr_value = np.asarray(mnest.param['vmr_' + mol]).reshape(-1)[-1]
-        print('Plotting the contribution of ' + str(mol) + ' : VMR -> ' + str(vmr_value))
-        mnest.param['mol_contr'] = mol
-        wl, model = _forward_plot_spectrum(mnest, cube)
-        line, = plt.plot(wl, model, linewidth=1.4, label=mol)
-        contribution_curves.append((wl, model, line.get_color()))
-        np.savetxt(out_dir + mol + '.dat', np.column_stack([wl, model]))
-
-    # Cloud-only curve (keep contribution=True, remove molecule tag)
-    mnest.param['mol_contr'] = None
-    cloud_wl, cloud_model = _forward_plot_spectrum(mnest, cube)
-    cloud_species = []
-    if mnest.param['fit_wtr_cld']:
-        cloud_species.append('H$_2$O')
-    if mnest.param['fit_amm_cld']:
-        cloud_species.append('NH$_3$')
-    if cloud_species:
-        cloud_label = ' + '.join(cloud_species) + ' cloud'
-        cloud_filename = '_'.join(
-            species.replace('$_2$', '2').replace('$_3$', '3')
-            for species in cloud_species
-        ) + '_cld.dat'
-    else:
-        cloud_label = 'Continuum'
-        cloud_filename = 'continuum.dat'
-    plt.plot(cloud_wl, cloud_model, color='black', linestyle='--', linewidth=1.7, alpha=0.9, label=cloud_label)
-    np.savetxt(out_dir + cloud_filename, np.column_stack([cloud_wl, cloud_model]))
-    for mol_wl, mol_model, mol_color in contribution_curves:
-        if mol_wl.shape == cloud_wl.shape and np.array_equal(mol_wl, cloud_wl):
-            cloud_curve = cloud_model
-        else:
-            cloud_curve = np.interp(mol_wl, cloud_wl, cloud_model)
-        plt.fill_between(mol_wl, cloud_curve, mol_model, color=mol_color, alpha=0.4, linewidth=0.0)
-    mnest.param['contribution'] = False
-
-    # Restore observed wavelength grid extents for data overlay
-    mnest.param['spectrum']['wl'] = temp_wl + 0.0
-    if mnest.param['physics_model_code_language'] != 'Python':
-        mnest.param['start_c_wl_grid'] = find_nearest(mnest.param['wl_C_grid'], mnest.param['min_wl']) - 35
-        mnest.param['stop_c_wl_grid'] = find_nearest(mnest.param['wl_C_grid'], mnest.param['max_wl']) + 35
-
-    # Data overlay
-    plt.errorbar(
-        mnest.param['spectrum']['wl'], mnest.param['spectrum']['Fplanet'],
-        yerr=mnest.param['spectrum']['error_p'], linestyle='', linewidth=0.6,
-        color='#111111', marker='o', markerfacecolor='#e15759', markeredgecolor='#111111',
-        markersize=4.2, capsize=1.8, label='Data')
-
-    # Labels and legend
-    plt.xlabel(r'Wavelength [$\mu$m]')
-    if mnest.param['albedo_calc']:
-        plt.ylabel('Albedo')
-    elif mnest.param['fp_over_fs']:
-        plt.ylabel(r'Contrast Ratio (F$_p$/F$_{\star}$)')
-    else:
-        plt.ylabel('Planetary flux [W/m$^2$]')
-
-    plt.legend(loc='upper left', bbox_to_anchor=(1, 1), frameon=False)
-    fig.tight_layout()
-
-    # Save figure
-    if mnest.param['mol_custom_wl']:
-        plt.savefig(mnest.param['out_dir'] + f'Nest_mol_contribution_extended_sol{solutions}.pdf')
-    else:
-        plt.savefig(mnest.param['out_dir'] + f'Nest_mol_contribution_sol{solutions}.pdf')
-    plt.close()
-
-    # Restore original bins flag
-    if is_bins:
-        mnest.param['spectrum']['bins'] = True
-
-    # Preserve the historical postcondition used by chemistry-related callers.
-    mnest.cube_to_param(cube)
+        mnest.cube_to_param(cube)
 
 
 def _cloud_density_samples(param):
@@ -1903,202 +1940,162 @@ def plot_mass_radius(mnest, cube, solutions=0, sigma=None):
     plt.close(fig)
 
 
-def elpd_loo_stats(mnest, parameters, solutions=0):
+def elpd_loo_stats(mnest, parameters, solutions=0, cube=None):
+    """Joint PSIS-LOO statistics, with wavelength diagnostics grouped by MAP phase."""
     print('\n#### EXECUTING CROSS VALIDATION LEAVE-ONE-OUT STATISTICS ####')
     _apply_plot_style()
+    param = mnest.param
+    numbered = param.get('obs_numb') is not None
+    if numbered and cube is None and (param['fit_phi'] or param.get('offset_to_fit')):
+        raise ValueError('ELPD plots require the MAP parameters for fitted phases and offsets.')
+    observations = mnest._observations() if numbered else [param['spectrum']]
+    grid, order = _posterior_observation_grid(mnest, observations)
+    phases = _phase_groups(mnest, cube)
+    wl = grid[:, 0]
+    raw_data = np.concatenate([obs['Fplanet'] for obs in observations])[order]
+    error = np.concatenate([obs['error_p'] for obs in observations])[order]
+    displayed_data = np.concatenate([
+        obs['Fplanet'] + (mnest._observation_offset(cube, i) if numbered else 0.)
+        for i, obs in enumerate(observations)
+    ])[order]
+    point_metadata = []
+    for i, row in enumerate(grid):
+        point = dict(spectrum=f'spectrum{int(row[1])}' if numbered else 'spectrum',
+                     row=int(row[2]), wavelength_micron=float(row[0]),
+                     data=float(raw_data[i]), error=float(error[i]))
+        if grid.shape[1] == 5:
+            point.update(wl_low_micron=float(row[3]), wl_high_micron=float(row[4]))
+        point_metadata.append(point)
 
-    loglike_samples = np.loadtxt(mnest.param['out_dir'] + f'loglike_per_datapoint_sol{solutions}.dat')
-    par_samples = np.loadtxt(mnest.param['out_dir'] + f'parameters_samples_sol{solutions}.dat')
-
-    n_samples, n_obs = loglike_samples.shape
-    n_chains = 1
-
+    loglike_samples = np.loadtxt(param['out_dir'] + f'loglike_per_datapoint_sol{solutions}.dat', ndmin=2)
+    par_samples = np.loadtxt(param['out_dir'] + f'parameters_samples_sol{solutions}.dat', ndmin=2)
+    n_samples, n_points = loglike_samples.shape
+    if (n_samples < 2 or n_points != len(grid)
+            or par_samples.shape != (n_samples, len(parameters))
+            or len(parameters) != param['model_n_par']
+            or not np.isfinite(loglike_samples).all() or not np.isfinite(par_samples).all()):
+        raise ValueError('ELPD likelihoods, parameter samples, and observation grid must match and be finite.')
+    if not np.isfinite(raw_data).all() or not np.isfinite(error).all() or np.any(error <= 0):
+        raise ValueError('ELPD observations require finite data and positive finite uncertainties.')
     if n_samples < 10000:
-        print('WARNING - The number of sampled pointwise log-likelihood is lower than 10000 (' + str(n_samples) + '). elpd_loo statistics might be unreliable.')
-
-    loglike_samples = loglike_samples.reshape(n_chains, n_samples, n_obs)
-
-    spectrum = mnest.param['spectrum']
-    wl_sorted = spectrum['wl']
-    tdepth_sorted = spectrum['Fplanet']
-    tdepth_err_sorted = spectrum['error_p']
-
-    observed_data = {"data": tdepth_sorted}
-
-    posterior_samples = {
-        parameters[i]: par_samples[:, i].reshape(n_chains, n_samples)
-        for i in range(mnest.param['model_n_par'])
-    }
-
-    groups = {
-        'posterior': posterior_samples,
-        'observed_data': observed_data,
-        'log_likelihood': {'data': loglike_samples},
-    }
-    idata = az.from_dict(groups, sample_dims=['chain', 'draw'])
-
-    # Preserve the legacy single-chain reff=1 convention for these saved
-    # equal-weight nested-sampling draws (not an ordered MCMC chain).
+        print(f'WARNING - Only {n_samples} pointwise likelihood draws; ELPD estimates may be unreliable.')
+    idata = az.from_dict({
+        'posterior': {name: par_samples[None, :, i] for i, name in enumerate(parameters)},
+        'observed_data': {'data': raw_data},
+        'log_likelihood': {'data': loglike_samples[None, :, :]},
+    }, sample_dims=['chain', 'draw'])
+    # Equal-weight nested-sampling draws; retain the existing reff=1 convention.
+    # Saved likelihoods already include sampled offsets. Do not correct them again.
     loo_result = az.loo(idata, pointwise=True, reff=1.0)
     pareto_k = np.asarray(loo_result.pareto_k)
+    pointwise = np.asarray(loo_result.elpd_i)
+    bad_mask = ~np.isfinite(pareto_k) | (pareto_k > .7)
+    print(f'{np.sum(bad_mask)} points have Pareto k > 0.7 or nonfinite k.')
 
-    bad_mask = pareto_k > 0.7
-    good_mask = pareto_k < 0.7
-    bad_indices = np.flatnonzero(bad_mask).astype(int)
+    def save(fig, filename):
+        fig.savefig(param['out_dir'] + f'{filename}_sol{solutions}.pdf')
+        plt.close(fig)
 
-    fig, ax = plt.subplots(figsize=(8.2, 5.0), dpi=150)
-    ax.scatter(wl_sorted[good_mask], pareto_k[good_mask], s=36, color='#1f77b4',
-               edgecolor='white', linewidth=0.5, label='k < 0.7', zorder=3)
-    ax.scatter(wl_sorted[bad_mask], pareto_k[bad_mask], s=40, color='#d62728',
-               edgecolor='white', linewidth=0.5, label='k > 0.7', zorder=4)
-    ax.axhline(0.5, color='#2ca02c', linestyle='--', linewidth=1.0)
-    ax.axhline(0.7, color='#d62728', linestyle='--', linewidth=1.0, label='k = 0.7 threshold')
-    ax.set_xlabel('Wavelength [$\\mu$m]')
-    ax.set_ylabel('Pareto $k$')
-    ax.set_ylim(bottom=0.0)
-    ax.legend(frameon=False)
-    fig.tight_layout()
-    fig.savefig(mnest.param['out_dir'] + f'pareto_k_sol{solutions}.pdf')
-    plt.close(fig)
-
-    bad_count = int(np.sum(bad_mask))
-    if bad_count != 0:
-        print(str(bad_count) + ' pareto k values above 0.7 detected. Please review.')
-    else:
-        print('No pareto k values above 0.7 detected.')
-
-    total_elpd_loo = loo_result.elpd
-    elpd_loo_se = loo_result.se
-    elpd_loo_pointwise = np.asarray(loo_result.elpd_i)
-
-    fig, ax = plt.subplots(figsize=(7.2, 5.0), dpi=150)
-    ax.scatter(pareto_k[good_mask], elpd_loo_pointwise[good_mask], s=36, color='#1f77b4',
-               edgecolor='white', linewidth=0.5, label='k < 0.7')
-    ax.scatter(pareto_k[bad_mask], elpd_loo_pointwise[bad_mask], s=40, color='#d62728',
-               edgecolor='white', linewidth=0.5, label='k > 0.7')
-    ax.axvline(0.7, color='#d62728', linestyle='--', linewidth=1.0, label='k = 0.7 threshold')
-    ax.axvline(0.5, color='#2ca02c', linestyle='--', linewidth=1.0)
-    ax.set_xlabel('Pareto $k$')
-    ax.set_ylabel('Pointwise elpd$_{\\mathrm{loo}}$')
-    ax.legend(frameon=False)
-    fig.tight_layout()
-    fig.savefig(mnest.param['out_dir'] + f'pareto_k_vs_elpd_loo_sol{solutions}.pdf')
-    plt.close(fig)
-
-    fig, ax = plt.subplots(figsize=(8.2, 5.0), dpi=150)
-    ax.errorbar(wl_sorted, tdepth_sorted, yerr=tdepth_err_sorted,
-                linestyle='none', linewidth=0.7, color='#444444', capsize=2.0, zorder=1)
-    sc = ax.scatter(wl_sorted, tdepth_sorted, c=elpd_loo_pointwise, cmap='viridis',
-                    s=40, edgecolor='white', linewidth=0.5, zorder=2)
-    if bad_indices.size:
-        ax.scatter(
-            wl_sorted[bad_mask],
-            tdepth_sorted[bad_mask],
-            s=88,
-            facecolors='none',
-            edgecolors='#d62728',
-            linewidths=1.2,
-            zorder=3
-        )
-    cbar = fig.colorbar(sc, ax=ax, pad=0.02)
-    cbar.set_label('elpd$_{i,Reference}$')
-    ax.set_xlabel('Wavelength [$\\mu$m]')
-    ax.set_ylabel(r'Contrast Ratio (F$_p$/F$_{\star}$)')
-    fig.tight_layout()
-    fig.savefig(mnest.param['out_dir'] + f'elpd_loo_sol{solutions}.pdf')
-    plt.close(fig)
-
-    elpd_stats = {
-        'pareto_k': pareto_k.tolist(),
-        'bad_point_indices': bad_indices.tolist(),
-        'total_elpd_loo': float(total_elpd_loo),
-        'elpd_loo_se': float(elpd_loo_se),
-        'elpd_loo_pointwise': elpd_loo_pointwise.tolist()
-    }
-    with open(mnest.param['out_dir'] + f'elpd_loo_statistics_sol{solutions}.json', 'w') as stats_file:
-        json.dump(elpd_stats, stats_file)
-
-    if mnest.param['elpd_reference'] is not None:
-        ref_path = mnest.param['elpd_reference']
-        ref_elpd = None
-        ref_pointwise = None
-        if not os.path.isfile(ref_path):
-            print(f"Warning: ELPD reference file '{ref_path}' not found. Skipping comparison.")
-        else:
-            try:
-                with open(ref_path) as ref_file:
-                    ref_elpd = json.load(ref_file)
-                ref_pointwise = np.asarray(ref_elpd['elpd_loo_pointwise'], dtype=float)
-                if ref_pointwise.ndim != 1 or ref_pointwise.size != len(elpd_stats['elpd_loo_pointwise']):
-                    print(
-                        f"Warning: ELPD reference file '{ref_path}' has invalid "
-                        "'elpd_loo_pointwise' length/shape. Skipping comparison."
-                    )
-                    ref_elpd = None
-            except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
-                print(f"Warning: ELPD reference file '{ref_path}' is invalid. Skipping comparison.")
-                ref_elpd = None
-
-        if ref_elpd is not None:
-            delta_elpd = ref_pointwise - np.asarray(elpd_stats['elpd_loo_pointwise'], dtype=float)
-            ref_bad_raw = ref_elpd.get('bad_point_indices', None)
-            if ref_bad_raw is None and 'pareto_k' in ref_elpd:
-                ref_bad_raw = np.flatnonzero(np.asarray(ref_elpd['pareto_k']) > 0.7).tolist()
-            if ref_bad_raw is None:
-                ref_bad_raw = []
-            ref_bad_idx = np.asarray(ref_bad_raw, dtype=int)
-            union_bad_mask = np.zeros(len(delta_elpd), dtype=bool)
-            union_bad_mask[bad_indices[bad_indices < len(union_bad_mask)]] = True
-            union_bad_mask[ref_bad_idx[(ref_bad_idx >= 0) & (ref_bad_idx < len(union_bad_mask))]] = True
-
-            vmax = float(np.max(np.abs(delta_elpd))) if len(delta_elpd) else 1.0
-            fig, ax = plt.subplots(figsize=(8.2, 5.0), dpi=150)
-            ax.errorbar(wl_sorted, tdepth_sorted, yerr=tdepth_err_sorted,
-                        linestyle='none', linewidth=0.7, color='#444444', capsize=2.0, zorder=1)
-            good_mask = ~union_bad_mask
-            sc = ax.scatter(wl_sorted[good_mask], tdepth_sorted[good_mask], c=delta_elpd[good_mask], cmap='coolwarm',
-                            vmin=-vmax, vmax=vmax, s=40, edgecolor='white', linewidth=0.5, zorder=2)
-            if np.any(union_bad_mask):
-                ax.scatter(
-                    wl_sorted[union_bad_mask],
-                    tdepth_sorted[union_bad_mask],
-                    s=88,
-                    facecolors='none',
-                    edgecolors='#808080',
-                    alpha=0.3,
-                    linewidths=1.2,
-                    zorder=3
-                )
-            cbar = fig.colorbar(sc, ax=ax, pad=0.02)
-            cbar.set_label('elpd$_{i,Reference}$ - elpd$_{i}$')
-            ax.set_xlabel('Wavelength [$\\mu$m]')
-            ax.set_ylabel(r'Contrast Ratio (F$_p$/F$_{\star}$)')
-            fig.tight_layout()
-            fig.savefig(mnest.param['out_dir'] + f'elpd_loo_comparison_sol{solutions}.pdf')
-            plt.close(fig)
-
-            delta_elpd_valid = delta_elpd[~union_bad_mask]
-            if len(delta_elpd_valid) == 0:
-                delta_over_se = np.nan
-            else:
-                delta_elpd_err = np.sqrt(len(delta_elpd_valid) * np.var(delta_elpd_valid, ddof=0))
-                if delta_elpd_err > 0.0 and np.isfinite(delta_elpd_err):
-                    delta_over_se = np.sum(delta_elpd_valid) / delta_elpd_err
+    def wavelength_plot(values, filename, color_label=None, flagged=bad_mask):
+        fig, axes = plt.subplots(len(phases), 1, squeeze=False, sharex=True, sharey=True,
+                                 figsize=(8.2, 4.2 * len(phases)), dpi=150, layout='constrained')
+        comparison = filename == 'elpd_loo_comparison'
+        limit = max(float(np.max(np.abs(values))), 1e-12)
+        norm = plt.Normalize(-limit, limit) if comparison else plt.Normalize(values.min(), values.max())
+        for ax, (phi, indices) in zip(axes[:, 0], phases.items()):
+            for obs in indices:
+                mask = grid[:, 1] == obs
+                marker = ('o', 's', '^', 'D', 'v', 'P', 'X')[obs % 7]
+                label = (os.path.splitext(os.path.basename(param.get(f'spectrum{obs}', f'spectrum{obs}')))[0]
+                         if numbered else 'Data')
+                if color_label is None:
+                    ax.scatter(wl[mask], values[mask], marker=marker, s=36, label=label,
+                               c=np.where(flagged[mask], '#d62728', '#1f77b4'))
                 else:
-                    delta_over_se = np.nan
+                    if f'spectrum{obs}' in param.get('offset_to_fit', []):
+                        label += ' (offset corrected)'
+                    ax.errorbar(wl[mask], displayed_data[mask], yerr=error[mask],
+                                fmt='none', linewidth=.7, color='#444444', capsize=2., zorder=1)
+                    sc = ax.scatter(wl[mask], displayed_data[mask], c=values[mask], norm=norm,
+                                    cmap='coolwarm' if comparison else 'viridis', marker=marker,
+                                    s=40, edgecolor='white', linewidth=.5, label=label, zorder=2)
+                    marked = mask & flagged
+                    ax.scatter(wl[marked], displayed_data[marked], marker=marker, s=88,
+                               facecolors='none', edgecolors='#d62728', linewidths=1.2, zorder=3)
+            if phi is not None:
+                ax.set_title(rf'$\phi = {np.rad2deg(phi):g}^\circ$', loc='left')
+            if color_label is None:
+                ax.axhline(.5, color='#2ca02c', linestyle='--', linewidth=1.)
+                ax.axhline(.7, color='#d62728', linestyle='--', linewidth=1., label='k = 0.7')
+                ax.set_ylabel('Pareto $k$')
+            else:
+                ax.set_ylabel('Albedo' if param.get('albedo_calc') else
+                              r'Contrast Ratio (F$_p$/F$_{\star}$)' if param.get('fp_over_fs', True)
+                              else 'Planetary flux [W/m$^2$]')
+            ax.legend(frameon=False, fontsize=9)
+        axes[-1, 0].set_xlabel(r'Wavelength [$\mu$m]')
+        if color_label is not None:
+            fig.colorbar(sc, ax=axes[:, 0].tolist(), pad=.02).set_label(color_label)
+            fig.suptitle('Red outlines: Pareto k > 0.7 or nonfinite', fontsize=10)
+        save(fig, filename)
 
-            fig, ax = plt.subplots(figsize=(4.2, 4.2), dpi=150)
-            ax.bar(['Model parameter'], [delta_over_se], color='#d62728')
-            ax.axhline(0.0, linestyle='--', color='#333333', linewidth=1.0)
-            ax.text(0.15, 1.4, 'Increased\npredictive\nperformance', fontsize=8)
-            ax.text(0.15, -2.6, 'Decreased\npredictive\nperformance', fontsize=8)
-            ax.set_ylim([-5, 5])
-            ax.set_xlim([-0.6, 0.6])
-            ax.set_ylabel('$\\Delta$elpd/SE')
-            ax.set_xlabel('Adding Model Component')
-            fig.tight_layout()
-            fig.savefig(mnest.param['out_dir'] + f'elpd_loo_SE_comparison_sol{solutions}.pdf')
-            plt.close(fig)
+    wavelength_plot(pareto_k, 'pareto_k')
+    wavelength_plot(pointwise, 'elpd_loo', r'Pointwise elpd$_{\mathrm{loo}}$')
+    fig, ax = plt.subplots(figsize=(7.2, 5.), dpi=150, layout='constrained')
+    for mask, color, label in ((~bad_mask, '#1f77b4', 'k ≤ 0.7'), (bad_mask, '#d62728', 'k > 0.7')):
+        ax.scatter(pareto_k[mask], pointwise[mask], s=36, color=color,
+                   edgecolor='white', linewidth=.5, label=label)
+    ax.axvline(.7, color='#d62728', linestyle='--', linewidth=1.)
+    ax.axvline(.5, color='#2ca02c', linestyle='--', linewidth=1.)
+    ax.set_xlabel('Pareto $k$')
+    ax.set_ylabel(r'Pointwise elpd$_{\mathrm{loo}}$')
+    ax.legend(frameon=False)
+    save(fig, 'pareto_k_vs_elpd_loo')
+
+    elpd_stats = dict(pareto_k=pareto_k.tolist(), bad_point_indices=np.flatnonzero(bad_mask).tolist(),
+                      total_elpd_loo=float(loo_result.elpd), elpd_loo_se=float(loo_result.se),
+                      elpd_loo_pointwise=pointwise.tolist(), point_metadata=point_metadata)
+    ref_path = param.get('elpd_reference')
+    reference = None
+    if ref_path is not None:
+        try:
+            with open(ref_path) as stream:
+                reference = json.load(stream)
+            if not isinstance(reference, dict) or reference.get('point_metadata') != point_metadata:
+                raise ValueError('observation identities, bins, or raw data differ (or metadata is missing)')
+            ref_pointwise = np.asarray(reference['elpd_loo_pointwise'], dtype=float)
+            ref_k = np.asarray(reference['pareto_k'], dtype=float)
+            if (ref_pointwise.shape != pointwise.shape or ref_k.shape != pareto_k.shape
+                    or not np.isfinite(ref_pointwise).all()):
+                raise ValueError('invalid pointwise ELPD or Pareto-k arrays')
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            print(f'Warning: skipping ELPD reference comparison: {exc}.')
+            reference = None
+    if reference is not None:
+        delta = pointwise - ref_pointwise
+        flagged = bad_mask | ~np.isfinite(ref_k) | (ref_k > .7)
+        wavelength_plot(delta, 'elpd_loo_comparison', r'$\Delta$elpd: current − reference', flagged)
+        # Compare the same complete dataset; flag unreliable points without dropping them.
+        delta_se = float(np.sqrt(n_points * np.var(delta, ddof=0)))
+        ratio = float(delta.sum() / delta_se) if delta_se > 0 else np.nan
+        elpd_stats['comparison'] = dict(
+            convention='current - reference', delta_elpd=float(delta.sum()), delta_elpd_se=delta_se,
+            delta_elpd_over_se=ratio if np.isfinite(ratio) else None,
+            delta_elpd_pointwise=delta.tolist(), bad_point_indices=np.flatnonzero(flagged).tolist())
+        fig, ax = plt.subplots(figsize=(5., 4.2), dpi=150, layout='constrained')
+        if np.isfinite(ratio):
+            ax.bar(['Current − reference'], [ratio], color='#1f77b4' if ratio >= 0 else '#d62728')
+        else:
+            ax.text(.5, .5, 'Δelpd/SE undefined (zero SE)', transform=ax.transAxes, ha='center')
+            ax.set_xticks([])
+        ax.axhline(0., linestyle='--', color='#333333', linewidth=1.)
+        ax.set_ylabel(r'$\Delta$elpd/SE')
+        ax.set_title('Positive favours current; negative favours reference', fontsize=10)
+        if np.any(flagged):
+            ax.set_xlabel(f'PSIS reliability warning: {np.sum(flagged)} flagged points')
+        save(fig, 'elpd_loo_SE_comparison')
+    with open(param['out_dir'] + f'elpd_loo_statistics_sol{solutions}.json', 'w') as stream:
+        json.dump(elpd_stats, stream, indent=2)
 
 
 @_isolate_posterior_plot_style
@@ -2129,25 +2126,25 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
         modifies the raw MultiNest chain files.
         """
         a = np.atleast_2d(np.asarray(data, dtype=float))
+        if a.shape[1] != len(parameters) + 2:
+            raise ValueError('Posterior sample columns do not match the retrieval parameters.')
 
         b = np.ones((len(a[:, 0]), len(a[0, :]) + 2))
 
         if mnest.param['fit_p0'] and mnest.param['gas_par_space'] != 'partial_pressure':
-            b[:, 0:6] = a[:, 0:6] + 0.0
             z = 6
-        elif mnest.param['gas_par_space'] == 'partial_pressure':
-            b[:, 0:2] = a[:, 0:2] + 0.0
-            b[:, 3:6] = a[:, 2:5] + 0.0
-            z = 5
         else:
-            b[:, 0:5] = a[:, 0:5] + 0.0
             z = 5
 
         if not mnest.param['fit_wtr_cld'] or mnest.param['PT_profile_type'] == 'parametric':
             z -= 3
-        if mnest.param['fit_amm_cld']:
-            b[:, 0:z + 3] = a[:, 0:z + 3] + 0.0
+        if mnest.param['fit_amm_cld'] and mnest.param['PT_profile_type'] == 'isothermal':
             z += 3
+        if mnest.param['gas_par_space'] == 'partial_pressure':
+            b[:, :2] = a[:, :2]
+            b[:, 3:z + 1] = a[:, 2:z]
+        else:
+            b[:, :z] = a[:, :z]
 
         volume_mixing_ratio = {}
         if mnest.param['gas_par_space'] in ('centered_log_ratio', 'clr'):
@@ -2179,7 +2176,7 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
             for i, mol in enumerate(mnest.param['fit_molecules']):
                 b[:, z + i] = np.log10(volume_mixing_ratio[mol])
             if mnest.param['gas_fill'] is not None:
-                b[:, z + i + 1] = np.log10(volume_mixing_ratio[mnest.param['gas_fill']])
+                b[:, z + n_fit_molecules] = np.log10(volume_mixing_ratio[mnest.param['gas_fill']])
             tail_src_start = z + n_fit_molecules
             tail_dest_start = z + n_fit_molecules + 1
         else:
@@ -2229,6 +2226,13 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
             b[:, g_col] = 10. ** (b[:, g_col] - 2.0)
 
         b[:, -1] = np.array(mmm) + 0.0
+        if single_gas:
+            b = np.delete(b, z + (mnest.param['gas_par_space'] == 'partial_pressure'), axis=1)
+        if b.shape[1] - 2 != len(labels):
+            raise ValueError('Posterior sample columns do not match the plot labels.')
+        for i, (_, exponent, _) in enumerate(offset_units):
+            col = b.shape[1] - 1 - len(offset_units) + i
+            b[:, col] = 10.0 ** (b[:, col] + exponent)
         return b
 
     def _weighted_quantiles(x, qs, w=None):
@@ -2293,9 +2297,9 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
                 par.append("Log(P$_{top, NH_3}$ [Pa])")
                 par.append("Log(D$_{NH_3}$ [Pa])")
                 par.append("Log(CR$_{NH_3}$)")
-            for mol in mnest.param['fit_molecules']:
+            for mol in ([] if single_gas else mnest.param['fit_molecules']):
                 par.append(mnest.param['formatted_labels'][mol])
-            if mnest.param['gas_fill'] is not None:
+            if mnest.param['gas_fill'] is not None and not single_gas:
                 if mnest.param['rocky']:
                     par.append(mnest.param['formatted_labels'][mnest.param['gas_fill']] + " (derived)")
                 else:
@@ -2338,7 +2342,11 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
             elif mnest.param['fit_p_size'] and mnest.param['p_size_type'] == 'factor':
                 par.append("Log(P$_{size, fctr})$")
             if mnest.param['fit_phi']:
-                par.append(r"$\phi$ [deg]")
+                if mnest.param.get('obs_numb') is None:
+                    par.append(r"$\phi$ [deg]")
+                else:
+                    par.extend(rf"$\phi_{{{obs}}}$ [deg]" for obs in range(mnest.param['obs_numb']))
+            par.extend(f'Offset {spec} [{unit}]' for spec, _, unit in offset_units)
             par.append(r"$\mu$ (derived)")
             with open(prefix + '_PostProcess.json', 'w') as postprocess_file:
                 json.dump(par, postprocess_file)
@@ -2702,12 +2710,41 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
 
     print('\nGenerating the Posterior Distribution Functions (PDFs) plot')
 
+    a = pymultinest.Analyzer(n_params=len(parameters), outputfiles_basename=prefix, verbose=False)
+    raw_data = np.atleast_2d(a.get_data())
+    if raw_data.shape[1] != len(parameters) + 2:
+        raise ValueError('Posterior sample columns do not match the retrieval parameters.')
+    single_gas = len(mnest.param['fit_molecules']) + (mnest.param['gas_fill'] is not None) == 1
+    # Choose one display unit per offset from the full weighted posterior,
+    # keeping the same units in every mode and leaving raw chains untouched.
+    offsets = mnest.param.get('offset_to_fit', [])
+    offset_units = []
+    for i, spec in enumerate(offsets):
+        median = _weighted_quantiles(10.0 ** raw_data[:, raw_data.shape[1] - len(offsets) + i],
+                                     [0.5], w=raw_data[:, 0])[0]
+        exponent, unit = min(((6, 'ppm'), (9, 'ppb'), (12, 'ppt')),
+                             key=lambda item: abs(np.log10(median) + item[0]))
+        offset_units.append((spec, exponent, unit))
     labels = _corner_parameters()
+
+    def _posterior_truths():
+        if mnest.param.get('truths') is None:
+            return None
+        try:
+            truths = np.atleast_1d(np.loadtxt(mnest.param['truths'])).tolist()
+        except Exception:
+            return None
+        truths += [None] * (len(labels) - len(truths))
+        for i, (_, exponent, _) in enumerate(offset_units):
+            col = len(labels) - 1 - len(offset_units) + i
+            if truths[col] is not None:
+                truths[col] = 10.0 ** (truths[col] + exponent)
+        return truths
+
     # Single-mode
     if mds_orig < 2:
         # Read MultiNest data through Analyzer to be robust
-        a = pymultinest.Analyzer(n_params=len(parameters), outputfiles_basename=prefix, verbose=False)
-        data = _posteriors_gas_to_vmr(a.get_data())
+        data = _posteriors_gas_to_vmr(raw_data)
         np.savetxt(prefix + '_PostProcess.txt', data)
         s = a.get_stats()
         order = data[:, 1].argsort()[::-1]
@@ -2726,14 +2763,7 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
         _traceplot(samples, weights, labels, prefix + 'Nest_trace.png')
         
         bounds = _bounds(samples, weights)
-        truths = None
-        if mnest.param.get('truths') is not None:
-            try:
-                truths = list(np.loadtxt(mnest.param['truths']))
-            except Exception:
-                truths = None
-        if truths is not None:
-            truths = list(truths) + [None] * (len(labels) - len(truths))
+        truths = _posterior_truths()
         selected_idx = _corner_selected(labels)
         corner_labels_all = [labels[i] for i in selected_idx] if selected_idx else labels
         corner_labels = [labels[i] for i in selected_idx] if selected_idx else labels
@@ -2835,14 +2865,7 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
                        prefix + ('Nest_trace_sol' + str(midx) + '.png' if len(to_plot) > 1 else 'Nest_trace.png'))
 
             bnd = _bounds(result[str(k)]['samples'], result[str(k)]['weights'])
-            truths = None
-            if mnest.param.get('truths') is not None:
-                try:
-                    truths = list(np.loadtxt(mnest.param['truths']))
-                except Exception:
-                    truths = None
-            if truths is not None:
-                truths = list(truths) + [None] * (len(labels) - len(truths))
+            truths = _posterior_truths()
             corner_labels = corner_labels_all
             if selected_idx:
                 corner_samples = result[str(k)]['samples'][:, selected_idx]
@@ -2873,14 +2896,7 @@ def plot_posteriors(mnest, prefix, multinest_results, parameters, mds_orig):
         union_bounds = list(zip(mins.tolist(), maxs.tolist()))
 
         fig = None
-        truths = None
-        if mnest.param.get('truths') is not None:
-            try:
-                truths = list(np.loadtxt(mnest.param['truths']))
-            except Exception:
-                truths = None
-        if truths is not None:
-            truths = list(truths) + [None] * (len(labels) - len(truths))
+        truths = _posterior_truths()
         overlay_labels = corner_labels_all
         if selected_idx:
             overlay_bounds = [union_bounds[i] for i in selected_idx]
